@@ -329,9 +329,23 @@ def classify_no_visible_reply(
                 no_visible_class = "review_timeout"
         break
 
+    # The recovery projection and the accounting summary share this terminal
+    # classification. A successful HTTP/generation result is not a successful
+    # turn when validation, final review or Guard prevented adoption.
+    failure_category = {
+        "schema_parse_failed": "output_format", "llm_invalid_response": "output_format",
+        "schema_invalid": "output_format", "empty_reply_segments": "output_format",
+        "social_reply_missing": "output_format", "catalog_query_invalid": "query_contract",
+        "quality_repair_failed": "content_review", "guard_repair_failed": "content_review",
+    }.get(no_visible_class, ai_failure_category(status_payload))
+    if review_requires_recovery(review):
+        failure_category = ai_failure_category(review)
+    if failure_category == "success":
+        failure_category = "execution_failure"
     obligation = classify_social_reply_obligation(combined)
     return {
         "class": no_visible_class,
+        "failure_category": failure_category,
         "stage": stage,
         "reason": classification_reason,
         "top_level_reason": normalized_reason,
@@ -1905,11 +1919,13 @@ def maybe_run_customer_service_brain(
         for x in accounting["logical_calls"]
     ) or any(x.get("failure_category") != "success" for x in accounting["http_attempts"])
     accounting["completion_outcome"] = ("recovered" if recovered else "first_pass") if result.get("adoptable") else "not_completed"
-    review = result.get("quality_gate_v2") or {}
-    status = result.get("llm_status") or {}
-    accounting["failure_category"] = ai_failure_category(review if review.get("unavailable") or review.get("verdict") in {"repair", "block", "handoff_suggest"} else status)
     if result.get("adoptable"):
         accounting["failure_category"] = "success"
+    else:
+        terminal = result.get("no_visible_reply") or classify_no_visible_reply(
+            str(result.get("reason") or ""), combined=combined, payload=result)
+        accounting["failure_category"] = terminal["failure_category"]
+        accounting["terminal_stage"] = terminal["stage"]
     accounting["config_source"] = config.get("_brain_config_source", {"source":"provided_config"})
     result["model_call_accounting"] = accounting
     return result

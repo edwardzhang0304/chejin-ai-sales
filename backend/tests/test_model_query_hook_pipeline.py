@@ -171,10 +171,12 @@ def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_
         actions=list(db.scalars(select(ReplyAction)))
     if scenario in {'unit_conflict','review_timeout','sort_omitted'}:
         assert result['decision']=='retry_later' and not actions
+        assert accounting['failure_category']=={'unit_conflict':'query_contract','review_timeout':'service_unavailable','sort_omitted':'content_review'}[scenario]
         if scenario=='unit_conflict':assert not state['receipts']
         if scenario=='review_timeout':assert not any('repair' in x['stage'] for x in accounting['logical_calls'])
     else:
         assert result['decision']=='send_reply' and len(actions)==1
+        assert accounting['failure_category']=='success'
         q=state['receipts'][-1]['query']
         if scenario!='legacy':assert q['sort_origin']==('customer_explicit' if scenario=='explicit' else 'program_default')
         if scenario in {'recover','failover'}:assert accounting['completion_outcome']=='recovered'

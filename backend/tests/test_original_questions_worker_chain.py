@@ -109,6 +109,15 @@ def test_original_questions_run_through_worker_and_durable_recovery(identity_cli
             first_audit=snap['generation_attempt_history'][0]['response']['raw_payload']['omniauto_brain_result']['model_call_accounting']
             assert sum(c['stage']=='brain_quality_repair' for c in first_audit['logical_calls'])==1
             assert first_audit['http_attempts'][-1]['failure_category']=='service_unavailable'
+            first_response=snap['generation_attempt_history'][0]['response']
+            first_model=first_response['raw_payload']['omniauto_brain_result']
+            assert first_response['decision']=='retry_later' and first_response['error_code']=='AI_ENGINE_REVIEW_TIMEOUT'
+            assert first_model['no_visible_reply']['class']=='review_timeout'
+            assert first_audit['failure_category']==first_model['no_visible_reply']['failure_category']=='service_unavailable'
+            assert first_audit['terminal_stage']=='semantic_reviewer'
+            assert first_model['quality_gate_v2']['verdict']=='repair'
+            assert first_model['repaired_quality_gate_v2']['error_kind']=='transport'
+            assert snap['raw_payload']['omniauto_brain_result']['model_call_accounting']['failure_category']=='success'
         else:
             model=snap['raw_payload']['omniauto_brain_result']
             assert model['catalog_stages']['understanding']['json_structure_repaired']

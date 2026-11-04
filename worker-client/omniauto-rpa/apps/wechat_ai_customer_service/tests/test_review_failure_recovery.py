@@ -78,6 +78,10 @@ def test_review_failure_never_requests_content_repair(monkeypatch, after_repair,
     assert "authority_review_invalid_contract" not in saved["errors"]
     assert result["no_visible_reply"]["class"] == classification
     assert result["no_visible_reply"]["stage"] == "semantic_reviewer"
+    expected = "output_format" if kind == "protocol" else "service_unavailable"
+    assert result["no_visible_reply"]["failure_category"] == expected
+    assert result["model_call_accounting"]["failure_category"] == expected
+    assert result["model_call_accounting"]["terminal_stage"] == "semantic_reviewer"
 
 
 def test_explicit_failure_with_pass_verdict_cannot_become_clearance(monkeypatch):
