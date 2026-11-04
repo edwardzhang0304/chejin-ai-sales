@@ -84,7 +84,7 @@ class ClockSync:
             self._publish('recovering', True)
         except Exception as exc:
             self._failure("startup_recovery", exc)
-            self._publish('evidence_failed', False)
+            self._publish('evidence_failed', False, retry_required=True)
         return False
 
     def start(self):
@@ -96,9 +96,10 @@ class ClockSync:
         threading.Thread(target=self._run, name='clock-sync', daemon=True).start()
         return True
 
-    def _publish(self, state, busy):
+    def _publish(self, state, busy, *, retry_required=False):
         with self._lock:
-            self._state = {'state': state, 'message': MESSAGES[state], 'busy': busy}
+            self._state = {'state': state, 'message': MESSAGES[state], 'busy': busy,
+                           'retryRequired': retry_required}
         self.on_change()
 
     def _failure(self, stage, exc):
@@ -239,10 +240,10 @@ class ClockSync:
                 self._record(result, busy=False, publish=False, helper=helper, gate_retained=retain)
                 if reserved and not retain:
                     self.runner.set_update_new_work_gate(False, update_request_id=self._operation)
-                self._publish(result, False)
+                self._publish(result, False, retry_required=retain)
             except Exception as exc:
                 self._failure('finalize', exc)
-                self._publish('evidence_failed', False)
+                self._publish('evidence_failed', False, retry_required=reserved)
 
     def _verify(self, completed):
         monitor = self.runner.hook_services.connection.backend.clock_diagnostics

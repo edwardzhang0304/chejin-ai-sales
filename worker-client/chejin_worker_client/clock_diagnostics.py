@@ -124,12 +124,28 @@ def clock_notice(value):
     if value.get('timezone', {}).get('beijing_timezone') is False:
         notices.append('请将电脑时区设为北京时间（UTC+8，北京）')
     if value.get('comparison_status') == 'skewed':
-        notices.append('电脑时间与后台明显不一致，请同步电脑时间')
+        notices.append('电脑时间与后台明显不一致，请同步电脑时间'
+                       if value.get('backend_reference', {}).get('status') == 'aligned' else
+                       '电脑与后台时间不一致，等待标准时间源核验')
     elif value.get('reason') == 'computer_clock_changed_during_request':
         notices.append('电脑时间发生变化，等待重新对时')
     if value.get('backend_reference', {}).get('status') == 'skewed':
         notices.append('后台时间与标准时间源不一致，请联系管理员')
     return '；'.join(notices)
+
+
+def clock_repair_required(value):
+    """Only fresh, confirmed local faults justify changing the computer clock.
+
+    Backend/time-source failures are not proof that this computer is wrong.
+    This shares the diagnostic classification; no UI thresholds are duplicated.
+    """
+    age = value.get('sample_age_seconds')
+    if not finite(age) or not 0 <= age <= MAX_SAMPLE_AGE_SECONDS:
+        return False
+    return (value.get('timezone', {}).get('beijing_timezone') is False
+            or (value.get('comparison_status') == 'skewed'
+                and value.get('backend_reference', {}).get('status') == 'aligned'))
 
 
 def verification_view(value):
@@ -317,4 +333,5 @@ class ClockDiagnostics:
             value['backend_reference'] = {'status': 'unconfirmed'}
         value['notice'] = clock_notice(value)
         value['verification'] = verification_view(value)
+        value['repairRequired'] = clock_repair_required(value)
         return value

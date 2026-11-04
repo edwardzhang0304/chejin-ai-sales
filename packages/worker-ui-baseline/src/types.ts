@@ -88,9 +88,9 @@ export interface WorkerLogRow {
 }
 
 export interface WorkerClientModel {
-  clockSync?: { state: string; message: string; busy: boolean } | null;
+  clockSync?: { state: string; message: string; busy: boolean; retryRequired?: boolean } | null;
   hookProcessSteps?: TimelineStepModel[];
-  startupCheck?: { clockCheck?: { notice?: string; verification?: { status: "verified" | "warning" | "pending" | "stale" | "unconfirmed"; message: string } }; state: "checking" | "passed" | "failed"; title: string; message: string; canStart: boolean; canRecheck?: boolean; faultTitle?: string; faultMessage?: string };
+  startupCheck?: { clockCheck?: { repairRequired?: boolean; notice?: string; verification?: { status: "verified" | "warning" | "pending" | "stale" | "unconfirmed"; message: string } }; state: "checking" | "passed" | "failed"; title: string; message: string; canStart: boolean; canRecheck?: boolean; faultTitle?: string; faultMessage?: string };
   layoutRecovery?: { blocked: boolean; attempts: number; message: string };
   faultRecovery?: { ready: boolean; checking: boolean; reason: string };
   workerId: string;

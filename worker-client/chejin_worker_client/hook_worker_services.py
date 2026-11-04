@@ -247,6 +247,10 @@ class HookWorkerServices:
             runner._backend_inflight_flow_state = dict(profile.inflight_flow_state)
             runner._backend_fault_recovery = dict(profile.fault_recovery)
             runner._backend_pending_read_recovery = dict(profile.pending_read_recovery)
+            # A confirmed local clock fault uses the existing durable pause.
+            # Keep an earlier technical fault and all in-flight recovery records.
+            if self._clock_check().get('repairRequired') and current.run_status == 'running':
+                runner._preserve_stopped_run_status('paused')
             # Never turn a local stopped state into running on a heartbeat.
             profile.run_status = current.run_status
             if current.run_status != "faulted":
@@ -423,6 +427,10 @@ class HookWorkerServices:
         self._recheck_requested.set()
         return True
 
+    def _clock_check(self) -> dict:
+        diagnostics = getattr(getattr(self.connection, "backend", None), "clock_diagnostics", None)
+        return diagnostics.snapshot() if diagnostics is not None else {}
+
     def startup_check_state(self) -> dict:
         value = dict(self._startup_check)
         if value['canStart'] and not self._startup_layout_ready():
@@ -450,9 +458,12 @@ class HookWorkerServices:
         if self._display_fault:
             value['faultTitle'] = self._display_fault['title']
             value['faultMessage'] = self._display_fault['message']
-        diagnostics = getattr(getattr(self.connection, "backend", None), "clock_diagnostics", None)
-        if diagnostics is not None:
-            value["clockCheck"] = diagnostics.snapshot()
+        clock_check = self._clock_check()
+        if clock_check:
+            value["clockCheck"] = clock_check
+        if clock_check.get('repairRequired'):
+            value.update(state='failed', canStart=False, canRecheck=False,
+                         title='电脑时间需要同步', message=clock_check.get('notice', ''))
         return value
 
     @staticmethod
