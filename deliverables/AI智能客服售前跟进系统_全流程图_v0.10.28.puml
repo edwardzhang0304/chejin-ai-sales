@@ -713,3 +713,5 @@ stop
 ' PE-02 r8: 正常运行默认不启用Python tracing；显式限时启动→有界采样/差值→落盘→桌面ZIP。
 ' 采集失败/未完成/截断和native盲区进清单；不改变原业务恢复/未知结果门禁。
 ' DLL调用前本地证据失败→保留原ID和代次缺件→确定未发结清；已发后未知保持原隔离。
+
+' PE-02 r8状态：本次capture_id→disabled/starting/running/finished/capture_failed→统一清单，旧成功不覆盖本次缺证。

@@ -73,7 +73,9 @@ def test_metadata_budget_stops_owned_tracer(tmp_path, monkeypatch):
 
 def test_opt_in_duration_and_worker_exit(tmp_path):
     assert module.start_profile(tmp_path, 0) is None
-    assert not (tmp_path / 'artifacts').exists()
+    assert not (tmp_path / 'artifacts/runtime/python-memory').exists()
+    state = json.loads((tmp_path / 'artifacts/runtime/python-memory-status.json').read_text())
+    assert state['status'] == 'disabled' and state['enabled'] is False
     profile = module.start_profile(tmp_path, 1)
     profile.thread.join(timeout=5)
     assert not profile.thread.is_alive() and not tracemalloc.is_tracing()
@@ -192,3 +194,81 @@ def test_fallback_failure_is_exported_as_failed_not_just_collected(tmp_path):
         failures = [r for r in manifest['sources'] if r['status'] == 'read_failed']
         assert any(r['reason'] == 'python_profile_not_completed' for r in failures)
         assert any(r['reason'] == 'hook_pre_call_evidence_failed' for r in failures)
+
+
+@pytest.mark.parametrize('cause', ['quota', 'directory', 'thread', 'write'])
+def test_actual_failure_after_old_success_has_current_identity_in_new_zip(tmp_path, monkeypatch, cause):
+    from pathlib import Path
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    old = module.Profile(tmp_path, 1)
+    old.begin(); old.finish()
+    old_bytes = old.path.read_bytes()
+    expected = None
+    if cause == 'quota':
+        monkeypatch.setattr(module, 'MAX_FOLDER_BYTES', 10)
+        expected = 'profile_folder_budget'
+    elif cause == 'directory':
+        for n in range(129):(old.root / f'synthetic-{n}.txt').touch()
+        expected = 'profile_directory_boundary'
+    elif cause == 'thread':
+        def failed(_):raise RuntimeError('private test detail')
+        monkeypatch.setattr(module.threading.Thread, 'start', failed)
+        expected = 'RuntimeError'
+    else:
+        original = Path.write_bytes
+        def failed(path, data):
+            if path.parent == old.root:raise OSError('private test detail')
+            return original(path, data)
+        monkeypatch.setattr(Path, 'write_bytes', failed)
+        expected = 'OSError'
+    current = module.start_profile(tmp_path, 30)
+    if current is not None:
+        current.thread.join(timeout=5)
+        assert not current.thread.is_alive()
+    assert not tracemalloc.is_tracing() and old.path.read_bytes() == old_bytes
+    archive = export_bundle(tmp_path, tmp_path / 'failure.zip')
+    with zipfile.ZipFile(archive) as zipped:
+        state = json.loads(zipped.read('logs/runtime/python-memory-status.json'))
+        gap = json.loads(zipped.read('logs/runtime/python-memory-gap.json'))
+        manifest = json.loads(zipped.read('export.json'))
+    assert state['capture_id'] == gap['capture_id'] != old.data['capture_id']
+    assert state['pid'] == gap['pid'] and state['started_wall'] == gap['started_wall']
+    assert state['status'] == 'capture_failed' and state['reason'] == gap['reason'] == expected
+    failures = [e for e in manifest['sources'] if e['status'] == 'read_failed' and e.get('capture_identity', {}).get('capture_id') == gap['capture_id']]
+    assert failures and all(e['capture_reason'] == expected for e in failures)
+    assert b'private test detail' not in json.dumps(manifest).encode()
+
+
+def test_empty_directory_and_old_report_do_not_replace_current_disabled_status(tmp_path):
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    old = module.Profile(tmp_path, 1)
+    old.begin(); old.finish()
+    assert module.start_profile(tmp_path, 0) is None
+    archive = export_bundle(tmp_path, tmp_path / 'disabled.zip')
+    with zipfile.ZipFile(archive) as zipped:
+        state = json.loads(zipped.read('logs/runtime/python-memory-status.json'))
+        manifest = json.loads(zipped.read('export.json'))
+    assert state['status'] == 'disabled' and state['capture_id'] != old.data['capture_id']
+    assert any(e['status'] == 'missing' and e.get('capture_identity', {}).get('capture_id') == state['capture_id'] for e in manifest['sources'])
+    assert old.path.exists() and not tracemalloc.is_tracing()
+
+
+def test_disabled_state_write_failure_cannot_silently_reuse_old_success(tmp_path, monkeypatch):
+    from pathlib import Path
+    from chejin_worker_client.diagnostic_bundle import export_bundle
+    old = module.Profile(tmp_path, 1)
+    old.begin(); old.finish()
+    original = Path.write_text
+    def deny_status(path, *a, **k):
+        if path.name == 'python-memory-status.tmp':raise PermissionError('synthetic')
+        return original(path, *a, **k)
+    monkeypatch.setattr(Path, 'write_text', deny_status)
+    assert module.start_profile(tmp_path, 0) is None
+    archive = export_bundle(tmp_path, tmp_path / 'disabled-failed.zip')
+    with zipfile.ZipFile(archive) as zipped:
+        gap = json.loads(zipped.read('logs/runtime/python-memory-gap.json'))
+        manifest = json.loads(zipped.read('export.json'))
+    assert gap['capture_id'] != old.data['capture_id'] and gap['enabled'] is False
+    assert gap['reason'] == 'disabled_status_write_failed'
+    assert any(e['status'] == 'read_failed' and e.get('capture_identity', {}).get('capture_id') == gap['capture_id'] for e in manifest['sources'])
+    assert not tracemalloc.is_tracing()

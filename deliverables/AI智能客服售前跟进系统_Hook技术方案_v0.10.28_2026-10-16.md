@@ -1452,3 +1452,7 @@ Worker详细Python采集入口：正常启动额外指定`--python-memory-profil
 | 持久化→重启→桌面ZIP | 原统一Collector | 已落盘报告、失败/未结束/删减与能力边界 | 进程被杀且尚未落盘的尾部、磁盘完全不可写期间现场无法补造 |
 
 本地合成对照已验证：持续保留对象的正增长、释放后负差值、默认关闭、已有tracer不接管、限时退出、metadata/采集时间/文件体积边界、线程启动失败、未结束文件和重建Collector后的ZIP。分配位置不是泄漏判决，合法未结业务记录仍可长期保留。合成10000次4KiB瞬时分配对照中，tracing开启的中位耗时约为关闭时6.44倍（约13.16ms对2.04ms）；两次样本处理约0.11/0.38ms、trace metadata约0.6/3.5KiB。这是本地微基准，不是Windows/生产CPU保证，故不得默认全量开启，也不据此承诺整机内存降幅。Windows及48小时原生内存归因未验，未打包部署。
+
+
+PE-02 r8取证状态补齐：每次正常Worker启动持久化有界`python-memory-status.json`，即使默认关闭也记本次disabled，不启动tracer；每次采集的报告/current_status/gap统一带capture_id、PID、开始墙钟/单调时间、enabled、状态和安全原因。目录存在或旧成功报告不能代替本次状态。配额、目录边界、线程启动及报告写入失败都经真实采集入口保存新身份的gap并由正式Collector标为read_failed；空目录/未开启列missing，进行中列incomplete，完成仍保留原报告。默认关闭状态标记写失败时尝试独立gap；所有存储均不可写时无法承诺持久取证。旧文件保留，latest_failure_only意味着只保留最新fallback，不是完整失败历史。此采集仅显式启动后的30/60/120秒窗口，不能追溯运行1–2天才出现的分配，不能写成完整所有者/native归因。
+DLL8903eaea批次已获5号源码及受影响本地链路通过，DLL-MEM-01/02关闭；Python本批继续按精确提交复审，不改变实机/发布边界。

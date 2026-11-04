@@ -153,9 +153,12 @@ class Collector:
             self.record(source, 'read_failed', reason='hook_pre_call_evidence_failed')
         if value.get('evidence_kind') == 'python_allocations':
             state = value.get('status')
+            identity = self.clean({k: value.get(k) for k in ('capture_id', 'pid', 'started_wall', 'enabled')})
             if state != 'finished':
-                self.record(source, 'read_failed' if state == 'capture_failed' else 'incomplete',
-                            reason='python_profile_not_completed', capture_status=self.clean(state))
+                self.record(source, 'missing' if state == 'disabled' else ('read_failed' if state == 'capture_failed' else 'incomplete'),
+                            reason='python_profile_disabled' if state == 'disabled' else 'python_profile_not_completed',
+                            capture_status=self.clean(state), capture_identity=identity,
+                            capture_reason=self.clean(value.get('reason', value.get('capture_failed'))))
             samples = value.get('samples')
             if value.get('omitted_samples') or (isinstance(samples, list) and any(
                     isinstance(item, dict) and item.get('omitted_sites') for item in samples)):
@@ -832,7 +835,7 @@ class Collector:
                 # A failed task diagnostic may exist only in this bounded
                 # fallback log. Keep it with current proofs before old images.
                 self.tree(artifacts(self.root)/"runtime", "logs/runtime", archive)
-                if not (artifacts(self.root)/"runtime"/"python-memory").exists():
+                if not (artifacts(self.root)/"runtime"/"python-memory-status.json").exists():
                     self.record("python_allocations", "missing", reason="not_enabled_or_no_capture")
                 self.tree(artifacts(self.root)/"tasks", "tasks", archive, task_priority=True)
                 updates_root = update_root(self.root).absolute()

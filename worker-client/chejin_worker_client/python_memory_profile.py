@@ -23,10 +23,35 @@ MAX_REPORT_BYTES = 1024 * 1024
 MAX_FOLDER_BYTES = 8 * MAX_REPORT_BYTES
 
 
+def _write_record(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    try:
+        temporary.write_text(json.dumps(state, ensure_ascii=True))
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_current(root, state):
+    _write_record(Path(root) / 'artifacts/runtime/python-memory-status.json', state)
+
+
+def _write_gap(root, state):
+    _write_record(Path(root) / 'artifacts/runtime/python-memory-gap.json', state)
+
+
+def _identity(capture_id, enabled):
+    return {'schema': 1, 'evidence_kind': 'python_allocations',
+            'capture_id': capture_id, 'enabled': enabled, 'pid': os.getpid(),
+            'started_wall': time.time(), 'started_monotonic': time.monotonic()}
+
+
 class Profile:
     def __init__(self, root, seconds):
         if type(seconds) is not int or not 1 <= seconds <= MAX_SECONDS:
             raise ValueError('PYTHON_MEMORY_PROFILE_DURATION_INVALID')
+        self.app_root = Path(root)
         self.root = Path(root) / 'artifacts' / 'runtime' / 'python-memory'
         self.path = self.root / (uuid.uuid4().hex + '.json')
         self.stop = threading.Event()
@@ -34,9 +59,10 @@ class Profile:
         self.owned = False
         self.report_allowed = False
         self.baseline = self.previous = None
-        self.started = time.monotonic()
-        self.data = {'schema': 1, 'evidence_kind': 'python_allocations', 'enabled': True, 'pid': os.getpid(), 'started_wall': time.time(),
-            'started_monotonic': self.started, 'duration_limit_seconds': seconds,
+        self.identity = _identity(self.path.stem, True)
+        self.started = self.identity['started_monotonic']
+        self.last_status = None
+        self.data = {**self.identity, 'record_role': 'report', 'duration_limit_seconds': seconds,
             'interval_seconds': INTERVAL_SECONDS, 'trace_frames': 5,
             'status': 'starting', 'samples': [], 'omitted_samples': 0,
             'limits': {'metadata_bytes': MAX_METADATA_BYTES, 'traces': MAX_TRACES,
@@ -47,6 +73,14 @@ class Profile:
             'blind_spots': ['allocations_before_start', 'untracked_native_allocations',
                            'other_processes', 'object_owners_and_reference_graphs'],
             'object_contents_collected': False}
+
+    def status(self, status, reason=None):
+        if self.last_status == (status, reason):
+            return
+        _write_current(self.app_root, {**self.identity, 'record_role': 'current_status',
+            'status': status, 'reason': reason, 'updated_wall': time.time(),
+            'report_file': self.path.name})
+        self.last_status = (status, reason)
 
     def _write(self):
         raw = json.dumps(self.data, ensure_ascii=True).encode()
@@ -60,10 +94,12 @@ class Profile:
         try:
             temporary.write_bytes(raw)
             os.replace(temporary, self.path)
+            self.status(self.data['status'], self.data.get('capture_failed', self.data.get('reason', self.data.get('end_reason'))))
         finally:
             temporary.unlink(missing_ok=True)
 
     def begin(self):
+        self.status('starting')
         self.root.mkdir(parents=True, exist_ok=True)
         size = 0
         for count, path in enumerate(self.root.iterdir()):
@@ -187,16 +223,19 @@ class Profile:
                 self.gap(type(exc).__name__)
 
     def gap(self, reason):
+        state = {**self.identity, 'record_role': 'gap', 'status': 'capture_failed',
+                 'reason': reason, 'at': time.time(), 'retention': 'latest_failure_only'}
         try:
-            self.root.parent.mkdir(parents=True, exist_ok=True)
-            gap = self.root.parent / 'python-memory-gap.json'
-            gap.write_text(json.dumps({'evidence_kind': 'python_allocations', 'enabled': True,
-                                       'status': 'capture_failed', 'reason': reason,
-                                       'at': time.time(), 'retention': 'latest_failure_only'}))
+            _write_gap(self.app_root, state)
+        except OSError:
+            pass
+        try:
+            self.status('capture_failed', reason)
         except OSError:
             pass
 
     def start(self):
+        self.status('starting')
         self.thread = threading.Thread(target=self._run, name='python-memory-profile', daemon=True)
         self.thread.start()
         return self
@@ -209,6 +248,19 @@ class Profile:
 
 def start_profile(root, seconds):
     if not seconds:
+        # Each normal launch explicitly supersedes old capture state. It does
+        # not start a tracer, touch old reports or infer that memory is healthy.
+        identity = _identity(uuid.uuid4().hex, False)
+        try:
+            _write_current(root, {**identity, 'record_role': 'current_status',
+                                 'status': 'disabled', 'reason': 'not_requested'})
+        except OSError as exc:
+            try:
+                _write_gap(root, {**identity, 'record_role': 'gap', 'status': 'capture_failed',
+                    'reason': 'disabled_status_write_failed', 'error_type': type(exc).__name__,
+                    'retention': 'latest_failure_only'})
+            except OSError:
+                pass  # Complete storage loss cannot manufacture durable evidence.
         return None
     profile = Profile(root, seconds)
     try:
