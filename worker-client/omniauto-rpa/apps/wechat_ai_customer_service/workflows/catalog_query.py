@@ -58,11 +58,34 @@ QUERY_INSTRUCTION += "\n可用能源值：" + json.dumps(ENERGY_TYPES, ensure_as
 
 
 class CatalogQueryError(ValueError):
-    pass
+    def __init__(self, code: str, *, fields: list[str] | None = None):
+        super().__init__(code)
+        # Only validator-owned paths, never customer text or rejected values.
+        self.fields = list(dict.fromkeys(fields or []))[:20]
 
 
 def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def rejected_field_evidence(raw: Any, fields: list[str]) -> list[dict]:
+    """Describe validator-selected fields without retaining arbitrary values."""
+    result = []
+    for field in fields[:20]:
+        value, present = raw, True
+        if field == "<unexpected_fields>":
+            result.append({"field": field})
+            continue
+        for key in ([] if field == "catalog_query" else field.split(".")):
+            if not isinstance(value, dict) or key not in value:
+                present = False
+                break
+            value = value[key]
+        item = {"field": field, "present": present}
+        if present:
+            item.update(value_type=type(value).__name__, value_sha256=fingerprint(value))
+        result.append(item)
+    return result
 
 
 def message_sources(evidence: dict) -> list[dict]:
@@ -94,10 +117,18 @@ def _number(value: Any, *, zero: bool = False) -> float:
 
 def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None) -> dict:
     keys = {"version", "operation", "requirement_state", "budget", "filters", "reference_ids", "exclude_ids", "sort", "source_ids", "unsupported_requirements", "interpretation"}
-    if not isinstance(raw, dict) or set(raw) - {"name_queries"} != keys or type(raw.get("version")) is not int or raw["version"] != 1:
-        raise CatalogQueryError("invalid_query_schema")
-    if raw["operation"] not in {"search", "details", "compare"} or raw["requirement_state"] not in {"clear", "uncertain"}:
-        raise CatalogQueryError("invalid_query_operation")
+    if not isinstance(raw, dict):
+        raise CatalogQueryError("invalid_query_schema", fields=["catalog_query"])
+    if set(raw) - {"name_queries"} != keys or type(raw.get("version")) is not int or raw["version"] != 1:
+        fields = sorted(keys - set(raw))
+        if set(raw) - keys - {"name_queries"}:
+            fields.append("<unexpected_fields>")
+        if type(raw.get("version")) is not int or raw.get("version") != 1:
+            fields.append("version")
+        raise CatalogQueryError("invalid_query_schema", fields=fields)
+    if (not isinstance(raw["operation"], str) or raw["operation"] not in {"search", "details", "compare"}
+            or not isinstance(raw["requirement_state"], str) or raw["requirement_state"] not in {"clear", "uncertain"}):
+        raise CatalogQueryError("invalid_query_operation", fields=["operation", "requirement_state"])
     allowed = {s["id"] for s in sources}
     query = deepcopy(raw)
     query["source_ids"] = _ids(raw["source_ids"], allowed=allowed, required=True)
@@ -136,8 +167,15 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
     if isinstance(budget, dict) and budget.get("state") == "not_mentioned":
         budget.setdefault("source_ids", [])
     query["budget"] = budget
-    if not isinstance(budget, dict) or budget.get("state") not in {"specified", "unlimited", "not_mentioned", "uncertain"} or budget.get("unit") != "万元":
-        raise CatalogQueryError("invalid_budget_state_or_unit")
+    if not isinstance(budget, dict):
+        raise CatalogQueryError("invalid_budget_state_or_unit", fields=["budget"])
+    budget_errors = []
+    if not isinstance(budget.get("state"), str) or budget["state"] not in {"specified", "unlimited", "not_mentioned", "uncertain"}:
+        budget_errors.append("budget.state")
+    if budget.get("unit") != "万元":
+        budget_errors.append("budget.unit")
+    if budget_errors:
+        raise CatalogQueryError("invalid_budget_state_or_unit", fields=budget_errors)
     state = budget["state"]
     _ids(budget.get("source_ids"), allowed=allowed, required=state in {"specified", "unlimited"})
     expected = {"state", "unit", "source_ids"}
@@ -156,10 +194,10 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
             upper = catalog_budget_around_upper(target) if mode == "around" else target
             lower = max(0.0, target - (upper - target)) if mode == "around" else 0.0
         else:
-            raise CatalogQueryError("invalid_budget_mode")
+            raise CatalogQueryError("invalid_budget_mode", fields=["budget.mode"])
         bounds = {"lower": lower, "upper": upper, "target": target, "unit": "万元"}
     if set(budget) != expected:
-        raise CatalogQueryError("invalid_budget_fields")
+        raise CatalogQueryError("invalid_budget_fields", fields=["budget"])
     query["budget_bounds"] = bounds
     filters = raw["filters"]
     if not isinstance(filters, list) or len(filters) > 20:
@@ -412,19 +450,23 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
     first = first_result.get("brain_plan") or {}
     if not first_result.get("ok") or "catalog_query" not in first:
         return first_result
-    audit = {"understanding": {k: first_result.get(k) for k in ("usage", "prompt_estimate", "provider", "model")}}
+    audit = {"understanding": {k: first_result.get(k) for k in ("usage", "prompt_estimate", "provider", "model", "status", "elapsed_ms")}}
     started = time.monotonic()
+    phase = "validation"
     try:
         if set(first) != {"catalog_query"}:
-            raise CatalogQueryError("query_and_reply_must_be_separate")
+            raise CatalogQueryError("query_and_reply_must_be_separate", fields=["catalog_query"])
         query = normalize_query(first["catalog_query"], message_sources(evidence),
                                 known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"))
+        audit["validation_seconds"] = time.monotonic() - started
+        phase = "inventory_query"
         runtime = runtime_factory()
         scope = {"conversation_id": brain_input["target"]["conversation_id"],
                  "current_message_ids": brain_input["current_message"]["message_ids"]}
         receipt = execute_query(query, runtime, scope=scope, limit=min(20, max(1, int(settings.get("max_catalog_candidates") or 8))))
         attach_receipt(evidence, receipt)
         audit["query_seconds"] = time.monotonic() - started
+        phase = "completion"
         final = run_llm(settings=settings, brain_input=brain_input)
         audit["completion"] = {k: final.get(k) for k in ("usage", "prompt_estimate", "provider", "model")}
         if final.get("ok") and query_plan_errors(final.get("brain_plan") or {}, evidence):
@@ -438,7 +480,17 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         audit["error_type"] = type(exc).__name__
         audit["error_code"] = str(exc) if isinstance(exc, CatalogQueryError) else "catalog_query_unavailable"
         audit["query_seconds"] = time.monotonic() - started
+        audit["failed_stage"] = phase
+        invalid_query = phase == "validation" and isinstance(exc, CatalogQueryError)
+        if invalid_query:
+            audit["validation_error"] = {
+                "code": str(exc), "fields": exc.fields,
+                "field_evidence": rejected_field_evidence(first.get("catalog_query"), exc.fields),
+                "query_sha256": fingerprint(first.get("catalog_query")),
+            }
         return {"ok": False, "error": str(exc) if isinstance(exc, CatalogQueryError) else "catalog_query_unavailable",
+                "error_kind": "catalog_query_validation" if invalid_query else "catalog_query_execution",
+                "status": "error", "http_status": first_result.get("status"),
                 "catalog_stages": audit, "provider": first_result.get("provider"), "model": first_result.get("model")}
 
 

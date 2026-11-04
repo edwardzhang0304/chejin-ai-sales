@@ -51,6 +51,7 @@ from customer_service_brain_contract import (
 from customer_service_quality_reviewer import (
     DEFAULT_REVIEWER_MAX_TOKENS,
     review_brain_reply_semantics,
+    review_requires_recovery,
     semantic_review_to_quality,
 )
 from customer_service_conversation_strategy import (
@@ -293,6 +294,10 @@ def classify_no_visible_reply(
         for marker in ("timeout", "timed out", "read operation timed out", "context canceled", "unexpected eof")
     ):
         no_visible_class = "llm_timeout"
+    if status_payload.get("error_kind") == "catalog_query_validation":
+        no_visible_class = "catalog_query_invalid"
+        stage = "catalog_query_validation"
+        classification_reason = precise_error
 
     validation_errors = no_visible_validation_errors(source)
     if normalized_reason == "brain_plan_validation_failed":
@@ -303,6 +308,21 @@ def classify_no_visible_reply(
     if normalized_reason == "brain_quality_verification_failed":
         if "empty_visible_reply" in validation_errors or "missing_reply_segments" in validation_errors:
             no_visible_class = "empty_reply_segments"
+
+    # Prefer the last attempted review, including validation/Guard repair paths.
+    # Keep this separate from generation outages and real content rejection.
+    for key in (source.get("last_semantic_review_stage"), "post_guard_quality_gate_v2",
+                "guard_repaired_quality_gate_v2", "repaired_quality_gate_v2", "quality_gate_v2"):
+        review = source.get(key) or {}
+        if not review:
+            continue
+        if review_requires_recovery(review):
+            stage = "semantic_reviewer"
+            classification_reason = str(review.get("reason") or "semantic_reviewer_unavailable")
+            no_visible_class = "review_invalid_response" if review.get("error_kind") in {"protocol", "internal"} else "review_unavailable"
+            if review.get("unavailable") and any(marker in classification_reason.lower() for marker in ("timeout", "timed out")):
+                no_visible_class = "review_timeout"
+        break
 
     obligation = classify_social_reply_obligation(combined)
     return {
@@ -837,6 +857,10 @@ def _maybe_run_customer_service_brain_within_time_budget(
         data["duration_seconds"] = total
         return data
 
+    def record_review(stage: str, review: dict[str, Any]) -> None:
+        payload[stage] = compact_semantic_review(review)
+        payload["last_semantic_review_stage"] = stage
+
     if not payload["enabled"] or payload["mode"] == "off":
         payload["reason"] = "customer_service_brain_disabled"
         return finish(payload)
@@ -1001,6 +1025,8 @@ def _maybe_run_customer_service_brain_within_time_budget(
             "model",
             "status",
             "error",
+            "error_kind",
+            "http_status",
             "fallback",
             "failover",
             "raw_response_text",
@@ -1195,7 +1221,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                         deterministic_quality=repaired_quality,
                         force=should_force_semantic_review_after_repair(settings, validation_feedback),
                     )
-                    payload["repaired_quality_gate_v2"] = compact_semantic_review(repaired_semantic_review)
+                    record_review("repaired_quality_gate_v2", repaired_semantic_review)
                     if not repaired_semantic_review.get("ok"):
                         semantic_repaired_quality = semantic_review_to_quality(repaired_semantic_review)
                         handoff_soft_pass = semantic_handoff_quality_soft_pass_decision(
@@ -1331,7 +1357,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             deterministic_quality=quality,
         )
         record_stage("semantic_reviewer", stage_started)
-        payload["quality_gate_v2"] = compact_semantic_review(semantic_review)
+        record_review("quality_gate_v2", semantic_review)
         if not semantic_review.get("ok"):
             semantic_quality = semantic_review_to_quality(semantic_review)
             handoff_soft_pass = semantic_handoff_quality_soft_pass_decision(
@@ -1422,7 +1448,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     deterministic_quality=repaired_quality,
                     force=bool(repaired_soft_pass.get("ok")) or should_force_semantic_review_after_repair(settings, quality),
                 )
-                payload["repaired_quality_gate_v2"] = compact_semantic_review(repaired_semantic_review)
+                record_review("repaired_quality_gate_v2", repaired_semantic_review)
                 if not repaired_semantic_review.get("ok"):
                     semantic_repaired_quality = semantic_review_to_quality(repaired_semantic_review)
                     handoff_soft_pass = semantic_handoff_quality_soft_pass_decision(
@@ -1613,7 +1639,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     deterministic_quality=repaired_quality,
                     force=should_force_semantic_review_after_repair(settings, guard_feedback),
                 )
-                payload["guard_repaired_quality_gate_v2"] = compact_semantic_review(repaired_semantic_review)
+                record_review("guard_repaired_quality_gate_v2", repaired_semantic_review)
                 if not repaired_semantic_review.get("ok"):
                     semantic_repaired_quality = semantic_review_to_quality(repaired_semantic_review)
                     handoff_soft_pass = semantic_handoff_quality_soft_pass_decision(
@@ -1716,7 +1742,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                             deterministic_quality=guard_quality_retry_quality,
                             force=should_force_semantic_review_after_repair(settings, repaired_quality),
                         )
-                        payload["post_guard_quality_gate_v2"] = compact_semantic_review(retry_semantic_review)
+                        record_review("post_guard_quality_gate_v2", retry_semantic_review)
                         if not retry_semantic_review.get("ok"):
                             guard_quality_retry_quality = semantic_review_to_quality(retry_semantic_review)
                     payload["post_guard_quality_brain_plan"] = compact_brain_plan(guard_quality_retry_plan)
@@ -3251,6 +3277,8 @@ def maybe_repair_brain_plan(
     plan: dict[str, Any],
     quality: dict[str, Any],
 ) -> dict[str, Any]:
+    if review_requires_recovery(quality.get("semantic_review") or {}):
+        return {"ok": False, "status": "skipped", "error": "semantic_review_requires_recovery"}
     if settings.get("quality_repair_enabled", True) is False:
         return {"ok": False, "status": "skipped", "error": "quality_repair_disabled"}
     if int(settings.get("max_quality_repair_attempts") or 1) < 1:
@@ -3862,6 +3890,8 @@ def compact_semantic_review(review: dict[str, Any]) -> dict[str, Any]:
             "customer_visible_risk",
             "reason",
             "unavailable",
+            "error_kind",
+            "http_status",
             "soft_pass",
             "cache_hit",
             "provider",

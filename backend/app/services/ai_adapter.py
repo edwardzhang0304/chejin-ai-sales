@@ -366,6 +366,18 @@ def _brain_retry_instruction(message_batch: dict) -> str:
     if error_code == "REPLY_SEQUENCE_REWRITE_REQUIRED":
         from app.services.reply_sequence_policy import sequence_instruction
         return sequence_instruction()
+    if error_code == "AI_ENGINE_CATALOG_QUERY_INVALID":
+        native = (previous.get("raw_payload") or {}).get("omniauto_brain_result") or {}
+        failure = (native.get("catalog_stages") or {}).get("validation_error") or {}
+        # This is server-owned, bounded validator metadata, not a rejected draft
+        # or customer text. The normal query protocol remains the sole schema.
+        return (
+            "上轮模型已返回，但查车指令未通过本地协议校验，尚未查询库存。"
+            "请按本轮catalog_query协议重新生成完整指令，修正下列错误后由程序重新严格校验；"
+            "不要编造库存结果或改变客户条件与预算含义；不支持的条件按协议显式保留，必要时澄清。"
+            "校验信息："
+            + json.dumps({"code": failure.get("code"), "fields": failure.get("fields", [])}, ensure_ascii=False)[:1000]
+        )
     if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
         return ""
     return NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION
@@ -948,15 +960,14 @@ class RealOmniAutoAIEngineAdapter:
                 risk_flags=risk_flags,
                 evidence_refs=evidence_refs,
                 guard_result="failed",
-                error_code=(
-                    "AI_ENGINE_PROVIDER_TIMEOUT"
-                    if no_visible_class == "llm_timeout"
-                    else (
-                        "AI_ENGINE_PROVIDER_FAILED"
-                        if no_visible_class == "llm_unavailable"
-                        else "AI_ENGINE_NO_VISIBLE_REPLY"
-                    )
-                ),
+                error_code={
+                    "llm_timeout": "AI_ENGINE_PROVIDER_TIMEOUT",
+                    "llm_unavailable": "AI_ENGINE_PROVIDER_FAILED",
+                    "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT",
+                    "review_unavailable": "AI_ENGINE_REVIEW_UNAVAILABLE",
+                    "review_invalid_response": "AI_ENGINE_REVIEW_INVALID_RESPONSE",
+                    "catalog_query_invalid": "AI_ENGINE_CATALOG_QUERY_INVALID",
+                }.get(no_visible_class, "AI_ENGINE_NO_VISIBLE_REPLY"),
                 suggested_action="retry_later",
                 raw_payload=raw_payload,
             )

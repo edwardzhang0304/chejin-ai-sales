@@ -8,6 +8,7 @@ override deterministic guards.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import json
 import math
 import re
@@ -252,7 +253,9 @@ def review_brain_reply_semantics(
                 "soft_pass_low_risk": False}
     authority_required = bool((deterministic_quality or {}).get("authority_review_required"))
     if authority_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
-        return authority_review_failure("authority_review_unavailable")
+        review = authority_review_failure("authority_review_unavailable")
+        review.update(unavailable=True, error_kind="configuration", reason="authority_review_unavailable")
+        return review
     if not cfg["enabled"]:
         return skipped_review("semantic_reviewer_disabled")
     mode = str(cfg["mode"] or "suspicious_only")
@@ -287,10 +290,21 @@ def review_brain_reply_semantics(
     raw_result = reviewer_from_settings(cfg)
     if raw_result is None:
         raw_result = run_quality_reviewer_llm(settings=cfg, request=request)
+    # Transport/protocol failures have no content verdict. Preserve their cause
+    # before validating the success contract; otherwise a timeout becomes a
+    # fabricated instruction to rewrite the customer's reply.
+    if (catalog_required or authority_required) and (raw_result or {}).get("status", "ok") != "ok":
+        review = unavailable_review(raw_result or {})
+        review.update(enforced=True, soft_pass_low_risk=False, mode=mode,
+                      authority_review_required=authority_required)
+        return review
     if (catalog_required or authority_required) and not quality_reviewer_contract_is_complete(
         raw_result or {}, authority_required=authority_required,
     ):
-        return authority_review_failure("authority_review_invalid_contract")
+        return apply_review_mode(unavailable_review({
+            **(raw_result or {}), "error_kind": "protocol",
+            "error": "authority_review_invalid_contract",
+        }), mode=mode)
     review = normalize_quality_review_result(raw_result)
     if catalog_required:
         # Need interpretation must be checked against its message evidence. Do
@@ -1000,6 +1014,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "error_kind": response.get("error_kind"),
             "failover": response.get("failover"),
             "elapsed_ms": response.get("elapsed_ms"),
+            "http_status": response.get("status"),
         }
     raw_text = str(response.get("response_text") or "")
     if llm_json_response_is_incomplete(response):
@@ -1010,6 +1025,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "error": "semantic_reviewer_response_incomplete",
             "error_kind": "protocol",
             "elapsed_ms": response.get("elapsed_ms"),
+            "http_status": response.get("status"),
         }
     parsed = parse_complete_llm_json_response(response)
     if not isinstance(parsed, dict):
@@ -1022,6 +1038,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "error_kind": "protocol",
             "raw_response_text": raw_text[:1000],
             "elapsed_ms": response.get("elapsed_ms"),
+            "http_status": response.get("status"),
         }
     if not quality_reviewer_contract_is_complete(
         parsed, authority_required=bool(request.get("authority_review_required")),
@@ -1033,6 +1050,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "error": "semantic_reviewer_response_invalid_contract",
             "error_kind": "protocol",
             "elapsed_ms": response.get("elapsed_ms"),
+            "http_status": response.get("status"),
         }
     parsed["status"] = "ok"
     parsed["provider"] = response.get("provider")
@@ -1041,6 +1059,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
     parsed["usage"] = response.get("usage", {})
     parsed["failover"] = response.get("failover")
     parsed["elapsed_ms"] = response.get("elapsed_ms")
+    parsed["http_status"] = response.get("status")
     return parsed
 
 
@@ -1175,7 +1194,9 @@ def compact_brain_plan_for_review(plan: dict[str, Any]) -> dict[str, Any]:
             for key in ("product_ids", "formal_knowledge_ids", "conversation_fact_ids", "common_sense_topics", "style_ids", "rag_ids")
             if evidence.get(key)
         },
-        "facts_claimed": compact_list(plan.get("facts_claimed") or [], max_items=6, max_text_chars=120),
+        # These are the assertions being reviewed, not a display summary. Keep
+        # every normalized claim and its full value/source, including long ones.
+        "facts_claimed": deepcopy(plan.get("facts_claimed") or []),
         "risk": {
             "risk_level": str(risk.get("risk_level") or ""),
             "risk_tags": compact_list(risk.get("risk_tags") or [], max_items=6, max_text_chars=40),
@@ -1315,7 +1336,7 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
             "errors": [],
             "warnings": [],
         }
-    if status != "ok" and "verdict" not in payload:
+    if status != "ok":
         return unavailable_review(payload)
 
     verdict = str(payload.get("verdict") or "pass").strip()
@@ -1355,7 +1376,7 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
         "customer_visible_risk": risk,
         "reason": clip(str(payload.get("reason") or ""), 300),
     }
-    for key in ("provider", "model", "base_url", "elapsed_ms", "usage", "failover", "raw_response_text"):
+    for key in ("provider", "model", "base_url", "elapsed_ms", "usage", "failover", "raw_response_text", "http_status"):
         if key in payload:
             normalized[key] = payload.get(key)
     return normalized
@@ -1372,6 +1393,8 @@ def unavailable_review(payload: dict[str, Any]) -> dict[str, Any]:
         "invoked": True,
         "verdict": "block" if invalid_response else "repair",
         "unavailable": not invalid_response,
+        "error_kind": payload.get("error_kind") or "transport",
+        "http_status": payload.get("http_status"),
         "errors": ["semantic_reviewer_invalid_response" if invalid_response else "semantic_reviewer_unavailable"],
         "warnings": [],
         "repair_instruction": (
@@ -1416,6 +1439,11 @@ def semantic_review_to_quality(review: dict[str, Any]) -> dict[str, Any]:
         "repair_instruction": str(review.get("repair_instruction") or build_default_repair_instruction(verdict=str(review.get("verdict") or "repair"), errors=errors)),
         "semantic_review": review,
     }
+
+
+def review_requires_recovery(review: dict[str, Any]) -> bool:
+    """No valid reviewer verdict exists; content rewriting cannot fix this."""
+    return not review.get("ok") and bool(review.get("unavailable") or review.get("error_kind"))
 
 
 def skipped_review(reason: str) -> dict[str, Any]:
