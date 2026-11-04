@@ -429,3 +429,34 @@ def test_equal_price_entities_keep_independent_authority_in_final_pipeline(monke
 ])
 def test_budget_and_display_scope_through_actual_downstream(monkeypatch,actual_brain,segments,allowed):
     test_numeric_entity_assignment_through_review_guard_and_native_permit(monkeypatch,actual_brain,segments,allowed)
+
+
+@pytest.mark.parametrize('relation,allowed',[('不超过',True),('不少于',False),('小于',False),('超过',False)])
+def test_budget_relation_integrity_reaches_final_consumers(monkeypatch,actual_brain,relation,allowed):
+    state=actual_brain
+    configure(monkeypatch,state,'M02','normal')
+    def coverage(binding):
+        value=original_coverage(binding)
+        for scan in value['scans']:
+            for row,text in zip(scan['databases'][0]['pages'][0],['您好','8万以内有什么车？']):row['StrContent']=text
+        return value
+    monkeypatch.setattr(pipeline,'coverage',coverage);monkeypatch.setattr(pipeline.native,'coverage',coverage)
+    underlying=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=underlying(**kw)
+        if kw['model']!='synthetic-reviewer':
+            value=json.loads(response['response_text']);value['reply_segments']=['预算'+relation+'8万，合成车6报价7.2万。']
+            response['response_text']=json.dumps(value,ensure_ascii=False)
+        return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+        assert len(state['wire'])==2
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:
+            assert not list(db.scalars(select(ReplyAction)))
+            n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
+            assert n['no_visible_reply']['failure_category']=='content_review'
+            assert n['failed_draft']['errors']==n['plan_validation']['errors']

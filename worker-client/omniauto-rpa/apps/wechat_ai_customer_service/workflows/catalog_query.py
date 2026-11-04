@@ -293,7 +293,7 @@ def _prepare_catalog_need(evidence: dict) -> dict:
         remainder = re.sub(r"[\s，,。；;！？!?、：:]", "", remainder)
         # Multiple monetary directives can express a correction/conflict. The
         # old parser's last-number policy alone cannot authorize this route.
-        if remainder or len(parsed["recognized_spans"]) > 1:
+        if remainder or parsed["unconsumed_comparisons"] or len(parsed["recognized_spans"]) > 1:
             return {"route": "semantic", "reason": "unresolved_conditions_or_context", "source_ids": [message["id"]]}
         if not parsed["present"] and not explicit_sort and not re.search(r"车|推荐|多少台|多少辆|几台|几辆|价格", text):
             return {"route": "semantic", "reason": "no_complete_catalog_request"}

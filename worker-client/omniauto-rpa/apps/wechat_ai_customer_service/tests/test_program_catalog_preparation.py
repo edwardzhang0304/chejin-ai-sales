@@ -490,3 +490,29 @@ def test_list_members_differ_from_later_mentions(segments,allowed):
     pack,_,_,_=prepared()
     checked=validate_reply_public_facts({'reply_segments':segments},pack)
     assert checked['ok'] is allowed,checked
+
+
+@pytest.mark.parametrize('relation',['不少于','小于','大于','少于','不到','超过','不足'])
+def test_unsupported_comparator_cannot_fall_back_to_bare_amount_cap(relation):
+    pack,_,_,_=prepared('8万以内有什么车？')
+    checked=validate_reply_public_facts({'reply_segments':['预算'+relation+'8万，合成车6报价7.2万。']},pack)
+    assert not checked['ok'],checked
+
+
+@pytest.mark.parametrize('relation',['不少于','小于','大于','少于','不到','超过','不足'])
+def test_unconsumed_budget_relation_uses_semantic_understanding(relation):
+    from apps.wechat_ai_customer_service.workflows.catalog_budget import budget_statement
+    text='预算'+relation+'8万有什么车？'
+    parsed=budget_statement(text)
+    assert parsed['unconsumed_comparisons']
+    pack,result,_,runtime=prepared(text)
+    assert result['route']=='semantic' and not runtime.calls
+
+
+def test_recognized_comparator_does_not_consume_intervening_vehicle_condition():
+    from apps.wechat_ai_customer_service.workflows.catalog_budget import budget_statement
+    text='不超过红色8万有什么车？'
+    parsed=budget_statement(text)
+    assert '红色' in parsed['remainder']
+    _,result,_,runtime=prepared(text)
+    assert result['route']=='semantic' and not runtime.calls

@@ -170,7 +170,7 @@ def _customer_budget_spans(text: str, entities: list[dict], budget: dict) -> lis
         value = text[clause.start():first_entity["start"] if first_entity else clause.end()]
         parsed = budget_statement(value)
         actual = parsed["budget"]
-        if not actual or not parsed["recognized_spans"]:
+        if not actual or not parsed["recognized_spans"] or parsed["unconsumed_comparisons"]:
             continue
         mode = {"cap": "upper", "range": "range", "around": "around"}.get(actual.kind)
         candidate = (mode, None, actual.lower, actual.upper) if mode == "range" else (mode, actual.target, None, None)
