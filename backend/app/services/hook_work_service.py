@@ -141,7 +141,8 @@ def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
                       db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                           MessageEvent.id.in_(e.trigger_message_event_ids or []),MessageEvent.sender_role=='customer'))
                       if (m.raw_payload or {}).get('native_msg_id')]} for e in events]
-        result.append({**item,'open_handoffs':records})
+        result.append({**item,'open_handoffs':records,
+                       'relationship_confirmation_pending':bool(ctx.get('relationship_confirmation'))})
     return result
 
 

@@ -53,10 +53,12 @@ def test_relationship_observation_never_infers_deletion_or_stops_worker(case):
           'empty':[],'duplicate':[good,good],'invalid':[],
           'changed':[{**good,'markname':'已改为普通备注'}]}[case]
     friends={'code':9 if case=='invalid' else 0,'data':rows}
-    for _ in range(2):
-        r=observation(w,p,b,friends);assert r.status_code==200,r.text
+    token = None
+    for round_index in range(2):
+        r=observation(w,p,b,friends, {'confirmation_token':token} if token else {});assert r.status_code==200,r.text
         result=r.json()['data'];assert result['deletion_confirmed'] is False and result['authorization_changed'] is False
-        assert result['review_required']==(case=='changed')
+        assert result['review_required']==(case=='changed' and round_index==1)
+        token = result.get('confirmation_token')
     with SessionLocal() as db:
         binding=db.get(WechatSessionBinding,b['binding_id']);worker=db.get(Worker,w['id'])
         assert binding.bind_status=='bound' and binding.authorization_revision==b['binding_revision']
@@ -167,7 +169,9 @@ def test_remark_review_blocks_both_send_branches_before_trigger(decision,monkeyp
     w,p,b,h,permit,value=permitted(monkeypatch)
     with SessionLocal() as db:
         action=db.get(ReplyAction,permit['reply_action_id']);action.decision=decision;db.commit()
-    r=observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'改备注'}]});assert r.status_code==200,r.text
+    friends={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'改备注'}]}
+    first=observation(w,p,b,friends).json()['data']
+    r=observation(w,p,b,friends,{'confirmation_token':first['confirmation_token']});assert r.status_code==200,r.text
     start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
         'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
     r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",start,h)
@@ -256,12 +260,13 @@ def test_generic_evidence_route_cannot_forge_reinvite_authorization():
     assert r.status_code==409 and r.json()['code']=='HOOK_INVITE_PROOF_ROUTE_REQUIRED'
 
 
-def test_client_relationship_read_reuses_real_http_and_one_contact_read(identity_client,monkeypatch):
+def test_client_relationship_read_reuses_real_http_and_confirms_changed_contact(identity_client,monkeypatch,tmp_path):
     from types import SimpleNamespace
     from chejin_worker_client.hook_formal_runtime import HookFormalRuntime
     from chejin_worker_client.hook_backend import HookWorkerCredentials
     w,t,p,b=bound();calls=[]
     runtime=object.__new__(HookFormalRuntime)
+    runtime.private_root=tmp_path/'hook'
     runtime.scope=SimpleNamespace(**p)
     runtime.account=p
     runtime.process=SimpleNamespace(generation=p['process_generation'])
@@ -274,7 +279,7 @@ def test_client_relationship_read_reuses_real_http_and_one_contact_read(identity
     runtime.gateway=SimpleNamespace(friend_list=read)
     post(w,f"/workers/{w['id']}/run-status",{'client_instance_id':w['instance'],'run_status':'paused'})
     runtime.review_relationships([b])
-    assert calls==['friend_list']
+    assert calls==['friend_list','friend_list']
     with SessionLocal() as db:
         assert db.get(WechatSessionBinding,b['binding_id']).native_context['relationship_review_required']
         assert db.scalar(select(HandoffEvent)).risk_flags==['contact_identity_unconfirmed']
@@ -324,7 +329,9 @@ def test_operator_retirement_during_claim_finishes_original_flow_without_worker_
 
 def test_human_chat_and_matching_contact_do_not_clear_identity_review(monkeypatch):
     w,t,p,b=bound()
-    assert observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'人工备注'}]}).status_code==200
+    friends={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'人工备注'}]}
+    first=observation(w,p,b,friends).json()['data']
+    assert observation(w,p,b,friends,{'confirmation_token':first['confirmation_token']}).status_code==200
     value=coverage(b)
     for scan in value['scans']:
         rows=scan['databases'][0]['pages'][0]
@@ -434,3 +441,96 @@ def test_retired_callback_after_process_restart_requires_current_and_original_sc
         receipt=db.scalar(select(HookNativeReceipt))
         assert receipt.payload_json==payload and receipt.payload_json['process_generation']=='process-1'
         assert not list(db.scalars(select(MessageEvent)))
+
+
+def test_transient_remark_change_preserves_welcome_and_manual_pause():
+    w,t,p,b=bound()
+    with SessionLocal() as db:
+        worker=db.get(Worker,w['id']);worker.run_status='paused';db.commit()
+        before=[(x.id,x.status) for x in db.scalars(select(Task))]
+    changed={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':''}]}
+    first=observation(w,p,b,changed).json()['data']
+    assert first['recheck_required'] and not first['review_required']
+    inventory=post(w,f"/workers/{w['id']}/wechat/native-work",p).json()['data']
+    assert next(x for x in inventory['bindings'] if x['binding_id']==b['binding_id'])['relationship_confirmation_pending']
+    # Repeating the first request does not confirm a remark change.
+    repeated=observation(w,p,b,changed).json()['data']
+    assert repeated['confirmation_token']==first['confirmation_token'] and not repeated['review_required']
+    with SessionLocal() as db:
+        from app.services.hook_relationship_service import ensure_send_authorization
+        from app.errors import AppError
+        binding=db.get(WechatSessionBinding,b['binding_id'])
+        with pytest.raises(AppError) as caught:ensure_send_authorization(binding)
+        assert caught.value.code=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING'
+        assert db.get(Conversation,b['conversation_id']).ai_enabled
+        assert not db.scalar(select(HandoffEvent))
+    good={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':b['remark_code']}]}
+    done=observation(w,p,b,good,{'confirmation_token':first['confirmation_token']})
+    assert done.status_code==200,done.text
+    data=done.json()['data'];assert not data['review_required'] and not data['recheck_required']
+    assert data['comparison_evidence']['first']['peer_objects'][0]['fields'][1]['value']==''
+    assert data['comparison_evidence']['second']['state']=='matched'
+    with SessionLocal() as db:
+        ensure_send_authorization(db.get(WechatSessionBinding,b['binding_id']))
+        assert db.get(Conversation,b['conversation_id']).ai_enabled
+        assert db.get(Worker,w['id']).run_status=='paused'
+        assert [(x.id,x.status) for x in db.scalars(select(Task))]==before
+    assert observation(w,p,b,changed,{'confirmation_token':first['confirmation_token']}).status_code==409
+
+
+def test_unknown_confirmation_holds_without_handoff_and_requires_consecutive_changes():
+    w,t,p,b=bound();friends={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'changed'}]}
+    first=observation(w,p,b,friends).json()['data']
+    unknown=observation(w,p,b,{'code':0,'data':[]},{'confirmation_token':first['confirmation_token']}).json()['data']
+    assert unknown['recheck_required'] and not unknown['review_required']
+    third=observation(w,p,b,friends,{'confirmation_token':unknown['confirmation_token']}).json()['data']
+    assert third['recheck_required'] and not third['review_required']
+    fourth=observation(w,p,b,friends,{'confirmation_token':third['confirmation_token']}).json()['data']
+    assert fourth['review_required'] and not fourth['recheck_required']
+    with SessionLocal() as db:
+        evidence=db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_relationship_review'))
+        pair=evidence.extra_metadata['confirmation_evidence']
+        assert pair['first']['state']==pair['second']['state']=='remark_changed'
+        assert pair['second']['peer_objects'][0]['fields'][1]['value']=='changed'
+        assert db.scalar(select(func.count()).select_from(HandoffEvent))==1
+
+
+def test_expired_confirmation_never_mutates_and_new_cycle_rearms(monkeypatch):
+    from datetime import timedelta
+    from app.services import hook_relationship_service as service
+    w,t,p,b=bound();friends={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'changed'}]}
+    first=observation(w,p,b,friends).json()['data'];now=service.utcnow()
+    monkeypatch.setattr(service,'utcnow',lambda:now+timedelta(seconds=301))
+    stale=observation(w,p,b,friends,{'confirmation_token':first['confirmation_token']})
+    assert stale.status_code==409 and stale.json()['code']=='HOOK_RELATIONSHIP_CONFIRMATION_STALE'
+    restarted=observation(w,p,b,friends).json()['data']
+    assert restarted['recheck_required'] and restarted['confirmation_token']!=first['confirmation_token']
+    with SessionLocal() as db:assert not db.scalar(select(HandoffEvent))
+
+
+def test_pending_confirmation_denies_physical_begin_without_cancelling_original(monkeypatch):
+    w,p,b,h,permit,value=permitted(monkeypatch)
+    first=observation(w,p,b,{'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'changed'}]}).json()['data']
+    with SessionLocal() as db:
+        action=db.get(ReplyAction,permit['reply_action_id']);before=deepcopy(action.ai_payload)
+        status=action.status
+    start={**p,'task_id':permit['task_id'],'history_state_digest':b['history_state_digest'],'clock_protocol_version':1,
+        'send_token':permit['send_token'],'journal_sha256':'c'*64,'attempted_at':datetime.now(timezone.utc).isoformat()}
+    r=post(w,f"/workers/{w['id']}/wechat/native-replies/{permit['reply_action_id']}/begin",start,h)
+    assert r.status_code==409 and r.json()['code']=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING',r.text
+    with SessionLocal() as db:
+        action=db.get(ReplyAction,permit['reply_action_id'])
+        assert action.status==status and action.ai_payload==before
+        assert 'native_send_attempt' not in action.ai_payload
+        assert not db.scalar(select(HandoffEvent))
+
+
+def test_intervening_normal_poll_cannot_confirm_old_changed_read():
+    w,t,p,b=bound();changed={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':'changed'}]}
+    good={'code':0,'data':[{'wxid':b['peer_wxid'],'markname':b['remark_code']}]}
+    first=observation(w,p,b,changed).json()['data']
+    normal=observation(w,p,b,good).json()['data']
+    assert normal['confirmation_token']!=first['confirmation_token']
+    third=observation(w,p,b,changed,{'confirmation_token':normal['confirmation_token']}).json()['data']
+    assert not third['review_required'] and third['recheck_required']
+    with SessionLocal() as db:assert not db.scalar(select(HandoffEvent))

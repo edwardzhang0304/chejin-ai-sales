@@ -4,6 +4,8 @@ A missing contact never proves deletion. A new invitation never overwrites the
 old binding; original sends retain their own reconciliation identity.
 """
 from sqlalchemy import select
+import uuid
+from datetime import datetime
 from app.contracts.shared_rules import shared_adapter
 from app.errors import AppError
 from app.models.base import utcnow
@@ -58,29 +60,62 @@ def observe(db, authenticated, instance, payload):
     rules=shared_adapter('hook_contract_rules')
     if rules.digest(payload.friend_list)!=payload.raw_evidence_digest:
         raise AppError('HOOK_FRIEND_EVIDENCE_MISMATCH','联系人证据摘要不一致',409)
-    try:
-        state=shared_adapter('hook_contact_rules').inspect_bound_contact(payload.friend_list,
-            binding.remark_code,payload.self_wxid,binding.native_peer_wxid)
-    except ValueError:
-        state='unconfirmed'
-    ctx['relationship_observation']={'state':state,'response_digest':payload.raw_evidence_digest,
-        'observed_at':utcnow().isoformat(),'process_generation':payload.process_generation}
+    observed = shared_adapter('hook_contact_rules').contact_observation(payload.friend_list,
+        binding.remark_code, payload.self_wxid, binding.native_peer_wxid)
+    observed.update(observed_at=utcnow().isoformat(), process_generation=payload.process_generation,
+                    binding_revision=binding.authorization_revision)
+    state = observed['state']
+    pending = ctx.get('relationship_confirmation')
+    # A server challenge binds a second request to the first observation. A
+    # repeated original request cannot count as an independent confirmation.
+    if payload.confirmation_token:
+        if (not pending or pending['token'] != payload.confirmation_token
+                or pending['first']['process_generation'] != payload.process_generation
+                or pending['first']['binding_revision'] != binding.authorization_revision
+                or (utcnow()-datetime.fromisoformat(pending['first']['observed_at'])).total_seconds() > 300):
+            raise AppError('HOOK_RELATIONSHIP_CONFIRMATION_STALE', '备注复核已过期，请重新读取联系人', 409)
+    ctx['relationship_observation'] = observed
+    confirmed = False
+    evidence = None
     # Disabled/retired records can be observed, never re-enabled by a read.
     active=(binding.bind_status=='bound' and binding.allow_listening and ctx.get('business_enabled') is True)
-    if state=='remark_changed' and active and not ctx.get('relationship_review_required'):
+    if active and not ctx.get('relationship_review_required'):
+        if payload.confirmation_token:
+            evidence = {'first': pending['first'], 'second': observed}
+            ctx['relationship_last_review'] = evidence
+            if state == 'matched':
+                ctx.pop('relationship_confirmation', None)
+            elif state == 'remark_changed' and pending['first']['state'] == 'remark_changed':
+                confirmed = True
+                ctx.pop('relationship_confirmation', None)
+            else:
+                # Require two consecutive changed reads, not two changes with
+                # an unknown/ambiguous read between them. Keep the send hold.
+                ctx['relationship_confirmation'] = {'token': uuid.uuid4().hex, 'first': observed}
+        elif state == 'remark_changed' or pending:
+            if (not pending or pending['first']['state'] != state
+                    or pending['first']['process_generation'] != payload.process_generation
+                    or pending['first']['binding_revision'] != binding.authorization_revision
+                    or (utcnow()-datetime.fromisoformat(pending['first']['observed_at'])).total_seconds() > 300):
+                pending = {'token': uuid.uuid4().hex, 'first': observed}
+                ctx['relationship_confirmation'] = pending
+            evidence = {'first': pending['first']}
+        if evidence:
+            ctx['relationship_last_review'] = evidence
+    if confirmed:
         require_followup(db,binding.lead_id)
         conversation=db.get(Conversation,binding.conversation_id)
         if conversation and conversation.status not in {'closed','rejected'}:
-            evidence=TaskEvidence(task_id=ctx['source_task_id'],worker_id=w.id,
+            review_proof=TaskEvidence(task_id=ctx['source_task_id'],worker_id=w.id,
                 evidence_type='hook_relationship_review',extra_metadata={
                     'binding_id':binding.id,'binding_revision':binding.authorization_revision,
                     'self_wxid':payload.self_wxid,'account_epoch':payload.account_epoch,
-                    **ctx['relationship_observation']})
-            db.add(evidence);db.flush()
+                    **ctx['relationship_observation'], 'confirmation_evidence': evidence})
+            db.add(review_proof);db.flush()
             event,_=c3_service._create_or_reuse_open_handoff(db,conversation=conversation,batch_id=None,
                 handoff_reason_code=REMARK_CHANGED,reason_detail='客户备注识别信息已变化，暂停该客户自动回复，请人工核对。',
                 trigger_message_event_ids=[],risk_flags=['contact_identity_unconfirmed'],
-                evidence_refs=['task_evidence:'+evidence.id],ai_payload={'source':'hook_relationship_review'})
+                evidence_refs=['task_evidence:'+review_proof.id],ai_payload={'source':'hook_relationship_review'})
             event.risk_flags=list(dict.fromkeys([*(event.risk_flags or []),'contact_identity_unconfirmed']))
             conversation.handoff_reason_code=event.handoff_reason_code
             conversation.handoff_at=event.created_at or utcnow()
@@ -91,7 +126,10 @@ def observe(db, authenticated, instance, payload):
             ctx['relationship_review_required']=True
     binding.native_context=ctx
     db.flush()
+    pending = ctx.get('relationship_confirmation') if active and not ctx.get('relationship_review_required') else None
     return {'binding_id':binding.id,'state':state,'review_required':bool(ctx.get('relationship_review_required')),
+            'recheck_required':bool(pending), 'confirmation_token':pending['token'] if pending else None,
+            'comparison_evidence': evidence or (ctx.get('relationship_last_review') if ctx.get('relationship_review_required') else None),
             'authorization_changed':False,'deletion_confirmed':False}
 
 
@@ -221,6 +259,8 @@ def require_binding_chain(existing, current):
 
 def ensure_send_authorization(binding):
     """Customer-scoped refusal shared by permit claim and physical begin."""
+    if (binding.native_context or {}).get('relationship_confirmation'):
+        raise AppError('HOOK_CONTACT_REMARK_CONFIRMATION_PENDING','客户备注正在复核，暂缓新发送',409,{'suggested_action':'wait_for_relationship_confirmation'})
     if (binding.native_context or {}).get('relationship_review_required'):
         raise AppError(REMARK_CHANGED,'客户识别信息待核对，不能自动发送',409,{'suggested_action':'do_not_send'})
     if binding.native_self_wxid and binding.disable_reason==REINVITE_REASON:

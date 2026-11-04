@@ -300,25 +300,73 @@ class HookFormalRuntime:
         return result
 
     def review_relationships(self, bindings):
-        from .hook_gateway import HookLocalError
-        try:
-            friends=self.gateway.friend_list(self.process,self.scope).payload
-        except HookLocalError as exc:
-            if exc.code not in {'HOOK_LOCAL_TRANSPORT_FAILED','HOOK_LOCAL_RESPONSE_INVALID',
-                                'HOOK_HTTP_RESPONSE_REJECTED','HOOK_RESPONSE_TOO_LARGE'}:
-                raise
-            storage.append_log('INFO','hook_relationship_review_unconfirmed',
-                '联系人关系暂未核实，不据此判断删除或恢复托管。',metadata={'reason_code':exc.code},include_exception_text=False)
-            return
-        for binding in bindings:
+        from .hook_relationship_evidence import save_review
+        from .shared_rules import hook_contact_rules
+        transient = {'HOOK_LOCAL_TRANSPORT_FAILED','HOOK_LOCAL_RESPONSE_INVALID',
+                     'HOOK_HTTP_RESPONSE_REJECTED','HOOK_RESPONSE_TOO_LARGE'}
+        def read():
             try:
-                self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-relationships/observe',
-                    {**self.account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
-                     'friend_list':friends,'raw_evidence_digest':rules.digest(friends)})
+                return self.gateway.friend_list(self.process,self.scope).payload
+            except HookLocalError as exc:
+                if exc.code not in transient:
+                    raise
+                storage.append_log('INFO','hook_relationship_review_unconfirmed',
+                    '联系人关系暂未核实，不据此判断删除或恢复托管。',
+                    metadata={'reason_code':exc.code},include_exception_text=False)
+                return None
+        friends = read()
+        if friends is None:
+            return
+        # Only an anomalous customer gets one additional physical read, after
+        # its server challenge. Never reuse the first payload as confirmation.
+        pending_by_binding = {}
+        for binding in bindings:
+            attempts = []
+            token = None
+            try:
+                for index in range(2):
+                    current = friends if index == 0 else second
+                    compared = hook_contact_rules.contact_observation(current, binding['remark_code'],
+                        self.account['self_wxid'], binding['peer_wxid'])
+                    attempts.append({'observed_at': utc_now_iso(), 'comparison': compared})
+                    capture = index > 0 or compared['state'] == 'remark_changed'
+                    if capture:
+                        save_review(self.private_root, self.account, binding, attempts)
+                    request = {**self.account,'binding_id':binding['binding_id'],
+                        'binding_revision':binding['binding_revision'],'friend_list':current,
+                        'raw_evidence_digest':rules.digest(current)}
+                    if token:
+                        request['confirmation_token'] = token
+                    result = self.client.call(self.credentials,'POST',
+                        f'/workers/{self.credentials.worker_id}/wechat/native-relationships/observe',request)
+                    pending_by_binding[binding['binding_id']] = bool(result.get('recheck_required'))
+                    if capture or result.get('recheck_required') or result.get('comparison_evidence'):
+                        # The challenge is an authority input, not diagnostic content.
+                        safe = {k:v for k,v in result.items() if k != 'confirmation_token'}
+                        save_review(self.private_root, self.account, binding, attempts, safe)
+                    if index or not result.get('recheck_required'):
+                        break
+                    token = result['confirmation_token']
+                    try:
+                        second = read()
+                    except HookLocalError as exc:
+                        attempts.append({'observed_at':utc_now_iso(),'read_failed':True,'reason_code':exc.code})
+                        save_review(self.private_root,self.account,binding,attempts,safe)
+                        raise
+                    if second is None:
+                        attempts.append({'observed_at':utc_now_iso(),'read_failed':True})
+                        save_review(self.private_root, self.account, binding, attempts, safe)
+                        break
             except ApiError as exc:
-                if exc.status_code!=409 or exc.code not in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:raise
-                # The operator may retire this exact inventory entry concurrently.
+                if attempts:
+                    attempts[-1]['api_error'] = {'code':exc.code,'status_code':exc.status_code}
+                    save_review(self.private_root,self.account,binding,attempts)
+                if exc.status_code!=409 or exc.code not in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE',
+                        'HOOK_RELATIONSHIP_CONFIRMATION_STALE'}:
+                    raise
+                # Revocation and stale confirmation never change authorization.
                 continue
+        return pending_by_binding
 
     def delivery(self,binding):
         return HookDeliveryScope(self.credentials.worker_id,self.credentials.client_instance_id,self.scope.self_wxid,
@@ -738,7 +786,7 @@ class HookFormalRuntime:
                 native_permit=self.client.native_send_claim(self.credentials,self.account,
                     task['id'],action['id'],claimed['lease_fencing_token'],synced['history_state_digest'],flow_id=flow)
             except ApiError as exc:
-                if exc.status_code!=409:raise
+                if exc.status_code!=409 or exc.code=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING':raise
                 return self.close_unpermitted_reply(task,action,flow,binding['conversation_id'],claimed['lease_fencing_token'])
             permit=NativeSendPermit.capture(native_permit,clock=self.clock)
             self.progress(task['id'],'send_conditions','done')

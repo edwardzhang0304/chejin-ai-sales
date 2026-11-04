@@ -20,9 +20,10 @@ def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
         create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api'))
 
 
+@pytest.mark.parametrize("pending_review", [None, "inventory", "fresh"], ids=["model_wait", "pending_inventory", "pending_fresh"])
 @pytest.mark.parametrize("run_status", ["running", "paused"])
 @pytest.mark.parametrize("pending_friend", [False, True, "conflict"])
-def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend,run_status):
+def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend,run_status,pending_review):
     manager,credentials,state,response=setup(lab,backend_peer)
     prepared=manager.prepare(credentials,state)
     scope=prepared.registration.scope
@@ -30,17 +31,20 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
     bindings=[{'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':f'wxid_customer_{i}',
         'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
         'batch_ids':[str(uuid.uuid4())]} for i in range(2)]
+    bindings[0]['relationship_confirmation_pending'] = pending_review=='inventory'
     calls=[];sends=[]
     class Client:
         def call(self,credentials,method,path,body=None,**kwargs):
             calls.append(path)
             if path.endswith('native-work'):
                 return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':run_status,'inflight_flow':{},
-                    'bindings':bindings,'invitations':[{'source_task_id':'pending-friend'}] if pending_friend else [],'retained_sends':[],'inflight_task':None}
-            if bindings[0]['batch_ids'][0] in path:return {'processing':True,'observation_only':run_status=='paused'}
+                    'bindings':bindings,'invitations':[{'source_task_id':'pending-friend'}] if pending_friend else [],'retained_sends':[],'inflight_task':None,
+                    'relationship_query_version':1,'relationship_bindings':bindings if pending_review=='fresh' else []}
+            if not pending_review and bindings[0]['batch_ids'][0] in path:return {'processing':True,'observation_only':run_status=='paused'}
             return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())},'observation_only':run_status=='paused'}
     class Runtime:
         def __init__(self,*args,**kwargs):self.credentials=credentials;self.account=account;self.scope=scope;self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
+        def review_relationships(self,bindings):return {bindings[0]['binding_id']:True}
         def discover(self,task_id):
             from chejin_worker_client.api import ApiError
             calls.append(task_id)
