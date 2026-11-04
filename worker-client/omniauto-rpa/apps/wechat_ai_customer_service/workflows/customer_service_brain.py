@@ -27,7 +27,7 @@ from apps.wechat_ai_customer_service.llm_config import (
     resolve_llm_base_url,
     resolve_llm_tier_model,
 )
-from llm_output_adapter import llm_json_response_is_incomplete, parse_complete_llm_json_response
+from llm_output_adapter import llm_json_parse_evidence, llm_json_response_is_incomplete, parse_complete_llm_json_response
 from customer_service_brain_contract import (
     reply_trigger_context,
     POLICY_FACT_TYPES,
@@ -294,6 +294,10 @@ def classify_no_visible_reply(
         for marker in ("timeout", "timed out", "read operation timed out", "context canceled", "unexpected eof")
     ):
         no_visible_class = "llm_timeout"
+    if status_payload.get("error_kind") == "brain_output_parse":
+        no_visible_class = "llm_invalid_response"
+        stage = "brain_json_parse"
+        classification_reason = precise_error
     if status_payload.get("error_kind") == "catalog_query_validation":
         no_visible_class = "catalog_query_invalid"
         stage = "catalog_query_validation"
@@ -2420,6 +2424,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
     if not response.get("ok"):
         retry = maybe_retry_brain_llm_after_unavailable_response(
             settings=settings,
+            brain_input=brain_input,
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -2447,6 +2452,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
     if not isinstance(parsed, dict):
         repair = maybe_repair_brain_json_structure(
             settings=settings,
+            brain_input=brain_input,
             raw_text=raw_text,
             response_diagnostics=response.get("response_diagnostics"),
             stage="brain_llm",
@@ -2460,6 +2466,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             return response
         retry = maybe_retry_brain_llm_after_unparseable_response(
             settings=settings,
+            brain_input=brain_input,
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -2481,6 +2488,7 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             retry["previous_llm_status"] = compact_retry_previous_llm_status(response, repair)
             return retry
         response["ok"] = False
+        response["error_kind"] = "brain_output_parse"
         response["error"] = "brain_response_json_repair_failed" if repair.get("attempted") else "brain_response_was_not_json_object"
         response["raw_response_text"] = raw_text[:1000]
         return response
@@ -2501,6 +2509,7 @@ def maybe_retry_brain_llm_after_unavailable_response(
     max_tokens: int,
     prompt_estimate: dict[str, Any],
     previous_response: dict[str, Any],
+    brain_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retry the same Brain request once after a transient LLM transport failure.
 
@@ -2561,6 +2570,7 @@ def maybe_retry_brain_llm_after_unavailable_response(
         return retry
     repair = maybe_repair_brain_json_structure(
         settings=settings,
+        brain_input=brain_input,
         raw_text=retry_raw_text,
         response_diagnostics=retry.get("response_diagnostics"),
         stage="brain_llm_unavailable_same_capture_retry",
@@ -2574,6 +2584,7 @@ def maybe_retry_brain_llm_after_unavailable_response(
         return retry
     parse_retry = maybe_retry_brain_llm_after_unparseable_response(
         settings=settings,
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -2593,6 +2604,7 @@ def maybe_retry_brain_llm_after_unavailable_response(
         parse_retry["previous_llm_status"] = compact_retry_previous_llm_status(previous_response, repair)
         return parse_retry
     retry["ok"] = False
+    retry["error_kind"] = "brain_output_parse"
     retry["error"] = (
         "brain_unavailable_retry_response_parse_retry_failed"
         if parse_retry.get("attempted")
@@ -2762,6 +2774,7 @@ def maybe_retry_brain_llm_after_unparseable_response(
     prompt_estimate: dict[str, Any],
     previous_response: dict[str, Any],
     previous_repair: dict[str, Any],
+    brain_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retry the same Brain request once when the model returned no JSON.
 
@@ -2815,6 +2828,7 @@ def maybe_retry_brain_llm_after_unparseable_response(
         return retry
     repair = maybe_repair_brain_json_structure(
         settings=settings,
+        brain_input=brain_input,
         raw_text=retry_raw_text,
         response_diagnostics=retry.get("response_diagnostics"),
         stage="brain_llm_same_capture_retry",
@@ -2827,6 +2841,7 @@ def maybe_retry_brain_llm_after_unparseable_response(
         retry["raw_response_text"] = retry_raw_text[:1000]
         return retry
     retry["ok"] = False
+    retry["error_kind"] = "brain_output_parse"
     retry["error"] = "brain_retry_response_json_repair_failed" if repair.get("attempted") else "brain_retry_response_was_not_json_object"
     retry["raw_response_text"] = retry_raw_text[:1000]
     return retry
@@ -2870,6 +2885,7 @@ def maybe_repair_brain_json_structure(
     stage: str,
     prompt_estimate: dict[str, Any] | None = None,
     response_diagnostics: dict[str, Any] | None = None,
+    brain_input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ask the LLM once to repair malformed Brain JSON.
 
@@ -2877,13 +2893,18 @@ def maybe_repair_brain_json_structure(
     facts; successful output still goes through normal Brain validation/guard.
     """
 
+    parse_evidence = llm_json_parse_evidence({"response_text": raw_text, "response_diagnostics": response_diagnostics})
+    def skipped(error: str) -> dict[str, Any]:
+        return {"ok": False, "attempted": False, "status": "skipped", "error": error,
+                "parse_evidence": parse_evidence}
+
     # Missing output must be regenerated by Brain, never closed into a reply.
     if llm_json_response_is_incomplete({"response_text": raw_text, "response_diagnostics": response_diagnostics}):
-        return {"ok": False, "attempted": False, "status": "skipped", "error": "brain_response_incomplete"}
+        return skipped("brain_response_incomplete")
     if settings.get("json_structure_repair_enabled", True) is False:
-        return {"ok": False, "attempted": False, "status": "skipped", "error": "json_structure_repair_disabled"}
+        return skipped("json_structure_repair_disabled")
     if not str(raw_text or "").strip():
-        return {"ok": False, "attempted": False, "status": "skipped", "error": "empty_raw_response"}
+        return skipped("empty_raw_response")
     provider = resolve_effective_llm_provider(settings.get("provider") or "manual_json", read_secret_fn=read_secret)
     if provider == "manual_json":
         return {"ok": False, "attempted": False, "status": "skipped", "provider": provider, "error": "manual_json_structure_repair_unavailable"}
@@ -2893,17 +2914,31 @@ def maybe_repair_brain_json_structure(
     if not api_key:
         return {"ok": False, "attempted": False, "provider": provider, "model": model, "error": "LLM API key is not set"}
     max_chars = positive_int_setting(settings, "json_structure_repair_raw_max_chars", 3000, minimum=500)
+    evidence = (brain_input or {}).get("evidence") or {}
+    protocol = evidence.get("catalog_protocol") or {}
+    query_allowed = protocol.get("phase") == "not_queried"
+    schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    if query_allowed:
+        from apps.wechat_ai_customer_service.workflows.catalog_query import QUERY_FORMAT_INSTRUCTION
+        schema += "\n当前尚未查询库存，原输出可以是查车指令或普通 BrainPlan；必须保留原输出类型，二者不能混合。\n" + QUERY_FORMAT_INSTRUCTION
     system = (
         "你是 BrainPlan JSON 结构修复器。只把输入中的原始 Brain 输出修成合法 JSON 对象。"
         "不得新增事实、不得替客户重新作答、不得改变原回答策略；只做字段补齐、去掉Markdown、修复引号/逗号/括号。"
         "如果原文缺少字段，用空对象/空列表/低风险默认值补齐，但 reply_segments 只能来自原文已有客户可见句子。"
         "只输出JSON对象。"
     )
+    if query_allowed:
+        system = (
+            "你是 JSON 语法修复器，只修复引号、逗号、括号和 Markdown 包装。"
+            "原输出是查车指令时必须保留 catalog_query 外层，不能改成客户回复或 BrainPlan。"
+            "不得新增、删除、改写查询条件、预算、排序、来源或未支持条件；不得用模板示例或默认值补业务字段。"
+            "原文缺失的业务字段保持缺失，交给后续严格校验。只输出 JSON 对象。"
+        )
     user = {
-        "task": "repair_malformed_brain_plan_json",
+        "task": "repair_malformed_brain_output_json" if query_allowed else "repair_malformed_brain_plan_json",
         "stage": stage,
         "raw_brain_output": str(raw_text or "")[:max_chars],
-        "schema": BRAIN_RESPONSE_SCHEMA_PROMPT,
+        "schema": schema,
     }
     timeout_seconds = positive_int_setting(settings, "json_structure_repair_timeout_seconds", 8, minimum=3)
     fallback_timeout_seconds = resolve_brain_fallback_timeout(settings, timeout_seconds)
@@ -2926,6 +2961,7 @@ def maybe_repair_brain_json_structure(
         json_mode=True,
         progress_stage=f"{stage}_json_structure_repair",
     )
+    response["parse_evidence"] = parse_evidence
     response["attempted"] = True
     response["primary_provider"] = provider
     response["primary_model"] = model
@@ -2936,6 +2972,7 @@ def maybe_repair_brain_json_structure(
     repaired_text = str(response.get("response_text") or "")
     parsed = parse_complete_llm_json_response(response)
     if not isinstance(parsed, dict):
+        response["repair_parse_evidence"] = llm_json_parse_evidence(response)
         response["ok"] = False
         response["error"] = "brain_json_structure_repair_not_json_object"
         response["raw_response_text"] = repaired_text[:1000]
@@ -2956,6 +2993,8 @@ def compact_json_structure_repair_result(result: dict[str, Any]) -> dict[str, An
             "error",
             "fallback",
             "failover",
+            "parse_evidence",
+            "repair_parse_evidence",
         )
         if key in result
     }
@@ -3435,6 +3474,7 @@ def run_brain_repair_llm(
             retry["previous_repair_status"] = compact_retry_previous_llm_status(response, repair)
             return retry
         response["ok"] = False
+        response["error_kind"] = "brain_output_parse"
         response["error"] = "brain_repair_response_json_repair_failed" if repair.get("attempted") else "brain_repair_response_was_not_json_object"
         response["raw_response_text"] = raw_text[:1000]
         return response

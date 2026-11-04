@@ -26,7 +26,7 @@ api, flow = joined.api, joined.flow
 reviewer = sys.modules[brain.review_brain_reply_semantics.__module__]
 
 
-@pytest.mark.parametrize("failure", ["schema", "budget_unit", "wrapper", "review_timeout", "review_protocol"])
+@pytest.mark.parametrize("failure", ["schema", "budget_unit", "wrapper", "json", "review_timeout", "review_protocol"])
 @pytest.mark.parametrize("recovers", [True, False])
 def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, failure, recovers):
     api.setup_function()
@@ -84,6 +84,13 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
             elif broken and failure == "budget_unit":
                 q["budget"].pop("unit")
             payload = q if broken and failure == "wrapper" else {"catalog_query": q}
+            if failure == "json":
+                # Only the existing repair request with the actual query contract
+                # can recover. Plain regeneration and the old BrainPlan repair fail.
+                repair_schema = json.loads(kwargs["messages"][-1]["content"]).get("schema", "") if stage.endswith("json_structure_repair") else ""
+                can_repair = not broken and stage.endswith("json_structure_repair") and joined.cq.QUERY_FORMAT_INSTRUCTION in repair_schema
+                if not can_repair:
+                    return {"ok": True, "status": 200, "response_text": json.dumps(payload).replace('"catalog_query":', '"catalog_query"', 1)}
         else:
             receipt = state["receipt"]
             payload = joined.summary_plan(receipt)
@@ -111,7 +118,8 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
     worker, binding, initial = flow.generate(monkeypatch, Adapter())
     bid = initial["batch"]["id"]
     expected = {"schema": "AI_ENGINE_CATALOG_QUERY_INVALID", "budget_unit": "AI_ENGINE_CATALOG_QUERY_INVALID", "wrapper": "AI_ENGINE_CATALOG_QUERY_INVALID",
-                "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT", "review_protocol": "AI_ENGINE_REVIEW_INVALID_RESPONSE"}[failure]
+                "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT", "review_protocol": "AI_ENGINE_REVIEW_INVALID_RESPONSE",
+                "json": "AI_ENGINE_RESPONSE_INVALID"}[failure]
     with SessionLocal() as db:
         diagnostics = db.get(MessageBatch, bid).ai_response_snapshot
     assert initial["decision"] == "retry_later" and initial["batch"]["error_code"] == expected, diagnostics
@@ -121,6 +129,11 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         assert not list(db.scalars(select(ReplyAction)))
         assert not list(db.scalars(select(Task).where(Task.task_type == "chat_reply")))
         due = saved.generated_at + timedelta(seconds=settings.c3_batch_retry_delay_seconds + 1)
+        if failure == "json":
+            assert not inventory_reads
+            native = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
+            assert native["llm_status"]["status"] == 200
+            assert native["llm_status"]["json_structure_repair"]["parse_evidence"]["kind"] == "invalid_json"
         if failure in query_failure_fields:
             assert not inventory_reads
             metadata = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]["catalog_stages"]["validation_error"]
@@ -151,6 +164,13 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         assert "尚未查询库存" in feedback
         second_generation = next(messages for a, stage, messages in calls if a == 2 and stage == "brain_llm")
         assert "尚未查询库存" in json.dumps(second_generation, ensure_ascii=False)
+    if failure == "json":
+        assert len([1 for a, stage, _ in calls if a == 1]) == 4
+        if recovers:
+            assert inventory_reads and all(a == 2 for a in inventory_reads)
+            assert any(a == 2 and stage.endswith("json_structure_repair") for a, stage, _ in calls)
+        else:
+            assert not inventory_reads
     if recovers:
         permit = flow.claim_send(worker, result, flow.claim(worker, binding, result))
         assert permit.status_code == 200, permit.text

@@ -6,6 +6,7 @@ format only; it must never author, replace, or decide customer-visible wording.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -111,10 +112,42 @@ def parse_complete_llm_json_response(response: dict[str, Any]) -> dict[str, Any]
     """Brain may normalize wrappers, but must not adopt a cutoff reply."""
     if llm_json_response_is_incomplete(response):
         return None
-    return parse_llm_json_object(str(response.get("response_text") or ""))
+    return parse_llm_json_object(str(response.get("response_text") or ""), allow_truncated_repair=False)
 
 
-def parse_llm_json_object(text: str) -> dict[str, Any] | None:
+def llm_json_parse_evidence(response: dict[str, Any]) -> dict[str, Any]:
+    """Bounded syntax evidence without retaining customer text or field values.
+
+    Offsets refer to the fence-stripped, first balanced object when available.
+    This is diagnostic only: it must never repair or authorize a response.
+    """
+    raw = str(response.get("response_text") or "")
+    stripped = strip_markdown_code_fence(raw)
+    candidate = extract_first_json_object_text(stripped) or stripped
+    evidence: dict[str, Any] = {
+        "response_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        "response_chars": len(raw),
+        "candidate_chars": len(candidate),
+        "incomplete": llm_json_response_is_incomplete(response),
+    }
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        start = max(0, exc.pos - 40)
+        evidence.update(
+            kind="invalid_json", error=exc.msg, position=exc.pos,
+            line=exc.lineno, column=exc.colno, window_start=start,
+            # Keep only JSON punctuation/whitespace, never names, numbers or prose.
+            syntax_window="".join(c if c in '{}[],:"\\ \t\r\n' else "x"
+                                  for c in candidate[start:exc.pos + 41]),
+        )
+    else:
+        evidence.update(kind="object" if isinstance(parsed, dict) else "non_object",
+                        top_level_type=type(parsed).__name__)
+    return evidence
+
+
+def parse_llm_json_object(text: str, *, allow_truncated_repair: bool = True) -> dict[str, Any] | None:
     candidates = []
     raw = str(text or "").strip()
     if raw:
@@ -132,6 +165,8 @@ def parse_llm_json_object(text: str) -> dict[str, Any] | None:
             continue
         if isinstance(payload, dict):
             return payload
+    if not allow_truncated_repair:
+        return None
     repaired = repair_truncated_json_object_text(fenced or raw)
     if repaired:
         try:

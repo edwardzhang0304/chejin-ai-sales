@@ -964,6 +964,7 @@ class RealOmniAutoAIEngineAdapter:
                 error_code={
                     "llm_timeout": "AI_ENGINE_PROVIDER_TIMEOUT",
                     "llm_unavailable": "AI_ENGINE_PROVIDER_FAILED",
+                    "llm_invalid_response": "AI_ENGINE_RESPONSE_INVALID",
                     "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT",
                     "review_unavailable": "AI_ENGINE_REVIEW_UNAVAILABLE",
                     "review_invalid_response": "AI_ENGINE_REVIEW_INVALID_RESPONSE",
