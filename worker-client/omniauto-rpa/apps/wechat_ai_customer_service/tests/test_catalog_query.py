@@ -97,7 +97,12 @@ def test_storage_failure_not_empty_inventory_and_second_query_rejected():
     bad=cq.run_catalog_round(first_result=first,settings={},brain_input=inp,run_llm=lambda **_:pytest.fail('must not call'),runtime_factory=lambda:Broken([]))
     assert bad['error']=='catalog_query_unavailable' and not pack['catalog_protocol'].get('receipt')
     repeat=cq.run_catalog_round(first_result=first,settings={},brain_input=inp,run_llm=lambda **_:first,runtime_factory=lambda:Runtime([row('a',3)]))
-    assert repeat['error']=='catalog_second_query_or_forged_receipt'
+    # Completion HTTP succeeded; the actual content error must reach Brain's
+    # validator/finite repair path, never be mislabeled as provider failure.
+    rejection=brain.validate_plan_against_evidence(brain.normalize_brain_plan(repeat['brain_plan']),pack)
+    assert not rejection['ok'] and rejection['errors']==['catalog_intermediate_or_forged_receipt_not_sendable']
+    assert repeat['catalog_stages']['completion_validation']['error_codes']==rejection['errors']
+    assert repeat['catalog_stages']['completion_validation']['candidate']==first['brain_plan']
 
 
 def test_catalog_changed_during_reply_never_passes():

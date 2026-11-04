@@ -87,6 +87,8 @@ def ai_failure_category(result: dict) -> str:
     """Shared diagnostic classification; it never grants retry/send permission."""
     kind = result.get("error_kind")
     kind = kind if isinstance(kind, str) else None
+    if kind == "input_capacity_exceeded":
+        return "input_capacity_exceeded"
     # HTTPError is the real producer kind for provider refusal (including
     # throttling/5xx); retain its status/reason, without granting any retry.
     if kind in {"http", "transport", "configuration"} or result.get("wall_timeout"):
@@ -113,7 +115,7 @@ def ai_failure_category(result: dict) -> str:
 def requires_technical_recovery(result: dict) -> bool:
     """A missing valid result cannot be repaired by rewriting customer content."""
     return bool(not result.get("ok") and (result.get("unavailable") or result.get("error_kind"))
-                and ai_failure_category(result) in {"service_unavailable", "output_format", "query_contract", "execution_failure", "inventory_changed"})
+                and ai_failure_category(result) in {"service_unavailable", "output_format", "query_contract", "execution_failure", "inventory_changed", "input_capacity_exceeded"})
 
 
 @contextmanager
@@ -1062,7 +1064,7 @@ def is_transient_llm_failure(result: dict[str, Any] | None) -> bool:
 def is_failoverable_llm_failure(result: dict[str, Any] | None) -> bool:
     """Return True when a failed primary route is worth retrying on fallback."""
 
-    if (result or {}).get("error_kind") == "protocol":
+    if (result or {}).get("error_kind") in {"protocol", "input_capacity_exceeded"}:
         return False
     if is_transient_llm_failure(result):
         return True
@@ -1074,6 +1076,15 @@ def is_failoverable_llm_failure(result: dict[str, Any] | None) -> bool:
     if any(marker in text for marker in MODEL_UNAVAILABLE_LLM_ERROR_MARKERS):
         return True
     return any(marker in text for marker in GATEWAY_FAILOVERABLE_LLM_ERROR_MARKERS)
+
+
+def provider_input_capacity_error(body: str) -> bool:
+    """Recognize an explicit provider limit, never estimate one from our output budget."""
+    text = body.lower()
+    return any(marker in text for marker in (
+        "context_length_exceeded", "max_input_tokens_exceeded", "prompt is too long",
+        "input is too long", "maximum context length", "exceeds the context window",
+    ))
 
 
 _MISSING_RESPONSE_FIELD = object()
@@ -1323,7 +1334,7 @@ def call_llm_request_once(
             "base_url": normalize_llm_base_url(base_url),
             "status": int(getattr(exc, "code", 0) or 0),
             "error": body[:1000],
-            "error_kind": "http",
+            "error_kind": "input_capacity_exceeded" if provider_input_capacity_error(body) else "http",
             "response_diagnostics": diagnostics,
             "request_style": request_style,
         }

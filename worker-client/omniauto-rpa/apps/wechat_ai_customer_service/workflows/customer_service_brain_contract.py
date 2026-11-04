@@ -8,12 +8,88 @@ were used, and which short WeChat reply segments should be polished/sent.
 from __future__ import annotations
 
 import json
+import math
+from copy import deepcopy
 import re
 import unicodedata
 from typing import Any
 
 
 SCHEMA_VERSION = 1
+
+POLICY_REFS_INSTRUCTION = (
+    "另须显式返回policy_refs对象，无卖方政策为{}。键只能是policy_reference_map.statements中的S编号，"
+    "值为非空K编号列表，K仅从policy_reference_map.knowledge选，多个来源表示共同支持，编号去重。"
+    "例如{\"S2\":[\"K1\"],\"S3\":[\"K1\",\"K2\"]}。不要抄回正文、来源、位置、版本或逐条结论。"
+    "逐句核对完整draft_segments和正式资料的所有政策、费用、期限、条件、否定与承诺；"
+    "不能只关联正确部分而漏掉同句假承诺。客户期望不是卖方政策，车价不能拿政策依据代替。"
+    "无依据、歧义或扩大承诺用原总体repair/block及semantic_errors说明，可指出S编号，禁止编造K编号。"
+    "编号有效不代表正确；只有整体事实和语义均正确才能pass。"
+)
+
+
+def policy_ref_errors(value: Any, *, mapping: dict | None = None) -> list[str]:
+    """Single schema/identifier validator for every reviewer input path."""
+    if not isinstance(value, dict):
+        return ["policy_refs:expected_object"]
+    errors = []
+    for sid, refs in value.items():
+        if not isinstance(sid, str) or not re.fullmatch(r"S[1-9][0-9]*", sid):
+            errors.append("policy_refs:invalid_statement_id")
+            continue
+        if mapping is not None and sid not in mapping["statements"]:
+            errors.append("policy_refs." + sid + ":unknown_statement")
+        if not isinstance(refs, list) or not refs or any(not isinstance(k, str) or not re.fullmatch(r"K[1-9][0-9]*", k) for k in refs):
+            errors.append("policy_refs." + sid + ":invalid_knowledge_ids")
+            continue
+        if mapping is not None and any(k not in mapping["knowledge"] for k in refs):
+            errors.append("policy_refs." + sid + ":unknown_knowledge")
+    return errors
+
+
+def validate_policy_refs(refs: Any, *, segments: list[str], mapping: dict,
+                         customer_statements: list[dict] | tuple[dict, ...] = ()) -> dict:
+    errors = policy_ref_errors(refs, mapping=mapping)
+    if errors:
+        return {"ok": False, "errors": errors, "facts_claimed": [], "source_ids": [], "covered_numbers": []}
+    from apps.wechat_ai_customer_service.adapters.vehicle_fields import factual_number_spans, public_number
+    from apps.wechat_ai_customer_service.workflows.catalog_budget import amount_role
+    facts, source_ids, covered_numbers = [], [], []
+    remaining = list(segments)
+    for sid, keys in refs.items():
+        statement = mapping["statements"][sid]
+        si, start, end, text = (statement[k] for k in ("segment_index", "start", "end", "text"))
+        selected = [mapping["knowledge"][key] for key in dict.fromkeys(keys)]
+        remaining[si] = remaining[si][:start] + " " * (end-start) + remaining[si][end:]
+        source_numbers = [(n, source["content"]) for source in selected for n in factual_number_spans(source["content"])]
+        for number in factual_number_spans(text):
+            # Selection is semantic; this independently rejects recognizable
+            # value/unit/financial-role substitutions within those sources.
+            role = amount_role(text, number["start"])
+            matches = any(number["unit"] is not None and number["unit"] == n["unit"]
+                          and public_number(number["value"]) == public_number(n["value"])
+                          and (role is None or role == amount_role(content, n["start"]))
+                          for n, content in source_numbers)
+            if matches:
+                covered_numbers.append({"segment_index": si, "start": start + number["start"], "end": start + number["end"]})
+            # Vehicle/customer numbers in mixed S units are checked by the
+            # independent public-fact pass, not reclassified as policy facts.
+        ids = [source["source_id"] for source in selected]
+        for source_id in ids:
+            if source_id not in source_ids:
+                source_ids.append(source_id)
+        facts.append({"fact_type": "policy", "value": text, "source_level": "formal_knowledge",
+                      "source_id": "|".join(ids)})
+    for span in customer_statements:
+        si, start, end = span["segment_index"], span["start"], span["end"]
+        remaining[si] = remaining[si][:start] + " " * (end-start) + remaining[si][end:]
+    for text in remaining:
+        if PAYMENT_PREFERENCE_QUESTION_RE.fullmatch(normalize_space(text)):
+            continue
+        if contains_any(text, AUTHORITY_POLICY_HINT_TERMS + FINANCE_DETAIL_HINT_TERMS + HIGH_RISK_COMMITMENT_ECHO_TERMS):
+            errors.append("formal_policy_assertion_not_covered")
+    return {"ok": not errors, "errors": list(dict.fromkeys(errors)), "facts_claimed": facts,
+            "source_ids": source_ids, "covered_numbers": covered_numbers}
 
 
 def reply_trigger_context(trigger_type: Any) -> dict[str, str]:
@@ -219,11 +295,7 @@ FACT_HINT_TERMS = (
     "合同",
     "售后",
 )
-AUTHORITY_FACT_HINT_TERMS = (
-    "库存",
-    "现车",
-    "原版原漆",
-    "一手车",
+AUTHORITY_POLICY_HINT_TERMS = (
     "贷款",
     "分期",
     "过户",
@@ -231,6 +303,7 @@ AUTHORITY_FACT_HINT_TERMS = (
     "合同",
     "售后",
 )
+AUTHORITY_FACT_HINT_TERMS = ("库存", "现车", "原版原漆", "一手车", *AUTHORITY_POLICY_HINT_TERMS)
 
 # A customer choosing a payment preference is not a statement about eligibility,
 # rates or approval. Match a whole segment, never a substring: an extra clause
@@ -1081,7 +1154,8 @@ def is_uncertainty_boundary_fact_claim(*, fact_type: str, value_text: str, sourc
     )
 
 
-def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int = 3, preserve_all_segments: bool = False) -> dict[str, Any]:
+def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int = 3, preserve_all_segments: bool = False,
+                         evidence_pack: dict | None = None, settings: dict | None = None) -> dict[str, Any]:
     plan = dict(raw_plan) if isinstance(raw_plan, dict) else {}
     risk = normalize_mapping(plan.get("risk"))
     needs_handoff = bool(risk.get("needs_handoff") or plan.get("needs_handoff"))
@@ -1104,8 +1178,12 @@ def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int =
     except (TypeError, ValueError):
         confidence = 0.78 if segments else 0.0
     confidence = max(0.0, min(1.0, confidence))
+    try:
+        schema_version = int(plan.get("schema_version") or SCHEMA_VERSION)
+    except (TypeError, ValueError, OverflowError):
+        schema_version = 0
     normalized = {
-        "schema_version": int(plan.get("schema_version") or SCHEMA_VERSION),
+        "schema_version": schema_version,
         "can_answer": plan.get("can_answer", True) is not False,
         "understanding": normalize_mapping(plan.get("understanding")),
         "answer_mode": answer_mode,
@@ -1130,6 +1208,43 @@ def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int =
     for field in ("catalog_query", "catalog_receipt"):
         if field in plan:
             normalized[field] = plan[field]
+    if ((evidence_pack or {}).get("catalog_protocol") or {}).get("preparation"):
+        errors = []
+        for field, kind in (("can_answer", bool), ("understanding", dict), ("answer_mode", str),
+                            ("reply_strategy", dict), ("reply_segments", list), ("risk", dict), ("recommended_action", str)):
+            if type(plan.get(field)) is not kind:
+                errors.append("invalid_draft_field:" + field)
+        for field, allowed in (("answer_mode", ANSWER_MODES), ("recommended_action", GUARD_ACTIONS)):
+            if not isinstance(plan.get(field), str) or plan[field] not in allowed:
+                errors.append("invalid_draft_field:" + field)
+        if "schema_version" in plan and (type(plan["schema_version"]) is not int or plan["schema_version"] != SCHEMA_VERSION):
+            errors.append("invalid_draft_field:schema_version")
+        if "confidence" in plan and (type(raw_confidence) not in (int, float)
+                or not math.isfinite(raw_confidence) or not 0 <= raw_confidence <= 1):
+            errors.append("invalid_draft_field:confidence")
+        if (type(risk.get("needs_handoff")) is not bool or risk.get("risk_level") not in ("low", "medium", "high")
+                or not isinstance(risk.get("risk_tags"), list)
+                or any(not isinstance(tag, str) for tag in risk.get("risk_tags", []))):
+            errors.append("invalid_draft_field:risk")
+        raw_segments = plan.get("reply_segments")
+        if isinstance(raw_segments, list) and all(isinstance(s, str) and s.strip() for s in raw_segments):
+            normalized["reply_segments"] = [normalize_space(s) for s in raw_segments]
+            cfg = settings or {}
+            if cfg.get("reply_sequence_version") == 1 and raw_segments:
+                from apps.wechat_ai_customer_service.adapters.reply_sequence import pack_reply_sequence
+                try:
+                    normalized["reply_segments"] = pack_reply_sequence(
+                        " ".join(normalized["reply_segments"]), normalized["reply_segments"],
+                        max_chars=int(cfg["reply_sequence_max_chars"]), max_segments=int(cfg["reply_sequence_max_segments"]))
+                except ValueError:
+                    errors.append("reply_sequence_rewrite_required")
+        else:
+            errors.append("invalid_draft_field:reply_segments")
+        normalized["draft_structure_errors"] = errors
+        # Retain the original, including conflicting self-reported sources.
+        # Only the post-review adapter may derive authoritative legacy fields.
+        evidence_pack.setdefault("candidate_history", []).append(deepcopy(plan))
+        normalized["model_declared_authority"] = {key: deepcopy(plan[key]) for key in ("facts_claimed", "evidence_used") if key in plan}
     return normalized
 
 
@@ -1147,7 +1262,7 @@ def normalize_evidence_used(value: Any) -> dict[str, list[str]]:
 
 
 def validate_brain_plan(plan: dict[str, Any], *, require_fact_claims: bool = False) -> dict[str, Any]:
-    errors: list[str] = []
+    errors: list[str] = list(plan.get("draft_structure_errors") or [])
     if not plan.get("reply_segments") and plan.get("recommended_action") == "send_reply":
         errors.append("missing_reply_segments")
     if plan.get("answer_mode") not in ANSWER_MODES:
@@ -1441,6 +1556,8 @@ def verify_brain_reply_quality(
 
     authority_review = (needs_authority_semantic_review(plan)
                         or "price_answer_without_product_evidence" in warnings)
+    if ((evidence_pack or {}).get("catalog_protocol") or {}).get("preparation"):
+        authority_review = False  # Full semantic/factual review already mandatory; no legacy missing-claims detour.
     if authority_review:
         warnings.append("authority_claim_requires_semantic_review")
     warnings.extend(item for item in errors if item in SEMANTIC_QUALITY_HINTS)
@@ -3490,7 +3607,6 @@ def plan_allows_safe_uncertain_send(plan: dict[str, Any], *, action: str, needs_
 
 
 def compact_brain_plan(plan: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict(plan) if isinstance(plan, dict) else {}
-    if "reply_segments" in payload:
-        payload["reply_segments"] = [str(item)[:240] for item in payload.get("reply_segments", []) or []]
-    return payload
+    # This payload is consumed by the backend, not only a log preview. Text
+    # limits belong to reply_sequence before review, never serialization.
+    return deepcopy(plan) if isinstance(plan, dict) else {}

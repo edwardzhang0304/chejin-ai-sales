@@ -1146,7 +1146,7 @@ def reply_is_qualified_finance_process_explanation(reply: str) -> bool:
     return any(term in text for term in process_terms) and any(term in text for term in boundary_terms)
 
 
-def has_unqualified_finance_forbidden_phrase(text: str) -> bool:
+def has_unqualified_finance_forbidden_phrase(text: str, *, guarantees_only: bool = False) -> bool:
     clean = re.sub(r"\s+", "", str(text or ""))
     if not clean:
         return False
@@ -1175,11 +1175,15 @@ def has_unqualified_finance_forbidden_phrase(text: str) -> bool:
         r"(零首付|最低价|锁定价格)",
         r"(月供|利率)\d",
     )
-    for pattern in risky_patterns:
-        for match in re.finditer(pattern, clean):
-            window = clean[max(0, match.start() - 16) : match.end() + 18]
-            if not any(marker in window for marker in boundary_markers):
-                return True
+    # A caution about another topic/preceding clause cannot qualify a positive
+    # guarantee of loan approval. Reuse the existing finance patterns here.
+    sections = re.split(r"[，,。；;！？!?]", clean) if guarantees_only else [clean]
+    for section in sections:
+        for pattern in (risky_patterns[:2] if guarantees_only else risky_patterns):
+            for match in re.finditer(pattern, section):
+                window = section[max(0, match.start() - 16) : match.end() + 18]
+                if not any(marker in window for marker in boundary_markers):
+                    return True
     return False
 
 
@@ -1529,6 +1533,8 @@ def has_unqualified_commitment(reply: str, platform_rules: dict[str, Any] | None
     normalized = re.sub(r"\s+", "", str(reply or ""))
     if not normalized:
         return False
+    if has_unqualified_finance_forbidden_phrase(normalized, guarantees_only=True):
+        return True
     commitment_terms = [term for term in guard_term_set(platform_rules, "commitment_terms") if term]
     caution_terms = [term for term in guard_term_set(platform_rules, "caution_terms") if term]
     local_negation_markers = [

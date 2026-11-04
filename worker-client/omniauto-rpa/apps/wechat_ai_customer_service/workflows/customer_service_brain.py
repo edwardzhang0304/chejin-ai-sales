@@ -69,6 +69,7 @@ from reply_evidence_builder import (
     chejin_managed_knowledge_match_count,
     chejin_context_projection,
     compact_message,
+    reply_authority_snapshot,
 )
 try:
     from apps.wechat_ai_customer_service.wechat_message_normalizer import split_wechat_ocr_speaker_prefix
@@ -303,6 +304,16 @@ def classify_no_visible_reply(
         no_visible_class = "catalog_query_invalid"
         stage = "catalog_query_validation"
         classification_reason = precise_error
+    if status_payload.get("error_kind") == "input_capacity_exceeded":
+        no_visible_class = "input_capacity_exceeded"
+        classification_reason = precise_error
+    for repair_stage in ("post_guard_quality_repair", "guard_repair", "quality_repair", "post_validation_quality_repair", "plan_validation_repair"):
+        repair = source.get(repair_stage) or {}
+        if repair.get("error_kind") == "input_capacity_exceeded":
+            no_visible_class = "input_capacity_exceeded"
+            stage = repair_stage
+            classification_reason = str(repair.get("error") or "input_capacity_exceeded")
+            break
 
     validation_errors = no_visible_validation_errors(source)
     if normalized_reason == "brain_plan_validation_failed":
@@ -327,6 +338,8 @@ def classify_no_visible_reply(
             no_visible_class = "review_invalid_response" if review.get("error_kind") in {"protocol", "internal"} else "review_unavailable"
             if review.get("unavailable") and any(marker in classification_reason.lower() for marker in ("timeout", "timed out")):
                 no_visible_class = "review_timeout"
+            if review.get("error_kind") == "input_capacity_exceeded":
+                no_visible_class = "input_capacity_exceeded"
         break
 
     # The recovery projection and the accounting summary share this terminal
@@ -337,6 +350,7 @@ def classify_no_visible_reply(
         "schema_invalid": "output_format", "empty_reply_segments": "output_format",
         "social_reply_missing": "output_format", "catalog_query_invalid": "query_contract",
         "quality_repair_failed": "content_review", "guard_repair_failed": "content_review",
+        "input_capacity_exceeded": "input_capacity_exceeded",
     }.get(no_visible_class, ai_failure_category(status_payload))
     if review_requires_recovery(review):
         failure_category = ai_failure_category(review)
@@ -349,8 +363,8 @@ def classify_no_visible_reply(
         "stage": stage,
         "reason": classification_reason,
         "top_level_reason": normalized_reason,
-        "retryable": no_visible_class not in {"duplicate_or_stale"},
-        "same_capture_retry": no_visible_class not in {"duplicate_or_stale", "ocr_metadata_only"},
+        "retryable": no_visible_class not in {"duplicate_or_stale", "input_capacity_exceeded"},
+        "same_capture_retry": no_visible_class not in {"duplicate_or_stale", "ocr_metadata_only", "input_capacity_exceeded"},
         "customer_visible_reply_blocked": True,
         "social_reply_obligation": obligation if obligation.get("must_reply") else {},
     }
@@ -786,6 +800,31 @@ BRAIN_RESPONSE_SCHEMA_PROMPT = (
 )
 
 
+def draft_response_schema(evidence: dict) -> str:
+    schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        schema = schema.replace(
+            "evidence_used(obj keys:product_ids/formal_knowledge_ids/conversation_fact_ids/common_sense_topics/style_ids/rag_ids), "
+            "facts_claimed(list of {fact_type,value,source_level,source_id}), ", "")
+    return schema
+
+
+def prepared_draft_instructions(system: str, evidence: dict) -> str:
+    if not (evidence.get("catalog_protocol") or {}).get("preparation"):
+        return system
+    # Retain the original persona/safety instructions, but remove the retired
+    # requirement to copy authority declarations from every normal/fast prompt.
+    system = re.sub(r"数量/最低最高报价必须声明facts_claimed：.*?数量0也须声明）。", "统计仅以程序回执完整核实范围为依据。", system, flags=re.S)
+    system = re.sub(r"facts_claimed[^。]*。", "", system)
+    return system + (
+        "事实和来源由程序维护，无需输出facts_claimed/evidence_used。原BrainPlan其他字段仍须完整合法。"
+        "以content_basis完整公开依据及catalog_protocol冻结条件回答；不能新增、删掉或改变客户条件。"
+        "已查询时只生成回复，不再次查询。客户需要推荐且有合格车，必须按recommendations顺序给具体车型和已知价格，"
+        "不能只说有几辆/价格范围或重新问已知预算来过审；客户仅问数量则正常回答数量。"
+        "所有具体事实必须真实，有未知或未支持条件如实说明，不假称满足全部条件。"
+    )
+
+
 def validate_hard_opt_out_evidence(
     plan: dict[str, Any],
     brain_input: dict[str, Any],
@@ -844,6 +883,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
     started_at = time.time()
     stage_timings: dict[str, float] = {}
     stage_timeline: dict[str, dict[str, Any]] = {}
+    evidence_pack: dict[str, Any] = {}
     settings = effective_brain_settings(config)
     payload: dict[str, Any] = {
         "enabled": bool(settings.get("enabled", False)),
@@ -874,6 +914,11 @@ def _maybe_run_customer_service_brain_within_time_budget(
         data["stage_timeline"] = copy_stage_timeline(stage_timeline)
         data["latency_trace"] = brain_stage_latency_trace(stage_timeline)
         data["duration_seconds"] = total
+        if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+            # Protected backend attempt snapshots, never ordinary telemetry.
+            for key in ("catalog_protocol", "reply_authority_snapshot", "candidate_history", "review_history", "model_response_history", "policy_reference_map", "_catalog_clearance"):
+                if key in evidence_pack:
+                    data[key] = copy.deepcopy(evidence_pack[key])
         return data
 
     def record_review(stage: str, review: dict[str, Any]) -> None:
@@ -1020,6 +1065,19 @@ def _maybe_run_customer_service_brain_within_time_budget(
         evidence_pack=evidence_pack,
     )
     record_stage("brain_input", stage_started)
+    protocol = evidence_pack.get("catalog_protocol") or {}
+    if protocol.get("model_query_contract") == "vehicle_need_v2":
+        from apps.wechat_ai_customer_service.workflows.catalog_query import prepare_catalog_round
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
+        evidence_pack["generation_identity"] = copy.deepcopy(target_state.get("generation_identity") or {})
+        try:
+            payload["catalog_preparation"] = prepare_catalog_round(
+                evidence=evidence_pack, settings=settings, brain_input=brain_input, runtime_factory=KnowledgeRuntime)
+        except Exception as exc:
+            payload["llm_status"] = {"ok": False, "error_kind": "catalog_query_execution",
+                                     "error": "catalog_preparation_failed", "exception_type": type(exc).__name__}
+            return finish(build_brain_no_visible_reply_payload(payload, combined=combined,
+                reason="customer_service_brain_llm_unavailable", evidence_pack=evidence_pack))
     payload["audit_summary"] = evidence_pack.get("audit_summary", {})
     payload["brain_input_summary"] = compact_brain_input(brain_input)
     if settings.get("include_evidence_pack_in_audit", False):
@@ -1028,7 +1086,10 @@ def _maybe_run_customer_service_brain_within_time_budget(
         payload["brain_input"] = brain_input
 
     stage_started = time.time()
-    result = run_brain_llm(settings=settings, brain_input=brain_input)
+    from apps.wechat_ai_customer_service.llm_config import llm_stage_context
+    phase = "completion" if (evidence_pack.get("catalog_protocol") or {}).get("phase") == "queried" else "understanding"
+    with llm_stage_context(phase):
+        result = run_brain_llm(settings=settings, brain_input=brain_input)
     if evidence_pack.get("catalog_protocol"):
         from apps.wechat_ai_customer_service.workflows.catalog_query import run_catalog_round
         from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
@@ -1070,7 +1131,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
 
     stage_started = time.time()
     raw_plan = result.get("brain_plan") if isinstance(result.get("brain_plan"), dict) else {}
-    plan = normalize_brain_plan(raw_plan, max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
+    plan = normalize_brain_plan(raw_plan, max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings)
     coerced_fallback = coerce_usable_fallback_existing_plan(plan)
     if coerced_fallback:
         payload["brain_fallback_existing_coerced"] = coerced_fallback
@@ -1139,7 +1200,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             payload["invalid_plan_same_capture_retry"] = compact_invalid_plan_retry_result(invalid_retry_result)
             if invalid_retry_result.get("ok") and isinstance(invalid_retry_result.get("brain_plan"), dict):
                 stage_started = time.time()
-                retry_plan = normalize_brain_plan(invalid_retry_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
+                retry_plan = normalize_brain_plan(invalid_retry_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings)
                 retry_coerced_fallback = coerce_usable_fallback_existing_plan(retry_plan)
                 if retry_coerced_fallback:
                     payload["retry_brain_fallback_existing_coerced"] = retry_coerced_fallback
@@ -1192,7 +1253,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
             payload["plan_validation_repair"] = compact_repair_result(repair_result)
             if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
                 stage_started = time.time()
-                repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
+                repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings)
                 repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
                 if repaired_coerced_fallback:
                     payload["repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1281,7 +1342,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                         stage_started = time.time()
                         quality_retry_plan = normalize_brain_plan(
                             quality_retry_result["brain_plan"],
-                            max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1,
+                            max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings,
                         )
                         quality_retry_coerced_fallback = coerce_usable_fallback_existing_plan(quality_retry_plan)
                         if quality_retry_coerced_fallback:
@@ -1412,7 +1473,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         payload["quality_repair"] = compact_repair_result(repair_result)
         if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
             stage_started = time.time()
-            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
+            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings)
             repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
             if repaired_coerced_fallback:
                 payload["repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1610,7 +1671,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         payload["guard_repair"] = compact_repair_result(repair_result)
         if repair_result.get("ok") and isinstance(repair_result.get("brain_plan"), dict):
             stage_started = time.time()
-            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1)
+            repaired_plan = normalize_brain_plan(repair_result["brain_plan"], max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings)
             repaired_coerced_fallback = coerce_usable_fallback_existing_plan(repaired_plan)
             if repaired_coerced_fallback:
                 payload["guard_repaired_brain_fallback_existing_coerced"] = repaired_coerced_fallback
@@ -1695,7 +1756,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     stage_started_retry = time.time()
                     guard_quality_retry_plan = normalize_brain_plan(
                         guard_quality_retry_result["brain_plan"],
-                        max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1,
+                        max_segments=int(settings.get("max_reply_segments") or 3), preserve_all_segments=settings.get("reply_sequence_version") == 1, evidence_pack=evidence_pack, settings=settings,
                     )
                     guard_quality_retry_coerced_fallback = coerce_usable_fallback_existing_plan(guard_quality_retry_plan)
                     if guard_quality_retry_coerced_fallback:
@@ -1817,6 +1878,13 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 return finish(build_brain_no_visible_reply_payload(payload, combined=combined, reason="brain_guard_rejected", evidence_pack=evidence_pack))
             return finish(payload)
 
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        payload["brain_plan"] = compact_brain_plan(plan)
+        payload["authority_sources"] = brain_plan_authority_sources(plan)
+        if str(guard.get("reply") or "").strip() != join_reply_segments(plan.get("reply_segments") or []).strip():
+            payload["reason"] = "guard_changed_reviewed_reply"
+            return finish(build_brain_no_visible_reply_payload(payload, combined=combined,
+                reason="brain_guard_rejected", evidence_pack=evidence_pack))
     action = str(guard.get("action") or "")
     plan_reply_text = join_reply_segments(plan.get("reply_segments", []) or [])
     guard_audit_copy = dict(guard)
@@ -2157,7 +2225,7 @@ def build_brain_input(
                 "message_event_id": str(item.get("id") or item.get("message_id") or ""),
                 "source_message_key": str(item.get("source_message_key") or ""),
                 "sender_role": str(item.get("sender_role") or item.get("sender_role_hint") or ""),
-                "customer_text": str(item.get("content") or item.get("text") or "")[:500],
+                "customer_text": str(item.get("content") or item.get("text") or ""),
             }
             for item in batch
             if isinstance(item, dict)
@@ -2408,6 +2476,19 @@ def infer_speaker_name(batch: list[dict[str, Any]], target_name: str) -> str:
     return target_name
 
 
+def call_recorded_brain_llm(*, brain_input: dict | None, **request) -> dict:
+    """Record full protected attempt evidence without changing provider policy."""
+    response = call_llm_request_with_failover(**request)
+    evidence = (brain_input or {}).get("evidence") or {}
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        evidence.setdefault("model_response_history", []).append({
+            "stage": request.get("progress_stage"),
+            "request": {key: copy.deepcopy(request[key]) for key in ("messages", "model", "provider", "max_tokens", "temperature") if key in request},
+            "response": copy.deepcopy(response),
+        })
+    return response
+
+
 def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> dict[str, Any]:
     provider = resolve_effective_llm_provider(settings.get("provider") or "manual_json", read_secret_fn=read_secret)
     if provider == "manual_json":
@@ -2443,7 +2524,8 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
         {"role": "user", "content": user_content},
     ]
     max_tokens = max(256, int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS))
-    response = call_llm_request_with_failover(
+    response = call_recorded_brain_llm(
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -2480,6 +2562,8 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             previous_response=response,
         )
         response["same_capture_retry"] = compact_llm_unavailable_retry_result(retry)
+        if retry.get("error_kind") == "input_capacity_exceeded":
+            return retry
         if retry.get("ok") and isinstance(retry.get("brain_plan"), dict):
             retry["primary_provider"] = provider
             retry["primary_model"] = model
@@ -2502,6 +2586,8 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             prompt_estimate=prompt_estimate,
         )
         response["json_structure_repair"] = compact_json_structure_repair_result(repair)
+        if repair.get("error_kind") == "input_capacity_exceeded":
+            return repair
         if repair.get("ok") and isinstance(repair.get("brain_plan"), dict):
             response["brain_plan"] = repair["brain_plan"]
             response["json_structure_repaired"] = True
@@ -2523,6 +2609,8 @@ def run_brain_llm(*, settings: dict[str, Any], brain_input: dict[str, Any]) -> d
             previous_repair=repair,
         )
         response["same_capture_retry"] = compact_invalid_plan_retry_result(retry)
+        if retry.get("error_kind") == "input_capacity_exceeded":
+            return retry
         if retry.get("ok") and isinstance(retry.get("brain_plan"), dict):
             retry["primary_provider"] = provider
             retry["primary_model"] = model
@@ -2583,7 +2671,8 @@ def maybe_retry_brain_llm_after_unavailable_response(
         fallback_timeout_seconds,
         minimum=3,
     )
-    retry = call_llm_request_with_failover(
+    retry = call_recorded_brain_llm(
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -2623,6 +2712,8 @@ def maybe_retry_brain_llm_after_unavailable_response(
         prompt_estimate=prompt_estimate,
     )
     retry["json_structure_repair"] = compact_json_structure_repair_result(repair)
+    if repair.get("error_kind") == "input_capacity_exceeded":
+        return repair
     if repair.get("ok") and isinstance(repair.get("brain_plan"), dict):
         retry["brain_plan"] = repair["brain_plan"]
         retry["json_structure_repaired"] = True
@@ -2852,7 +2943,8 @@ def maybe_retry_brain_llm_after_unparseable_response(
         fallback_timeout_seconds,
         positive_int_setting(settings, "same_capture_brain_parse_retry_fallback_timeout_seconds", fallback_timeout_seconds, minimum=3),
     )
-    retry = call_llm_request_with_failover(
+    retry = call_recorded_brain_llm(
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -2892,6 +2984,8 @@ def maybe_retry_brain_llm_after_unparseable_response(
         prompt_estimate=prompt_estimate,
     )
     retry["json_structure_repair"] = compact_json_structure_repair_result(repair)
+    if repair.get("error_kind") == "input_capacity_exceeded":
+        return repair
     if repair.get("ok") and isinstance(repair.get("brain_plan"), dict):
         retry["brain_plan"] = repair["brain_plan"]
         retry["json_structure_repaired"] = True
@@ -2989,7 +3083,7 @@ def maybe_repair_brain_json_structure(
     evidence = (brain_input or {}).get("evidence") or {}
     protocol = evidence.get("catalog_protocol") or {}
     query_allowed = protocol.get("phase") == "not_queried"
-    schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    schema = draft_response_schema(evidence)
     if query_allowed:
         from apps.wechat_ai_customer_service.workflows.catalog_query import query_format_instruction, model_contract
         schema += "\n当前尚未查询库存，原输出可以是查车指令或普通 BrainPlan；必须保留原输出类型，二者不能混合。\n" + query_format_instruction(model_contract(protocol))
@@ -3015,7 +3109,8 @@ def maybe_repair_brain_json_structure(
     }
     timeout_seconds = positive_int_setting(settings, "json_structure_repair_timeout_seconds", 8, minimum=3)
     fallback_timeout_seconds = resolve_brain_fallback_timeout(settings, timeout_seconds)
-    response = call_llm_request_with_failover(
+    response = call_recorded_brain_llm(
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -3065,6 +3160,8 @@ def compact_json_structure_repair_result(result: dict[str, Any]) -> dict[str, An
             "provider",
             "model",
             "error",
+            "error_kind",
+            "http_status",
             "fallback",
             "failover",
             "parse_evidence",
@@ -3220,11 +3317,12 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
             max_chars=int(settings["reply_sequence_max_chars"]),
             max_segments=int(settings["reply_sequence_max_segments"]),
         )
-    response_schema = BRAIN_RESPONSE_SCHEMA_PROMPT
+    response_schema = draft_response_schema(evidence)
     if evidence.get("catalog_protocol"):
         from apps.wechat_ai_customer_service.workflows.catalog_query import query_instruction, model_contract
         system += query_instruction(model_contract(evidence["catalog_protocol"]))
         response_schema += " 首轮需要车辆事实时允许仅返回 catalog_query 对象，以车辆查询合同为准。"
+    system = prepared_draft_instructions(system, evidence)
     if settings.get("reply_sequence_version") == 1:
         response_schema = response_schema.replace(
             "最多3条且每条不超过96个中文字符",
@@ -3351,7 +3449,7 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
             ),
             "conversation_interaction_state": interaction_state,
         },
-        "content_basis": {
+        "content_basis": reply_authority_snapshot(evidence) if (evidence.get("catalog_protocol") or {}).get("preparation") else {
             "product_master": product_master,
             "formal_knowledge": formal_knowledge,
             "evidence": content_evidence,
@@ -3495,7 +3593,8 @@ def run_brain_repair_llm(
             "prompt_estimate": prompt_estimate,
             "error": "LLM API key is not set",
         }
-    response = call_llm_request_with_failover(
+    response = call_recorded_brain_llm(
+        brain_input=brain_input,
         provider=provider,
         api_key=api_key,
         base_url=base_url,
@@ -3524,6 +3623,7 @@ def run_brain_repair_llm(
     parsed = parse_complete_llm_json_response(response)
     if not isinstance(parsed, dict):
         repair = maybe_repair_brain_json_structure(
+            brain_input=brain_input,
             settings=settings,
             raw_text=raw_text,
             response_diagnostics=response.get("response_diagnostics"),
@@ -3531,6 +3631,8 @@ def run_brain_repair_llm(
             prompt_estimate=prompt_estimate,
         )
         response["json_structure_repair"] = compact_json_structure_repair_result(repair)
+        if repair.get("error_kind") == "input_capacity_exceeded":
+            return repair
         if repair.get("ok") and isinstance(repair.get("brain_plan"), dict):
             response["brain_plan"] = repair["brain_plan"]
             response["json_structure_repaired"] = True
@@ -3622,9 +3724,11 @@ def build_brain_repair_prompt_pack(
         "只有正式硬边界确需人工时才使用handoff/handoff_for_approval；此时reply_segments仍必须包含Brain写出的简短客户可见边界承接，不能为空，"
         "由后端执行一次reply_then_handoff。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
     )
+    system = prepared_draft_instructions(system, brain_input.get("evidence") or {})
     return {
         "schema_version": 1,
         "system": system,
+        "response_schema": draft_response_schema(brain_input.get("evidence") or {}),
         "user": {
             "task": "修复未通过质量自检的 BrainPlan。",
             "failed_quality_verification": compact_quality_verification(quality),
@@ -3996,6 +4100,8 @@ def compact_semantic_review(review: dict[str, Any]) -> dict[str, Any]:
             "shadow_verdict",
             "claim_kind",
             "catalog_claim_kind",
+            "policy_refs",
+            "contract_errors",
             "authority_review_required",
             "confidence",
             "semantic_errors",
@@ -4745,6 +4851,8 @@ def compact_repair_result(result: dict[str, Any]) -> dict[str, Any]:
             "provider",
             "model",
             "error",
+            "error_kind",
+            "http_status",
             "fallback",
             "same_capture_repair_retry",
             "previous_repair_status",
@@ -4758,7 +4866,10 @@ def compact_repair_result(result: dict[str, Any]) -> dict[str, Any]:
 def validate_runtime_brain_plan(plan: dict[str, Any], *, settings: dict[str, Any],
                                 brain_input: dict[str, Any], evidence_pack: dict[str, Any],
                                 combined: str) -> dict[str, Any]:
-    validation = validate_brain_plan(plan, require_fact_claims=bool(settings.get("require_fact_claims", True)))
+    prepared = bool((evidence_pack.get("catalog_protocol") or {}).get("preparation"))
+    validation = validate_brain_plan(plan, require_fact_claims=not prepared and bool(settings.get("require_fact_claims", True)))
+    if prepared:
+        return validation
     errors = validation.get("errors") or []
     if errors and (errors != ["missing_fact_claims"] or not needs_authority_semantic_review(plan)):
         return validation
@@ -4784,7 +4895,16 @@ def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str
     normalized_formal_ids = normalize_source_id_set(formal_ids)
     from apps.wechat_ai_customer_service.workflows.catalog_query import query_plan_errors
     errors: list[str] = query_plan_errors(plan, evidence_pack)
+    public_validation = None
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts
+        public_validation = validate_reply_public_facts(plan, evidence_pack)
+        errors.extend(public_validation["errors"])
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
+    if public_validation is not None:
+        for source_id in evidence.get("product_ids", []) or []:
+            if normalize_source_id(source_id) not in normalized_product_ids:
+                errors.append(f"product_fact_source_not_in_evidence:{source_id}")
     # Guidance may be cited without facts, but its source must still exist.
     # Otherwise an invented citation can masquerade as formal grounding later.
     for source_id in evidence.get("formal_knowledge_ids", []) or []:
@@ -4807,7 +4927,10 @@ def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str
                 normalized_source_id = normalize_source_id(source_id)
                 if normalized_source_id not in normalized_formal_ids and normalized_source_id not in normalized_product_ids:
                     errors.append(f"policy_fact_source_not_in_evidence:{source_id}")
-    return {"ok": not errors, "errors": errors}
+    result = {"ok": not errors, "errors": errors}
+    if public_validation is not None:
+        result["public_fact_validation"] = public_validation
+    return result
 
 
 def split_fact_source_ids(value: Any) -> list[str]:
@@ -5411,6 +5534,8 @@ def collect_context_product_ids_for_current_conversation_product_facts(
 
 
 def ensure_minimal_product_fact_claims(plan: dict[str, Any], evidence_pack: dict[str, Any]) -> list[str]:
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        return []  # Actual used facts are derived only after the unified review.
     if plan.get("facts_claimed"):
         return []
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
@@ -5439,6 +5564,8 @@ def ensure_minimal_product_fact_claims(plan: dict[str, Any], evidence_pack: dict
 
 
 def canonicalize_conversation_product_fact_sources(plan: dict[str, Any], evidence_pack: dict[str, Any]) -> list[dict[str, str]]:
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        return []
     facts = plan.get("facts_claimed") if isinstance(plan.get("facts_claimed"), list) else []
     if not facts:
         return []

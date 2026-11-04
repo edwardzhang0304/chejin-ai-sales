@@ -9,12 +9,13 @@ from copy import deepcopy
 import hashlib
 import json
 import math
+import re
 import time
 import unicodedata
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from apps.wechat_ai_customer_service.workflows.catalog_budget import catalog_budget_around_upper
+from apps.wechat_ai_customer_service.workflows.catalog_budget import catalog_budget_around_upper, budget_statement
 from apps.wechat_ai_customer_service.adapters.vehicle_fields import (
     canonical_enum, numeric_field, ENERGY_TYPES, DRIVE_TYPES, SERIES_OPTIONS,
 )
@@ -150,6 +151,17 @@ def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | No
         # Validate all business fields first; never infer unlimited or a budget.
         candidate["sort"] = "price_asc"
     query = normalize_query(candidate, sources, known_ids=known_ids)
+    from apps.wechat_ai_customer_service.workflows.catalog_budget import explicit_total_budget
+    # Check the model's own cited total-price sources with the same budget
+    # parser. Finance/monthly amounts cannot replace an explicit total.
+    explicit_budget = None
+    for source in sources:
+        if source["id"] not in query["budget"].get("source_ids", []) or source.get("sender") not in ("customer", "client"):
+            continue
+        if budget_statement(source["content"])["present"]:
+            explicit_budget = explicit_total_budget(source["content"])
+    if explicit_budget and query["budget_bounds"] != {k: v for k, v in explicit_budget.as_dict().items() if k != "kind"}:
+        raise CatalogQueryError("budget_conflicts_with_explicit_source", fields=["budget", "budget.source_ids"])
     if not explicit and query["budget_bounds"]:
         query["sort"] = "budget_distance"
     query.update(model_query_contract=contract, raw_model_query=deepcopy(raw),
@@ -200,6 +212,90 @@ def message_sources(evidence: dict) -> list[dict]:
         if key:
             sources[key] = {"id": key, "sender": row.get("sender", ""), "content": row.get("content", "")}
     return list(sources.values())
+
+
+def prepare_catalog_need(evidence: dict) -> dict:
+    result = _prepare_catalog_need(evidence)
+    current = " ".join(m["content"] for m in message_sources({"current_batch": evidence.get("current_batch") or []})
+                       if m["sender"] in ("customer", "client"))
+    summary = bool(re.search(r"多少台|多少辆|几台|几辆|价格区间|最低价|最高价", current))
+    result["asks_summary"] = summary
+    result["requires_recommendation"] = bool("推荐" in current or (not summary and (
+        result["route"] == "direct" or re.search(r"有什么车|有哪些车|有什么合适的车", current))))
+    return result
+
+
+def _prepare_catalog_need(evidence: dict) -> dict:
+    """Conservative program-first routing, before any model call.
+
+    Only fully consumed, unambiguous shopping statements execute directly.
+    Unknown conditions/negation/references use the existing AI interpretation
+    path and then the SAME normalize_model_query/execute_query functions.
+    """
+    protocol = evidence.get("catalog_protocol") or {}
+    if model_contract(protocol) != MODEL_QUERY_CONTRACT:
+        return {"route": "semantic", "reason": "legacy_query_contract"}
+    sources = message_sources(evidence)
+    current_ids = {str(m.get("id") or m.get("message_event_id") or "") for m in evidence.get("current_batch") or []}
+    customer = [m for m in sources if m["sender"] in ("customer", "client")]
+    current = [m for m in customer if m["id"] in current_ids]
+    if not current:
+        return {"route": "semantic", "reason": "business_trigger_or_missing_customer_source"}
+    current_text = " ".join(m["content"] for m in current)
+    if re.fullmatch(r"[\s，。！？!?]*(你好|您好|在吗|谢谢|好的|再见)[\s，。！？!?]*", current_text):
+        return {"route": "non_inventory", "reason": "plain_social_turn", "source_ids": [m["id"] for m in current]}
+    budget = {"state": "not_mentioned", "source_ids": []}
+    sort = None
+    used = []
+    # This grammar does not guess brands or strip adjectives. Any unconsumed
+    # phrase (e.g. 纯电/年份/不要/刚才那辆) requires semantic supplementation.
+    phrases = (
+        "我想买", "想买", "买一台", "一台", "你们", "你这边", "请问", "那请问", "我想", "想看看", "看看",
+        "有什么合适的车", "有什么车", "有哪些车", "什么车", "哪些车", "什么合适的车", "合适", "代步车", "二手车", "车",
+        "总预算", "预算", "总价", "车价", "别超过", "不超过", "最多", "至多", "上限", "以内", "以下", "左右", "上下",
+        "附近", "封顶", "出头", "的", "了", "吗", "呢", "呀", "啊", "我", "给", "看", "有", "买", "推荐", "先",
+        "总共多少台", "多少辆", "多少台", "几辆", "几台", "价格区间", "最低价", "最高价",
+    )
+    filler = re.compile("|".join(re.escape(p) for p in sorted(phrases, key=len, reverse=True)))
+    for message in customer:
+        text = message["content"]
+        if re.fullmatch(r"[\s，。！？!?]*(你好|您好|在吗|谢谢|好的|再见)[\s，。！？!?]*", text):
+            continue
+        parsed = budget_statement(text)
+        remainder = parsed["remainder"]
+        explicit_sort = re.search(r"便宜的?先(?:给我看|看|推荐)?|价格从低到高|从低到高|低价优先", remainder)
+        if explicit_sort:
+            sort = {"value": "price_asc", "source_ids": [message["id"]]}
+            remainder = remainder[:explicit_sort.start()] + " " * len(explicit_sort.group()) + remainder[explicit_sort.end():]
+        remainder = filler.sub("", remainder)
+        remainder = re.sub(r"[\s，,。；;！？!?、：:]", "", remainder)
+        # Multiple monetary directives can express a correction/conflict. The
+        # old parser's last-number policy alone cannot authorize this route.
+        if remainder or len(parsed["recognized_spans"]) > 1:
+            return {"route": "semantic", "reason": "unresolved_conditions_or_context", "source_ids": [message["id"]]}
+        if not parsed["present"] and not explicit_sort and not re.search(r"车|推荐|多少台|多少辆|几台|几辆|价格", text):
+            return {"route": "semantic", "reason": "no_complete_catalog_request"}
+        if parsed["present"]:
+            value = parsed["budget"]
+            if value is None:
+                budget = {"state": "unlimited", "source_ids": [message["id"]]}
+            elif value.kind == "floor":
+                return {"route": "semantic", "reason": "budget_floor_requires_interpretation"}
+            else:
+                budget = {"state": "specified", "source_ids": [message["id"]],
+                          "mode": {"cap": "upper", "range": "range", "around": "around"}[value.kind]}
+                if value.kind == "range":
+                    budget.update(lower=value.lower, upper=value.upper)
+                else:
+                    budget["value"] = value.target
+        used.append(message["id"])
+    raw = {"operation": "search", "requirement_state": "clear", "budget": budget,
+           "filters": [], "name_queries": [], "reference_ids": [], "exclude_ids": [],
+           "source_ids": used, "unsupported_requirements": [], "interpretation": "程序完整解析明确车辆请求"}
+    if sort:
+        raw["sort"] = sort
+    normalized = normalize_model_query(raw, sources, contract=MODEL_QUERY_CONTRACT, known_ids=protocol.get("known_ids"))
+    return {"route": "direct", "reason": "complete_explicit_conditions", "query": normalized, "source_ids": used}
 
 
 def _ids(value: Any, *, field: str, allowed: set[str] | None = None, required: bool = False) -> list[str]:
@@ -459,8 +555,11 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
 
 
 def attach_receipt(evidence: dict, receipt: dict) -> None:
+    preparation = (evidence.get("catalog_protocol") or {}).get("preparation")
     evidence["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "queried", "receipt": receipt,
                                     "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
+    if preparation is not None:
+        evidence["catalog_protocol"]["preparation"] = deepcopy(preparation)
     items = list(receipt["recommendations"])
     known = {p["id"] for p in items}
     items.extend(p for p in receipt["references"] if p["id"] not in known)
@@ -473,6 +572,21 @@ def attach_receipt(evidence: dict, receipt: dict) -> None:
     # Preserve formal IDs, replace only product IDs through the existing collector.
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import collect_evidence_ids
     evidence["evidence_ids"] = collect_evidence_ids(knowledge)
+
+
+def prepare_catalog_round(*, evidence: dict, settings: dict, brain_input: dict, runtime_factory) -> dict:
+    """Prepare a direct receipt or record why the existing AI path is needed."""
+    preparation = prepare_catalog_need(evidence)
+    evidence["catalog_protocol"]["preparation"] = deepcopy(preparation)
+    if preparation["route"] != "direct":
+        return preparation
+    runtime = runtime_factory()
+    scope = {"conversation_id": brain_input["target"]["conversation_id"],
+             "current_message_ids": brain_input["current_message"]["message_ids"]}
+    receipt = execute_query(preparation["query"], runtime, scope=scope,
+                            limit=min(20, max(1, int(settings.get("max_catalog_candidates") or 8))))
+    attach_receipt(evidence, receipt)
+    return preparation
 
 
 def prompt_protocol(evidence: dict) -> dict | None:
@@ -536,32 +650,96 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
     kind = raw_review.get("catalog_claim_kind")
     errors = query_plan_errors(plan, evidence)
     receipt = (evidence.get("catalog_protocol") or {}).get("receipt") or {}
+    prepared = bool((evidence.get("catalog_protocol") or {}).get("preparation"))
+    validated = None
+    if prepared:
+        if review.get("customer_visible_risk") == "high":
+            errors.append("semantic_reviewer_high_risk")
+        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts, derive_reviewed_fact_fields
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_policy_refs, policy_ref_errors
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import prepare_policy_reference_map
+        mapping = prepare_policy_reference_map(plan, evidence)
+        contract_errors = policy_ref_errors(raw_review.get("policy_refs"), mapping=mapping)
+        if contract_errors:
+            return {**review, "ok": False, "status": "error", "verdict": "block", "error_kind": "protocol",
+                    "contract_errors": contract_errors, "errors": contract_errors, "enforced": True,
+                    "reason": "policy_refs_invalid_contract", "soft_pass_low_risk": False}
+        preliminary = validate_reply_public_facts(plan, evidence)
+        formal = validate_policy_refs(raw_review.get("policy_refs"),
+            segments=plan.get("reply_segments") or [], mapping=mapping,
+            customer_statements=preliminary["customer_statements"])
+        errors.extend(formal["errors"])
+        validated = validate_reply_public_facts(plan, evidence, formal_validation=formal)
+        validated["facts_claimed"].extend(formal["facts_claimed"])
+        validated["formal_source_ids"] = formal["source_ids"]
+        errors.extend(validated["errors"])
+        if validated["product_ids"] and kind != "vehicle_facts":
+            errors.append("catalog_claim_classification_conflict")
     if kind not in {"non_inventory", "vehicle_facts", "query_summary", "uncertain"} or kind == "uncertain":
         errors.append("catalog_claim_classification_required")
     if kind in {"vehicle_facts", "query_summary"} and not receipt.get("scan_complete"):
         errors.append("current_inventory_not_queried")
     if kind == "query_summary":
-        aggregates = [f for f in plan.get("facts_claimed", []) if f.get("fact_type") in AGGREGATES]
+        aggregates = [f for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", [])) if f.get("fact_type") in AGGREGATES]
         if not aggregates or not aggregate_ready(receipt):
             errors.append("catalog_summary_requires_complete_scoped_facts")
-    if kind == "vehicle_facts" and not any(f.get("source_level") == "product_master" for f in plan.get("facts_claimed", [])):
+    if kind == "vehicle_facts" and not any(f.get("source_level") == "product_master" for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", []))):
         errors.append("catalog_vehicle_facts_must_be_declared")
     if errors:
         return {**review, "ok": False, "verdict": "repair", "enforced": True,
                 "errors": list(dict.fromkeys([*(review.get("errors") or []), *errors])), "soft_pass_low_risk": False}
     if review.get("ok") and raw_review.get("verdict") == "pass":
+        if prepared:
+            plan["policy_refs"] = {sid: list(dict.fromkeys(keys)) for sid, keys in raw_review["policy_refs"].items()}
+            derive_reviewed_fact_fields(plan, validated)
+            from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_brain_plan
+            final_validation = validate_brain_plan(plan, require_fact_claims=True)
+            if not final_validation["ok"]:
+                return {**review, "ok": False, "verdict": "repair", "enforced": True,
+                        "errors": final_validation["errors"], "soft_pass_low_risk": False}
         from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
         evidence["_catalog_clearance"] = {"reply": fingerprint(join_reply_segments(plan.get("reply_segments") or []).strip()),
                                            "protocol": fingerprint(evidence["catalog_protocol"]), "kind": kind}
+        if prepared:
+            from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
+            evidence["_catalog_clearance"].update(authority=fingerprint(reply_authority_snapshot(evidence)),
+                                                 plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]))
     return review
 
 
 def clearance_kind(reply, evidence):
     proof = evidence.get("_catalog_clearance") or {}
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
+        try:
+            if proof.get("authority") != fingerprint(reply_authority_snapshot(evidence)):
+                return None
+        except ValueError:
+            return None
     if (proof.get("reply") == fingerprint(reply.strip())
             and proof.get("protocol") == fingerprint(evidence.get("catalog_protocol"))):
         return proof.get("kind")
     return None
+
+
+def serialized_clearance_valid(result: dict) -> bool:
+    """Recheck the existing approval across the Provider JSON boundary."""
+    protocol = result.get("catalog_protocol") or {}
+    if not protocol.get("preparation"):
+        return True  # Persisted/OCR results retain their existing contract.
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
+    proof = result.get("_catalog_clearance") or {}
+    snapshot = result.get("reply_authority_snapshot") or {}
+    plan = result.get("brain_plan") or {}
+    reply = str(result.get("reply_text") or "").strip()
+    return bool(reply and proof.get("kind") in {"non_inventory", "vehicle_facts", "query_summary"}
+                and reply == join_reply_segments(plan.get("reply_segments") or []).strip()
+                and proof.get("reply") == fingerprint(reply)
+                and proof.get("protocol") == fingerprint(protocol)
+                and proof.get("plan") == fingerprint(plan)
+                and snapshot.get("sha256") == proof.get("authority") == fingerprint(snapshot.get("content"))
+                and proof.get("policy_map") == fingerprint(result.get("policy_reference_map"))
+                and (result.get("policy_reference_map") or {}).get("reply_sha256") == fingerprint(plan.get("reply_segments")))
 
 
 def catalog_generation_audit(result: dict) -> dict:
@@ -582,6 +760,10 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
     """At most one read-only query then one completion, inside Brain's time budget."""
     evidence = brain_input["evidence"]
     first = first_result.get("brain_plan") or {}
+    if (evidence.get("catalog_protocol") or {}).get("phase") == "queried":
+        # Program-prepared completion may not reopen inventory or replace the
+        # frozen conditions. Any query in it reaches the ordinary validator.
+        return first_result
     query_without_wrapper = "catalog_query" not in first and "operation" in first and ("budget" in first or "filters" in first)
     if not first_result.get("ok") or ("catalog_query" not in first and not query_without_wrapper):
         return first_result
@@ -610,8 +792,22 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         with llm_stage_context("completion"):
             final = run_llm(settings=settings, brain_input=brain_input)
         audit["completion"] = catalog_generation_audit(final)
-        if final.get("ok") and query_plan_errors(final.get("brain_plan") or {}, evidence):
-            raise CatalogQueryError("catalog_second_query_or_forged_receipt")
+        if final.get("ok"):
+            candidate = final.get("brain_plan") or {}
+            errors = query_plan_errors(candidate, evidence)
+            # These are local content/contract findings after a successful
+            # model response, not an inventory/service outage. Preserve the
+            # original candidate in the existing protected attempt snapshot;
+            # the normal Brain validator owns its finite repair path.
+            audit["completion_validation"] = {
+                "stage": "completion_validation", "ok": not errors,
+                "error_codes": errors, "candidate": deepcopy(candidate),
+                "candidate_sha256": fingerprint(candidate),
+                "query_id": receipt["query_id"], "snapshot_id": receipt["snapshot_id"],
+                "model_query_contract": model_contract(evidence.get("catalog_protocol") or {}),
+            }
+            if final.get("raw_response_text"):
+                audit["completion_validation"]["raw_response_text"] = final["raw_response_text"]
         # A reply based on a stale catalog must not bypass existing backend invalidation.
         if final.get("ok") and snapshot_id(inventory_snapshot(runtime)) != receipt["snapshot_id"]:
             raise CatalogQueryError("catalog_changed_during_generation")

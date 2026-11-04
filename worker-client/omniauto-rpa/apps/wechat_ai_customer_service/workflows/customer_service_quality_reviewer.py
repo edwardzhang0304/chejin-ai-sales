@@ -252,7 +252,8 @@ def review_brain_reply_semantics(
         return {"ok": False, "status": "error", "verdict": "block", "enforced": True,
                 "errors": ["catalog_semantic_review_unavailable"], "unavailable": True,
                 "soft_pass_low_risk": False}
-    authority_required = bool((deterministic_quality or {}).get("authority_review_required"))
+    prepared = bool((evidence_pack.get("catalog_protocol") or {}).get("preparation"))
+    authority_required = not prepared and bool((deterministic_quality or {}).get("authority_review_required"))
     if authority_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
         review = authority_review_failure("authority_review_unavailable")
         review.update(unavailable=True, error_kind="configuration", reason="authority_review_unavailable")
@@ -291,6 +292,11 @@ def review_brain_reply_semantics(
     raw_result = reviewer_from_settings(cfg)
     if raw_result is None:
         raw_result = run_quality_reviewer_llm(settings=cfg, request=request)
+    if prepared:
+        evidence_pack.setdefault("review_history", []).append({
+            "request": deepcopy(request), "raw_result": deepcopy(raw_result),
+            "authority_sha256": (evidence_pack.get("reply_authority_snapshot") or {}).get("sha256"),
+        })
     # Transport/protocol failures have no content verdict. Preserve their cause
     # before validating the success contract; otherwise a timeout becomes a
     # fabricated instruction to rewrite the customer's reply.
@@ -300,11 +306,13 @@ def review_brain_reply_semantics(
                       authority_review_required=authority_required)
         return review
     if (catalog_required or authority_required) and not quality_reviewer_contract_is_complete(
-        raw_result or {}, authority_required=authority_required,
+        raw_result or {}, authority_required=authority_required, policy_refs_required=prepared, policy_mapping=request.get("policy_reference_map"),
     ):
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import policy_ref_errors
         return apply_review_mode(unavailable_review({
             **(raw_result or {}), "error_kind": "protocol",
             "error": "authority_review_invalid_contract",
+            "contract_errors": policy_ref_errors((raw_result or {}).get("policy_refs"), mapping=request.get("policy_reference_map")) if prepared else [],
         }), mode=mode)
     review = normalize_quality_review_result(raw_result)
     if catalog_required:
@@ -1046,13 +1054,18 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
         }
     if not quality_reviewer_contract_is_complete(
         parsed, authority_required=bool(request.get("authority_review_required")),
+        policy_refs_required=bool((request.get("catalog_protocol") or {}).get("preparation")),
+        policy_mapping=request.get("policy_reference_map"),
     ):
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import policy_ref_errors
         return {
             "status": "error",
             "provider": response.get("provider"),
             "model": response.get("model"),
             "error": "semantic_reviewer_response_invalid_contract",
             "error_kind": "protocol",
+            "contract_errors": policy_ref_errors(parsed.get("policy_refs"), mapping=request.get("policy_reference_map")) if (request.get("catalog_protocol") or {}).get("preparation") else [],
+            "raw_response_text": raw_text,
             "elapsed_ms": response.get("elapsed_ms"),
             "http_status": response.get("status"),
         }
@@ -1064,13 +1077,19 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
     parsed["failover"] = response.get("failover")
     parsed["elapsed_ms"] = response.get("elapsed_ms")
     parsed["http_status"] = response.get("status")
+    if (request.get("catalog_protocol") or {}).get("preparation"):
+        parsed["raw_response_text"] = raw_text
     return parsed
 
 
 def quality_reviewer_contract_is_complete(
-    payload: dict[str, Any], *, authority_required: bool = False,
+    payload: dict[str, Any], *, authority_required: bool = False, policy_refs_required: bool = False, policy_mapping: dict | None = None,
 ) -> bool:
     """Validate original fields before normalizing any source of a clearance."""
+    if policy_refs_required:
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import policy_ref_errors
+        if policy_ref_errors(payload.get("policy_refs"), mapping=policy_mapping):
+            return False
     if authority_required:
         # HTTP JSON need not carry transport status, but an explicit failure
         # from any source must never be normalized/overwritten into success.
@@ -1131,6 +1150,17 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
                    "这些是catalog_query程序回执提供的限定范围权威，无需虚构product_master车辆ID；"
                    "未知/未查/查询失败不能断言零匹配；完整且条件明确的零匹配可以准确回复。"
                    "name_results未找到仅代表称呼未定位，重名不可擅选或排除；核对来源与客户所指一致。")
+    if (request.get("catalog_protocol") or {}).get("preparation"):
+        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import POLICY_REFS_INSTRUCTION
+        system += POLICY_REFS_INSTRUCTION
+        system = system.replace("factual必须交Brain补齐声明及真实来源再走原核验。", "事实依据由程序维护，必须核对实际正文与完整公开资料。")
+        system = system.replace("query_summary须核对facts_claimed的catalog_match_count/catalog_price_min/catalog_price_max，",
+                                "query_summary须核对程序回执中的match_count/price_min/price_max及实际正文，")
+        system += ("本轮程序已准备同一完整公开依据authority_evidence_summary，facts_claimed/evidence_used只是模型自报，"
+                   "缺省不能单独判不通过；声明完整也不能替代核对正文。核对每辆车对应的实际价格、单位、配置以及全部段落。"
+                   "catalog_protocol.preparation中的明确需求已冻结。客户要推荐且有合格车必须具体给车和已知价格、遵守候选顺序；"
+                   "不能删成汇总或机械追问过审。客户仅问数量/区间可以按完整查询回答；年份未知、未支持条件必须如实说明。"
+                   "同一回复存在未解决错误时不得pass；无需改写客户正文或额外填写另一套证明。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
     return system, user
 
@@ -1151,6 +1181,7 @@ def build_quality_review_request(
     conversation = brain_input.get("conversation") if isinstance(brain_input.get("conversation"), dict) else {}
     current_message = brain_input.get("current_message") if isinstance(brain_input.get("current_message"), dict) else {}
     target = brain_input.get("target") if isinstance(brain_input.get("target"), dict) else {}
+    from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import prepare_policy_reference_map
     reply = join_reply_segments(plan.get("reply_segments", []) or [])
     return {
         "target": {
@@ -1169,6 +1200,8 @@ def build_quality_review_request(
         "draft_segments": [str(item).strip() for item in plan.get("reply_segments", []) or [] if str(item).strip()],
         "draft_reply": reply if evidence_pack.get("catalog_protocol") or deterministic_quality.get("authority_review_required") else clip(reply, int(settings.get("semantic_reviewer_reply_chars") or 520)),
         "authority_evidence_summary": compact_authority_evidence_for_review(evidence_pack),
+        "policy_reference_map": (prepare_policy_reference_map(plan, evidence_pack)
+                                 if (evidence_pack.get("catalog_protocol") or {}).get("preparation") else {}),
         "deterministic_quality": {
             "ok": bool(deterministic_quality.get("ok", True)),
             "errors": list(deterministic_quality.get("errors", []) or [])[:8],
@@ -1216,6 +1249,9 @@ def compact_brain_plan_for_review(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def compact_authority_evidence_for_review(evidence_pack: dict[str, Any]) -> dict[str, Any]:
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
+        return reply_authority_snapshot(evidence_pack)
     knowledge = evidence_pack.get("knowledge") if isinstance(evidence_pack.get("knowledge"), dict) else {}
     evidence = knowledge.get("evidence") if isinstance(knowledge.get("evidence"), dict) else {}
     product_master = knowledge.get("product_master") if isinstance(knowledge.get("product_master"), dict) else {}
@@ -1368,13 +1404,14 @@ def normalize_quality_review_result(result: dict[str, Any] | None) -> dict[str, 
     if not repair_instruction and errors:
         repair_instruction = build_default_repair_instruction(verdict=verdict, errors=errors)
     normalized = {
-        "ok": verdict == "pass" and not hard_concerns,
+        "ok": verdict == "pass" and not errors,
         "status": "ok",
         "invoked": True,
         "verdict": verdict,
         "confidence": confidence,
         "claim_kind": payload.get("claim_kind"),
         "catalog_claim_kind": payload.get("catalog_claim_kind"),
+        "policy_refs": deepcopy(payload.get("policy_refs")),
         "semantic_errors": semantic_errors,
         "hard_boundary_concerns": hard_concerns,
         "errors": errors,
@@ -1403,6 +1440,7 @@ def unavailable_review(payload: dict[str, Any]) -> dict[str, Any]:
         "error_kind": payload.get("error_kind") or "transport",
         "http_status": payload.get("http_status"),
         "parse_evidence": payload.get("parse_evidence"),
+        "contract_errors": deepcopy(payload.get("contract_errors") or []),
         "errors": ["semantic_reviewer_invalid_response" if invalid_response else "semantic_reviewer_unavailable"],
         "warnings": [],
         "repair_instruction": (

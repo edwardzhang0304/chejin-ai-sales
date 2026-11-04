@@ -814,6 +814,15 @@ class RealOmniAutoAIEngineAdapter:
         confidence = plan.get("confidence")
         raw_payload = {"omniauto_brain_result": result}
 
+        if result.get("adoptable") and result.get("reply_text") and target_state.get("model_query_contract") == "vehicle_need_v2":
+            from apps.wechat_ai_customer_service.workflows.catalog_query import serialized_clearance_valid
+            if not (result.get("catalog_protocol") or {}).get("preparation") or not serialized_clearance_valid(result):
+                return AIEngineDecision(
+                    decision="retry_later", guard_result="failed",
+                    error_code="AI_ENGINE_REVIEWED_CONTENT_CHANGED", suggested_action="retry_later",
+                    raw_payload=raw_payload,
+                )
+
         hard_opt_out = result.get("hard_opt_out") if isinstance(result.get("hard_opt_out"), dict) else {}
         if (
             rule_name == "customer_service_brain_hard_opt_out"
@@ -977,6 +986,15 @@ class RealOmniAutoAIEngineAdapter:
         no_visible_reply = result.get("no_visible_reply") if isinstance(result.get("no_visible_reply"), dict) else {}
         if rule_name == "customer_service_brain_no_visible_reply" or no_visible_reply:
             no_visible_class = str(no_visible_reply.get("class") or result.get("no_visible_reply_class") or "").strip().lower()
+            if no_visible_class == "input_capacity_exceeded":
+                # An unchanged over-limit prompt cannot recover through the
+                # ordinary retry queue. Use the existing single handoff path.
+                return AIEngineDecision(
+                    decision="handoff", confidence=confidence, risk_flags=risk_flags,
+                    evidence_refs=evidence_refs, guard_result="failed",
+                    error_code="AI_ENGINE_INPUT_CAPACITY_EXCEEDED",
+                    suggested_action="handoff", raw_payload=raw_payload,
+                )
             return AIEngineDecision(
                 decision="retry_later",
                 confidence=confidence,

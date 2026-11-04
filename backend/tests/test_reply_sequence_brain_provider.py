@@ -31,6 +31,7 @@ def test_brain_provider_to_group_without_replacing_brain_or_guard(http_api, monk
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "SYNTHETIC-LOCAL-ONLY")
     requests = []
     plan = {"can_answer": True, "answer_mode": "collect_customer_info", "evidence_used": {"common_sense_topics": ["购车注意事项"]},
+            "understanding": {"user_intent": "购车需求收集"}, "reply_strategy": {"style": "concise_human"},
             "facts_claimed": [], "reply_segments": PARTS,
             "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
             "recommended_action": "send_reply", "confidence": .95}
@@ -41,7 +42,9 @@ def test_brain_provider_to_group_without_replacing_brain_or_guard(http_api, monk
             requests.append(payload)
             review = payload["model"] == "sequence-reviewer"
             result = {"verdict": "pass", "confidence": .99, "customer_visible_risk": "low", "semantic_errors": [],
-                      "hard_boundary_concerns": [], "reason": "Synthetic review of nonfactual advice"} if review else deepcopy(plan)
+                      "hard_boundary_concerns": [], "reason": "Synthetic review of nonfactual advice",
+                      "repair_instruction": "", "catalog_claim_kind": "non_inventory", "claim_kind": "non_factual",
+                      "policy_refs": {}} if review else deepcopy(plan)
             if oversized_first and not review and sum(r["model"] != "sequence-reviewer" for r in requests) == 1:
                 result["reply_segments"] = ["啊" * 109]
             body = json.dumps({"choices": [{"message": {"content": json.dumps(result, ensure_ascii=False)}, "finish_reason": "stop"}]}).encode()

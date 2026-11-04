@@ -11,7 +11,8 @@ import reply_evidence_builder as legacy_ev
 
 def review(kind='vehicle_facts', **changes):
     value={'verdict':'pass','catalog_claim_kind':kind,'confidence':0.95,'semantic_errors':[],
-           'hard_boundary_concerns':[],'customer_visible_risk':'low','repair_instruction':'','reason':'合成审核'}
+           'hard_boundary_concerns':[],'customer_visible_risk':'low','repair_instruction':'','reason':'合成审核',
+           'policy_refs':{}}
     value.update(changes);return value
 
 
