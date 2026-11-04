@@ -25,7 +25,7 @@ def test_review_result_controls_original_c3_task_creation(monkeypatch,review_cas
     user,_=json.JSONDecoder().raw_decode(user_text.lstrip())
     knowledge=user['brain_input']['content_basis']['formal_knowledge']['faq']
     plan['evidence_used']['formal_knowledge_ids']=[x['source_id'] for x in knowledge]
-   body_result={'verdict':'pass','confidence':.95,'semantic_errors':[],'hard_boundary_concerns':[],'repair_instruction':'','customer_visible_risk':'low','reason':'虚构正常购车需求澄清，无事实承诺。'} if review else copy.deepcopy(plan)
+   body_result={'verdict':'pass','catalog_claim_kind':'non_inventory','confidence':.95,'semantic_errors':[],'hard_boundary_concerns':[],'repair_instruction':'','customer_visible_risk':'low','reason':'虚构正常购车需求澄清，无事实承诺。'} if review else copy.deepcopy(plan)
    if review and review_case=='missing_safety_field':body_result.pop('hard_boundary_concerns')
    body=json.dumps({'choices':[{'message':{'content':json.dumps(body_result,ensure_ascii=False)},'finish_reason':'length' if review and review_case=='closed_json_cutoff' else 'stop'}]}).encode()
    self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)

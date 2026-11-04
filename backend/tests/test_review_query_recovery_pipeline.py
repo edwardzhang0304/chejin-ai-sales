@@ -26,7 +26,9 @@ api, flow = joined.api, joined.flow
 reviewer = sys.modules[brain.review_brain_reply_semantics.__module__]
 
 
-@pytest.mark.parametrize("failure", ["schema", "budget_unit", "wrapper", "json", "review_timeout", "review_protocol"])
+@pytest.mark.parametrize("failure", ["schema", "budget_unit", "wrapper", "json", "json_oversize", "review_timeout", "review_protocol",
+    "sort_type", "name_type", "filter_field_type", "filter_op_type", "budget_mode_type", "budget_value_type", "ids_type",
+    "review_two_objects", "review_reversed", "review_array", "review_duplicate", "review_tail"])
 @pytest.mark.parametrize("recovers", [True, False])
 def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, failure, recovers):
     api.setup_function()
@@ -36,7 +38,9 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
     monkeypatch.setattr(settings, "c3_batch_recovery_max_attempts", 2)
     attempts, calls, receipts, inventory_reads = [], [], [], []
     state = {}
-    query_failure_fields = {"schema": "sort", "budget_unit": "budget.unit", "wrapper": "catalog_query"}
+    query_failure_fields = {"schema": "sort", "budget_unit": "budget.unit", "wrapper": "catalog_query",
+                            "sort_type": "sort", "name_type": "name_queries.0.kind", "filter_field_type": "filters.0.field",
+                            "filter_op_type": "filters.0.op", "budget_mode_type": "budget.mode", "budget_value_type": "budget.value", "ids_type": "source_ids"}
 
     class DBRuntime:
         def __init__(self):
@@ -74,6 +78,14 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
             payload = joined.review("query_summary")
             if broken and failure == "review_protocol":
                 payload.pop("hard_boundary_concerns")
+            if broken and failure in {"review_two_objects", "review_reversed", "review_array", "review_duplicate", "review_tail"}:
+                good = json.dumps(payload)
+                bad = json.dumps({**payload, "verdict": "block", "semantic_errors": ["合成冲突"]})
+                raw = {"review_two_objects": good + bad, "review_reversed": bad + good,
+                       "review_array": "[" + good + "," + bad + "]",
+                       "review_duplicate": good[:-1] + ',"verdict":"block"}',
+                       "review_tail": good + ',"verdict":"block"'}[failure]
+                return {"ok": True, "status": 200, "response_text": raw}
         elif not state.get("receipt"):
             mid = str(state["invocation"]["batch"][-1]["id"])
             q = joined.query(source_ids=[mid])
@@ -83,12 +95,26 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
                 q.pop("sort")
             elif broken and failure == "budget_unit":
                 q["budget"].pop("unit")
+            if broken:
+                if failure == "sort_type": q["sort"] = []
+                elif failure == "name_type": q["name_queries"] = [{"text": "合成车型", "kind": [], "source_ids": [mid]}]
+                elif failure in {"filter_field_type", "filter_op_type"}:
+                    q["filters"] = [{"field": "brand", "op": "eq", "value": "合成", "source_ids": [mid]}]
+                    q["filters"][0]["field" if failure == "filter_field_type" else "op"] = []
+                elif failure == "budget_mode_type": q["budget"]["mode"] = []
+                elif failure == "budget_value_type": q["budget"]["value"] = []
+                elif failure == "ids_type": q["source_ids"] = [{}]
+            if failure == "json_oversize":
+                q["source_ids"] = [mid] * 90
+                q["interpretation"] = "合成完整条件来源验证"
             payload = q if broken and failure == "wrapper" else {"catalog_query": q}
-            if failure == "json":
+            if failure in {"json", "json_oversize"}:
                 # Only the existing repair request with the actual query contract
                 # can recover. Plain regeneration and the old BrainPlan repair fail.
                 repair_schema = json.loads(kwargs["messages"][-1]["content"]).get("schema", "") if stage.endswith("json_structure_repair") else ""
                 can_repair = not broken and stage.endswith("json_structure_repair") and joined.cq.QUERY_FORMAT_INSTRUCTION in repair_schema
+                if failure == "json_oversize":
+                    can_repair = not broken and stage == "brain_llm_parse_retry"
                 if not can_repair:
                     return {"ok": True, "status": 200, "response_text": json.dumps(payload).replace('"catalog_query":', '"catalog_query"', 1)}
         else:
@@ -117,9 +143,9 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
 
     worker, binding, initial = flow.generate(monkeypatch, Adapter())
     bid = initial["batch"]["id"]
-    expected = {"schema": "AI_ENGINE_CATALOG_QUERY_INVALID", "budget_unit": "AI_ENGINE_CATALOG_QUERY_INVALID", "wrapper": "AI_ENGINE_CATALOG_QUERY_INVALID",
-                "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT", "review_protocol": "AI_ENGINE_REVIEW_INVALID_RESPONSE",
-                "json": "AI_ENGINE_RESPONSE_INVALID"}[failure]
+    expected = ("AI_ENGINE_CATALOG_QUERY_INVALID" if failure in query_failure_fields else
+                "AI_ENGINE_RESPONSE_INVALID" if failure in {"json", "json_oversize"} else
+                "AI_ENGINE_REVIEW_TIMEOUT" if failure == "review_timeout" else "AI_ENGINE_REVIEW_INVALID_RESPONSE")
     with SessionLocal() as db:
         diagnostics = db.get(MessageBatch, bid).ai_response_snapshot
     assert initial["decision"] == "retry_later" and initial["batch"]["error_code"] == expected, diagnostics
@@ -129,11 +155,18 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         assert not list(db.scalars(select(ReplyAction)))
         assert not list(db.scalars(select(Task).where(Task.task_type == "chat_reply")))
         due = saved.generated_at + timedelta(seconds=settings.c3_batch_retry_delay_seconds + 1)
-        if failure == "json":
+        if failure.startswith("review_") and failure not in {"review_timeout", "review_protocol"}:
+            native = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
+            assert native["quality_gate_v2"]["parse_evidence"]["kind"] in {"ambiguous_structure", "non_object"}
+        if failure in {"json", "json_oversize"}:
             assert not inventory_reads
             native = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]
             assert native["llm_status"]["status"] == 200
-            assert native["llm_status"]["json_structure_repair"]["parse_evidence"]["kind"] == "invalid_json"
+            repair = native["llm_status"]["json_structure_repair"]
+            assert repair["parse_evidence"]["kind"] == "invalid_json"
+            if failure == "json_oversize":
+                assert repair["repair_input"]["original_chars"] > 3000
+                assert repair["repair_input"]["submitted_chars"] == 0 and not repair["repair_input"]["truncated"]
         if failure in query_failure_fields:
             assert not inventory_reads
             metadata = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]["catalog_stages"]["validation_error"]
@@ -164,6 +197,9 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         assert "尚未查询库存" in feedback
         second_generation = next(messages for a, stage, messages in calls if a == 2 and stage == "brain_llm")
         assert "尚未查询库存" in json.dumps(second_generation, ensure_ascii=False)
+    if failure == "json_oversize":
+        assert len([1 for a, stage, _ in calls if a == 1]) == 2
+        assert all(not stage.endswith("json_structure_repair") for _, stage, _ in calls)
     if failure == "json":
         assert len([1 for a, stage, _ in calls if a == 1]) == 4
         if recovers:

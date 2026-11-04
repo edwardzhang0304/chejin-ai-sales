@@ -25,9 +25,9 @@ from apps.wechat_ai_customer_service.llm_config import (
 )
 from customer_service_brain_contract import join_reply_segments, normalize_space, reply_trigger_context
 from llm_output_adapter import (
+    llm_json_parse_evidence,
     llm_json_response_is_incomplete,
     parse_complete_llm_json_response,
-    parse_llm_json_object,
 )
 
 
@@ -950,10 +950,12 @@ def reviewer_from_settings(settings: dict[str, Any]) -> dict[str, Any] | None:
         text = str(settings.get(key) or "").strip()
         if not text:
             continue
-        parsed = parse_llm_json_object(text)
+        response = {"response_text": text}
+        parsed = parse_complete_llm_json_response(response)
         if isinstance(parsed, dict):
             return parsed
-        return {"status": "error", "error": "semantic_reviewer_response_not_json", "error_kind": "protocol", "raw_response_text": text[:1000]}
+        return {"status": "error", "error": "semantic_reviewer_response_not_json", "error_kind": "protocol", "raw_response_text": text[:1000],
+                "parse_evidence": llm_json_parse_evidence(response)}
     provider = resolve_effective_llm_provider(settings.get("provider") or "manual_json", read_secret_fn=read_secret)
     if provider == "manual_json":
         return {"status": "skipped", "reason": "manual_json_semantic_reviewer_unavailable"}
@@ -1035,6 +1037,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "model": response.get("model"),
             "base_url": response.get("base_url"),
             "error": "semantic_reviewer_response_was_not_json_object",
+            "parse_evidence": llm_json_parse_evidence(response),
             "error_kind": "protocol",
             "raw_response_text": raw_text[:1000],
             "elapsed_ms": response.get("elapsed_ms"),
@@ -1395,6 +1398,7 @@ def unavailable_review(payload: dict[str, Any]) -> dict[str, Any]:
         "unavailable": not invalid_response,
         "error_kind": payload.get("error_kind") or "transport",
         "http_status": payload.get("http_status"),
+        "parse_evidence": payload.get("parse_evidence"),
         "errors": ["semantic_reviewer_invalid_response" if invalid_response else "semantic_reviewer_unavailable"],
         "warnings": [],
         "repair_instruction": (

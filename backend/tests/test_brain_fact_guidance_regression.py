@@ -161,7 +161,7 @@ def test_c3_api_database_real_brain_and_provider_preserve_guided_reply(
                     assert citation_format == "source_id"
                 plan["evidence_used"]["formal_knowledge_ids"] = citations
             result = {
-                "verdict": "pass", "confidence": .95,
+                "verdict": "pass", "catalog_claim_kind": "non_inventory", "confidence": .95,
                 "customer_visible_risk": "low", "semantic_errors": [],
                 "hard_boundary_concerns": [], "repair_instruction": "", "reason": "Artificial review of a fact-free greeting/needs question",
             } if review else plan

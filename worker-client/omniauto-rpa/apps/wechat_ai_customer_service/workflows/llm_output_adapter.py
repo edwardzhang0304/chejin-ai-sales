@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 
@@ -109,21 +110,64 @@ def llm_json_response_is_incomplete(response: dict[str, Any]) -> bool:
 
 
 def parse_complete_llm_json_response(response: dict[str, Any]) -> dict[str, Any] | None:
-    """Brain may normalize wrappers, but must not adopt a cutoff reply."""
+    """Require one unambiguous object; never select a fragment of a response."""
     if llm_json_response_is_incomplete(response):
         return None
-    return parse_llm_json_object(str(response.get("response_text") or ""), allow_truncated_repair=False)
+    try:
+        return decode_complete_json_object(str(response.get("response_text") or ""))
+    except (json.JSONDecodeError, JSONBoundaryError):
+        return None
+
+
+class JSONBoundaryError(ValueError):
+    """Controlled codes only; never include model keys or values in errors."""
+
+
+def decode_complete_json_object(text: str) -> dict[str, Any]:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise JSONBoundaryError("duplicate_key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_):
+        raise JSONBoundaryError("non_json_number")
+
+    raw = strip_markdown_code_fence(text).strip()
+    decoder = json.JSONDecoder(object_pairs_hook=unique_pairs, parse_constant=invalid_constant)
+    if not raw.startswith("{"):
+        # A complete array/scalar is not a wrapped object, even if it contains one.
+        try:
+            decoder.decode(raw)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise JSONBoundaryError("non_object")
+    start = max(0, raw.find("{"))
+    prefix = raw[:start].strip()
+    parsed, end = decoder.raw_decode(raw, start)
+    if not isinstance(parsed, dict):
+        raise JSONBoundaryError("non_object")
+    # Preserve plain explanatory wrappers, not JSON fragments, arrays, additional
+    # fences, numbers or literals. An introductory label may end with a colon.
+    for wrapper in (prefix.removesuffix(":"), raw[end:].strip()):
+        if (re.search(r'[{}\[\]"`\\,:0-9]', wrapper)
+                or re.search(r"\b(?:true|false|null|NaN|Infinity)\b", wrapper)):
+            raise JSONBoundaryError("ambiguous_structure")
+    return parsed
 
 
 def llm_json_parse_evidence(response: dict[str, Any]) -> dict[str, Any]:
     """Bounded syntax evidence without retaining customer text or field values.
 
-    Offsets refer to the fence-stripped, first balanced object when available.
+    Offsets refer to the fence-stripped response; no conflicting suffix is dropped.
     This is diagnostic only: it must never repair or authorize a response.
     """
     raw = str(response.get("response_text") or "")
     stripped = strip_markdown_code_fence(raw)
-    candidate = extract_first_json_object_text(stripped) or stripped
+    candidate = stripped.strip()
     evidence: dict[str, Any] = {
         "response_sha256": hashlib.sha256(raw.encode()).hexdigest(),
         "response_chars": len(raw),
@@ -131,7 +175,9 @@ def llm_json_parse_evidence(response: dict[str, Any]) -> dict[str, Any]:
         "incomplete": llm_json_response_is_incomplete(response),
     }
     try:
-        parsed = json.loads(candidate)
+        parsed = decode_complete_json_object(raw)
+    except JSONBoundaryError as exc:
+        evidence.update(kind="non_object" if str(exc) == "non_object" else "ambiguous_structure", error=str(exc))
     except json.JSONDecodeError as exc:
         start = max(0, exc.pos - 40)
         evidence.update(

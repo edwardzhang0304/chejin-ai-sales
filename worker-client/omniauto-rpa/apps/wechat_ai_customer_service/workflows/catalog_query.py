@@ -92,10 +92,13 @@ def rejected_field_evidence(raw: Any, fields: list[str]) -> list[dict]:
             result.append({"field": field})
             continue
         for key in ([] if field == "catalog_query" else field.split(".")):
-            if not isinstance(value, dict) or key not in value:
+            if isinstance(value, list) and key.isdecimal() and int(key) < len(value):
+                value = value[int(key)]
+            elif isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
                 present = False
                 break
-            value = value[key]
         item = {"field": field, "present": present}
         if present:
             item.update(value_type=type(value).__name__, value_sha256=fingerprint(value))
@@ -113,21 +116,27 @@ def message_sources(evidence: dict) -> list[dict]:
     return list(sources.values())
 
 
-def _ids(value: Any, *, allowed: set[str] | None = None, required: bool = False) -> list[str]:
+def _ids(value: Any, *, field: str, allowed: set[str] | None = None, required: bool = False) -> list[str]:
     if not isinstance(value, list) or len(value) > 100 or any(not isinstance(v, str) or not v for v in value):
-        raise CatalogQueryError("invalid_id_list")
+        raise CatalogQueryError("invalid_id_list", fields=[field])
     result = list(dict.fromkeys(value))
     if required and not result:
-        raise CatalogQueryError("missing_message_source")
+        raise CatalogQueryError("missing_message_source", fields=[field])
     if allowed is not None and not set(result) <= allowed:
-        raise CatalogQueryError("message_source_not_in_frozen_conversation")
+        raise CatalogQueryError("message_source_not_in_frozen_conversation", fields=[field])
     return result
 
 
-def _number(value: Any, *, zero: bool = False) -> float:
-    if type(value) not in {int, float} or not math.isfinite(value) or value < 0 or (value == 0 and not zero):
-        raise CatalogQueryError("invalid_numeric_constraint")
-    return float(value)
+def _number(value: Any, *, field: str, zero: bool = False) -> float:
+    if type(value) not in {int, float}:
+        raise CatalogQueryError("invalid_numeric_constraint", fields=[field])
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise CatalogQueryError("invalid_numeric_constraint", fields=[field]) from exc
+    if not math.isfinite(number) or number < 0 or (number == 0 and not zero):
+        raise CatalogQueryError("invalid_numeric_constraint", fields=[field])
+    return number
 
 
 def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None) -> dict:
@@ -141,41 +150,44 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
         if type(raw.get("version")) is not int or raw.get("version") != 1:
             fields.append("version")
         raise CatalogQueryError("invalid_query_schema", fields=fields)
-    if (not isinstance(raw["operation"], str) or raw["operation"] not in {"search", "details", "compare"}
-            or not isinstance(raw["requirement_state"], str) or raw["requirement_state"] not in {"clear", "uncertain"}):
-        raise CatalogQueryError("invalid_query_operation", fields=["operation", "requirement_state"])
+    for field, choices in (("operation", {"search", "details", "compare"}), ("requirement_state", {"clear", "uncertain"})):
+        if not isinstance(raw[field], str) or raw[field] not in choices:
+            raise CatalogQueryError("invalid_query_operation", fields=[field])
     allowed = {s["id"] for s in sources}
     query = deepcopy(raw)
-    query["source_ids"] = _ids(raw["source_ids"], allowed=allowed, required=True)
+    query["source_ids"] = _ids(raw["source_ids"], field="source_ids", allowed=allowed, required=True)
     for key in ("reference_ids", "exclude_ids"):
-        query[key] = _ids(raw[key])
+        query[key] = _ids(raw[key], field=key)
         if key == "reference_ids" and len(query[key]) > 20:
-            raise CatalogQueryError("too_many_referenced_vehicles")
+            raise CatalogQueryError("too_many_referenced_vehicles", fields=['reference_ids'])
     if set(query["reference_ids"]) & set(query["exclude_ids"]):
-        raise CatalogQueryError("reference_exclusion_conflict")
+        raise CatalogQueryError("reference_exclusion_conflict", fields=['reference_ids', 'exclude_ids'])
     known_ids = known_ids or {}
     if not set(query["reference_ids"] + query["exclude_ids"]) <= set(known_ids):
-        raise CatalogQueryError("vehicle_id_without_trusted_conversation_source")
+        raise CatalogQueryError("vehicle_id_without_trusted_conversation_source", fields=['reference_ids', 'exclude_ids'])
     query["id_sources"] = {key: deepcopy(known_ids[key]) for key in query["reference_ids"] + query["exclude_ids"]}
     names = raw.get("name_queries", [])
     if not isinstance(names, list) or len(names) > 10:
-        raise CatalogQueryError("invalid_name_queries")
-    for name in names:
-        if (not isinstance(name, dict) or set(name) != {"text", "kind", "source_ids"}
-                or name["kind"] not in {"reference", "exclude"}
-                or not isinstance(name["text"], str) or not 1 <= len(name["text"].strip()) <= 200):
-            raise CatalogQueryError("invalid_name_query")
-        _ids(name["source_ids"], allowed=allowed, required=True)
+        raise CatalogQueryError("invalid_name_queries", fields=['name_queries'])
+    for index, name in enumerate(names):
+        path = f"name_queries.{index}"
+        if not isinstance(name, dict) or set(name) != {"text", "kind", "source_ids"}:
+            raise CatalogQueryError("invalid_name_query", fields=[path])
+        if not isinstance(name["kind"], str) or name["kind"] not in {"reference", "exclude"}:
+            raise CatalogQueryError("invalid_name_query", fields=[f"{path}.kind"])
+        if not isinstance(name["text"], str) or not 1 <= len(name["text"].strip()) <= 200:
+            raise CatalogQueryError("invalid_name_query", fields=[f"{path}.text"])
+        _ids(name["source_ids"], field=f"{path}.source_ids", allowed=allowed, required=True)
     query["name_queries"] = deepcopy(names)
     if raw["operation"] in {"details", "compare"} and not (query["reference_ids"] or any(n["kind"] == "reference" for n in names)):
-        raise CatalogQueryError("missing_referenced_vehicle")
-    if raw["sort"] not in {"price_asc", "price_desc", "budget_distance"}:
-        raise CatalogQueryError("unsupported_sort")
+        raise CatalogQueryError("missing_referenced_vehicle", fields=['reference_ids', 'name_queries'])
+    if not isinstance(raw["sort"], str) or raw["sort"] not in {"price_asc", "price_desc", "budget_distance"}:
+        raise CatalogQueryError("unsupported_sort", fields=['sort'])
     if not isinstance(raw["interpretation"], str) or not raw["interpretation"].strip() or len(raw["interpretation"]) > 1500:
-        raise CatalogQueryError("missing_need_interpretation")
+        raise CatalogQueryError("missing_need_interpretation", fields=['interpretation'])
     unsupported = raw["unsupported_requirements"]
     if not isinstance(unsupported, list) or len(unsupported) > 20 or any(not isinstance(s, str) or len(s) > 200 for s in unsupported):
-        raise CatalogQueryError("invalid_unsupported_requirements")
+        raise CatalogQueryError("invalid_unsupported_requirements", fields=['unsupported_requirements'])
     budget = deepcopy(raw["budget"])
     # An absent budget has no evidence to cite. Normalize only this empty metadata;
     # specified/unlimited/uncertain constraints still require the declared fields.
@@ -192,20 +204,22 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
     if budget_errors:
         raise CatalogQueryError("invalid_budget_state_or_unit", fields=budget_errors)
     state = budget["state"]
-    _ids(budget.get("source_ids"), allowed=allowed, required=state in {"specified", "unlimited"})
+    _ids(budget.get("source_ids"), field="budget.source_ids", allowed=allowed, required=state in {"specified", "unlimited"})
     expected = {"state", "unit", "source_ids"}
     bounds = None
     if state == "specified":
         mode = budget.get("mode")
+        if not isinstance(mode, str):
+            raise CatalogQueryError("invalid_budget_mode", fields=["budget.mode"])
         if mode == "range":
             expected |= {"mode", "lower", "upper"}
-            lower, upper = _number(budget.get("lower"), zero=True), _number(budget.get("upper"))
+            lower, upper = _number(budget.get("lower"), field="budget.lower", zero=True), _number(budget.get("upper"), field="budget.upper")
             if lower > upper:
-                raise CatalogQueryError("inverted_budget_range")
+                raise CatalogQueryError("inverted_budget_range", fields=['budget.lower', 'budget.upper'])
             target = (lower + upper) / 2
         elif mode in {"upper", "around"}:
             expected |= {"mode", "value"}
-            target = _number(budget.get("value"))
+            target = _number(budget.get("value"), field="budget.value")
             upper = catalog_budget_around_upper(target) if mode == "around" else target
             lower = max(0.0, target - (upper - target)) if mode == "around" else 0.0
         else:
@@ -216,25 +230,29 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
     query["budget_bounds"] = bounds
     filters = raw["filters"]
     if not isinstance(filters, list) or len(filters) > 20:
-        raise CatalogQueryError("invalid_filters")
-    for f in filters:
+        raise CatalogQueryError("invalid_filters", fields=['filters'])
+    for index, f in enumerate(filters):
+        path = f"filters.{index}"
         if not isinstance(f, dict) or set(f) != {"field", "op", "value", "source_ids"}:
-            raise CatalogQueryError("invalid_filter_schema")
-        _ids(f["source_ids"], allowed=allowed, required=True)
+            raise CatalogQueryError("invalid_filter_schema", fields=[path])
+        _ids(f["source_ids"], field=f"{path}.source_ids", allowed=allowed, required=True)
+        for key in ("field", "op"):
+            if not isinstance(f[key], str):
+                raise CatalogQueryError("invalid_filter_schema", fields=[f"{path}.{key}"])
         if f["field"] in TEXT_FIELDS and f["op"] in {"eq", "in"}:
             values = [f["value"]] if f["op"] == "eq" else f["value"]
             if not isinstance(values, list) or not values or len(values) > 20 or any(not isinstance(v, str) or not v.strip() or len(v) > 100 for v in values):
-                raise CatalogQueryError("invalid_text_filter")
+                raise CatalogQueryError("invalid_text_filter", fields=[f"{path}.value"])
         elif f["field"] in NUMBER_FIELDS and f["op"] in {"lte", "gte"}:
-            _number(f["value"], zero=True)
+            _number(f["value"], field=f"{path}.value", zero=True)
         else:
-            raise CatalogQueryError("unsupported_filter_must_be_explicit")
-    for f in query["filters"]:
+            raise CatalogQueryError("unsupported_filter_must_be_explicit", fields=[f"{path}.field", f"{path}.op"])
+    for index, f in enumerate(query["filters"]):
         if f["field"] in {"energy_type", "drive_type", "series"}:
             try:
                 f["value"] = canonical_enum(f["field"], f["value"]) if f["op"] == "eq" else [canonical_enum(f["field"], v) for v in f["value"]]
             except ValueError as exc:
-                raise CatalogQueryError("unsupported_vehicle_enum") from exc
+                raise CatalogQueryError("unsupported_vehicle_enum", fields=[f"filters.{index}.value"]) from exc
     query["request"] = deepcopy(raw)
     query["source_evidence"] = deepcopy(sources)
     return query
@@ -288,7 +306,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
         if match["status"] == "unique":
             (ref_ids if match["kind"] == "reference" else excluded).update(match["matched_ids"])
     if ref_ids & excluded:
-        raise CatalogQueryError("reference_exclusion_conflict")
+        raise CatalogQueryError("reference_exclusion_conflict", fields=['reference_ids', 'exclude_ids'])
     for row in rows:
         data = row.get("data") or {}
         payload = catalog_product_payload(row)
@@ -308,7 +326,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
                 missing.append("price")
             elif not bounds["lower"] <= price <= bounds["upper"]:
                 fits = False
-        for f in query["filters"]:
+        for index, f in enumerate(query["filters"]):
             value = (data.get("additional_details") or {}).get(f["field"])
             if value is None or value == "":
                 missing.append(f["field"])

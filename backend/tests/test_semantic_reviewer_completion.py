@@ -58,3 +58,11 @@ def test_valid_negative_semantics_still_prevents_pass(endpoint,verdict):
 def test_invalid_review_contract_is_not_accepted(endpoint,field,value):
  state,settings=endpoint;state['content']=json.dumps({**FULL,field:value});out=call(settings)
  assert out['status']=='error' and out['error']=='semantic_reviewer_response_invalid_contract'
+
+
+def test_missing_catalog_classification_blocks_required_authority_review(endpoint):
+ state,settings=endpoint
+ assert 'catalog_claim_kind' not in FULL
+ out=reviewer.run_quality_reviewer_llm(settings=settings,request={'authority_review_required':True,'draft_reply':'合成需求澄清'})
+ assert out['status']=='error' and out['error']=='semantic_reviewer_response_invalid_contract'
+ assert not reviewer.normalize_quality_review_result(out)['ok']
