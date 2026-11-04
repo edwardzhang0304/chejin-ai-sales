@@ -1899,7 +1899,7 @@ def maybe_run_customer_service_brain(
     accounting["effective_settings"] = {k:{"value":settings[k], "source":"customer_service_brain_config" if k in explicit else "brain_default"} for k in config_keys}
     accounting["identity"] = dict(target_state.get("generation_identity") or {})
     accounting["model_query_contract"] = target_state.get("model_query_contract", "vehicle_query_v1")
-    accounting["final_action"] = (result.get("brain_plan") or {}).get("recommended_action")
+    accounting["plan_recommended_action"] = (result.get("brain_plan") or {}).get("recommended_action")
     recovered = bool(result.get("invalid_plan_same_capture_retry")) or any(
         "retry" in x["stage"] or "repair" in x["stage"] or x.get("failure_category") != "success"
         for x in accounting["logical_calls"]

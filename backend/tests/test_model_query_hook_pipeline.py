@@ -160,6 +160,9 @@ def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_
         assert accounting['http_attempt_count']==len(state['wire'])
         assert accounting['logical_call_count']==len(state['wire'])-int(scenario=='failover')
         assert accounting['identity']['batch_id']==bid
+        # A blocked draft may still suggest send_reply; only C3's decision is final.
+        assert 'final_action' not in accounting
+        assert accounting['plan_recommended_action']==(model.get('brain_plan') or {}).get('recommended_action')
         assert accounting['model_query_contract']==(key or 'vehicle_query_v1')
         assert len({x['call_id'] for x in accounting['logical_calls']})==accounting['logical_call_count']
         assert 'synthetic' not in json.dumps(accounting['effective_settings'])
