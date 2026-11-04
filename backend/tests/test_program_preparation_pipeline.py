@@ -42,14 +42,14 @@ def publish_policy(content):
     assert r.status_code==200,r.text
 
 
-def configure(monkeypatch,state,case,mutation):
+def configure(monkeypatch,state,case,mutation,prices_override=None):
     # The shared fixture has one unrelated listed high-price car. Preserve it:
     # the real query must filter it out, not a test-side pre-filter.
     if case=='F01':
         prices=[10.68+i for i in range(24)]+[3.58,3.78,3.98]
         messages=['我想买一台三五万的代步车','那请问你们4万块钱左右，你们有什么车']
     else:
-        prices=[5.2,5.6,6.0,6.4,6.8,7.2]
+        prices=prices_override or [5.2,5.6,6.0,6.4,6.8,7.2]
         messages=['您好','5—8万有什么车？']
     ids=[listed(f'合成车{i}',price) for i,price in enumerate(prices,1)]
     def coverage(binding):
@@ -328,6 +328,86 @@ def test_answer_goal_survives_semantic_query_and_complete_consumers(monkeypatch,
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:assert not list(db.scalars(select(ReplyAction)))
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['可以看看6.4万元的合成车4和6.8万元的合成车5。'],True),
+    (['合成车4报价6.4万元，合成车5报价6.8万元。'],True),
+    (['可以看看6.4万元的合成车4，还有合成车5报价6.8万元。'],True),
+    (['合成车4报价6.4万元，还有6.8万元的合成车5。'],True),
+    (['合成车4和合成车5分别报价6.4万元、6.8万元。'],True),
+    (['合成车4和合成车5分别报价6.8万元、6.4万元。'],False),
+    (['合成车4和合成车5报价6.4万元、6.8万元。'],False),
+    (['合成车4和合成车5分别报价6.4万元。'],False),
+    (['合成车4和合成车5都报价6.4万元。'],False),
+    (['6.8万元的合成车4和6.4万元的合成车5。'],False),
+    (['9.9万元的合成车4和6.8万元的合成车5。'],False),
+    (['6.4万元的合成车4和6.4万元的合成车5。'],False),
+    (['合成车4报价6.4万元。','合成车5报价6.8万元。'],True),
+    (['合成车4。该车报价6.4万元。','合成车5。该车报价6.8万元。'],True),
+    (['合成车4。报价6.4万元。','合成车5。报价6.8万元。'],True),
+    (['合成车4。','该车报价6.4万元。','合成车5报价6.8万元。'],True),
+    (['合成车4。','报价6.4万元。','合成车5报价6.8万元。'],True),
+    (['合成车4和合成车5。前者报价6.4万元，后者报价6.8万元。'],True),
+    (['合成车4和合成车5。','前者报价6.4万元，后者报价6.8万元。'],True),
+    (['合成车4和合成车5。它报价6.4万元。'],False),
+    (['合成车4和合成车5。','该车报价6.4万元。'],False),
+    (['合成车4和合成车5。','报价6.4万元。'],False),
+])
+def test_numeric_entity_assignment_through_review_guard_and_native_permit(monkeypatch,actual_brain,segments,allowed):
+    state=actual_brain
+    configure(monkeypatch,state,'M02','normal')
+    underlying=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=underlying(**kw)
+        if kw['model']!='synthetic-reviewer':
+            value=json.loads(response['response_text']);value['reply_segments']=segments
+            response['response_text']=json.dumps(value,ensure_ascii=False)
+        return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+        assert len(state['wire'])==2
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
+        assert result['decision']=='retry_later',result
+        with SessionLocal() as db:
+            assert not list(db.scalars(select(ReplyAction)))
+            n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
+            assert n['model_call_accounting']['failure_category']=='content_review',n
+            assert n['no_visible_reply']['class']=='fact_validation_failed',n
+        assert not state['reviews']
+
+
+@pytest.mark.parametrize('text,allowed',[
+    ('合成车4和合成车5都报价6.4万元。',True),
+    ('合成车4和合成车5分别报价6.4万元、6.4万元。',True),
+    ('6.4万元的合成车4和6.4万元的合成车5。',True),
+    ('6.4万元的合成车4和6.8万元的合成车5。',False),
+])
+def test_equal_price_entities_keep_independent_authority_in_final_pipeline(monkeypatch,actual_brain,text,allowed):
+    state=actual_brain
+    configure(monkeypatch,state,'M02','normal',prices_override=[5.2,5.6,6.0,6.4,6.4,7.2])
+    underlying=llm_config.call_llm_request_once_with_wall_timeout
+    def transport(**kw):
+        response=underlying(**kw)
+        if kw['model']!='synthetic-reviewer':
+            value=json.loads(response['response_text'])
+            a,b=state['receipt']['recommendations'][:2]
+            assert a['price']==b['price']==6.4
+            # Equal-price tie order uses actual stable IDs, not display-name order.
+            body=text.replace('合成车4','{first}').replace('合成车5','{second}').format(first=a['name'],second=b['name'])
+            value['reply_segments']=[body]
+            response['response_text']=json.dumps(value,ensure_ascii=False)
+        return response
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+        assert len(state['wire'])==2
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result

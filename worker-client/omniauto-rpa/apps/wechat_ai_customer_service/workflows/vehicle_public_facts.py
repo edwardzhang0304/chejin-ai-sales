@@ -69,6 +69,89 @@ def _reply_entities(text: str, products: list[dict]) -> list[dict]:
     return sorted(chosen, key=lambda m: m["start"])
 
 
+def _number_entity_owners(text: str, entities: list[dict], numbers: list[dict]) -> dict[int, list[int]]:
+    """Resolve explicit local syntax, never match a number by its stock value.
+
+    Adjectival numbers belong to the following name; an explicit 分别/均
+    coordination owns its list. Remaining postfix facts need one local subject.
+    Ambiguous coordinated lists deliberately stay unassigned.
+    """
+    owners = {}
+    joiner = r"\s*(?:和|及|与|以及|还有|、|，|,)\s*"
+    groups = []
+    for index, entity in enumerate(entities):
+        if groups and re.fullmatch(joiner, text[entities[groups[-1][-1]]["end"]:entity["start"]]):
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+    for group in groups:
+        if len(group) < 2:
+            continue
+        last = entities[group[-1]]
+        following = [n for n in numbers if n["start"] >= last["end"]]
+        if not following:
+            continue
+        first = following[0]
+        bridge = text[last["end"]:first["start"]]
+        # Require an explicit relationship rather than guessing list order.
+        marker = re.fullmatch(r"\s*(分别|均|都)(?:的)?(?:报价|售价|价格|车价|表显里程|里程)?(?:为|是|分别为)?\s*[:：]?\s*", bridge)
+        if not marker:
+            continue
+        if marker[1] in ("均", "都"):
+            owners[first["start"]] = group
+            continue
+        values = [first]
+        for number in following[1:]:
+            if number["unit"] != first["unit"] or not re.fullmatch(joiner, text[values[-1]["end"]:number["start"]]):
+                break
+            values.append(number)
+        if len(values) == len(group):
+            owners.update({n["start"]: [i] for n, i in zip(values, group)})
+    for number in numbers:
+        if number["start"] in owners:
+            continue
+        following = next((i for i, e in enumerate(entities) if e["start"] >= number["end"]), None)
+        if following is not None and re.fullmatch(r"\s*(?:左右)?的?\s*", text[number["end"]:entities[following]["start"]]):
+            owners[number["start"]] = [following]
+            continue
+        preceding = [i for i, e in enumerate(entities) if e["end"] <= number["start"]]
+        if not preceding:
+            continue
+        index = preceding[-1]
+        bridge = text[entities[index]["end"]:number["start"]]
+        group = next(g for g in groups if index in g)
+        # A sentence boundary or an unqualified multi-subject list does not
+        # identify a vehicle. Explicit references are entities of their own.
+        continued_subject = re.fullmatch(r"[。；;]\s*(?:报价|售价|价格|车价|表显里程|里程)(?:为|是)?\s*[:：]?\s*", bridge)
+        if len(group) == 1 and (continued_subject or not re.search(r"[。！？!?；;]|分别|均|都", bridge)):
+            owners[number["start"]] = [index]
+    return owners
+
+
+def _reply_references(text: str, entities: list[dict], prior: list[dict]) -> list[dict]:
+    """Resolve explicit anaphora only when the antecedent is unambiguous."""
+    result = list(entities)
+    if not entities and prior and re.match(r"\s*(?:报价|售价|车价|表显里程|里程)(?:为|是)?", text):
+        result.append({"start": 0, "end": 0, "ids": list(dict.fromkeys(i for e in prior for i in e["ids"]))})
+    for match in re.finditer(r"前者|后者|这辆(?:车)?|该车|它", text):
+        if any(e["start"] <= match.start() < e["end"] for e in entities):
+            continue
+        ordinal = match[0] in ("前者", "后者")
+        previous = [e for e in (entities if ordinal else result) if e["end"] <= match.start()]
+        if previous:
+            # Keep the subjects of the last sentence with actual mentions.
+            boundary = text.rfind("。", 0, previous[-1]["start"])
+            previous = [e for e in previous if e["start"] > boundary]
+        else:
+            previous = prior
+        ids = list(dict.fromkeys(i for e in previous for i in e["ids"]))
+        if ordinal:
+            ids = [ids[0 if match[0] == "前者" else 1]] if len(ids) == 2 else []
+        if ids:
+            result.append({"start": match.start(), "end": match.end(), "ids": ids})
+    return sorted(result, key=lambda e: e["start"])
+
+
 def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation: dict | None = None) -> dict:
     """Inspect actual text, before/after semantic review; never trust claim IDs.
 
@@ -132,9 +215,14 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                     return True
         return False
 
+    prior_entities = []
     for segment_index, segment in enumerate(plan.get("reply_segments") or []):
-        entities = _reply_entities(segment, products)
+        entities = _reply_references(segment, _reply_entities(segment, products), prior_entities)
         numbers = factual_number_spans(segment, excluded=[(e["start"], e["end"]) for e in entities])
+        owners = _number_entity_owners(segment, entities, numbers)
+        if entities:
+            boundary = segment.rfind("。", 0, entities[-1]["start"])
+            prior_entities = [e for e in entities if e["start"] > boundary]
         customer_positions = set()
         for n in numbers:
             clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:n["start"]])), default=0)
@@ -153,7 +241,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             end = entities[entity_index + 1]["start"] if entity_index + 1 < len(entities) else len(segment)
             section = segment[entity["start"]:end]
             if len(entity["ids"]) != 1:
-                if any(entity["end"] <= n["start"] < end for n in numbers):
+                if any(entity_index in owners.get(n["start"], []) for n in numbers):
                     errors.append("reply_vehicle_reference_ambiguous")
                 continue
             product_id = entity["ids"][0]
@@ -166,7 +254,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                 public_value = ENERGY_TYPES.get(value, value) if field == "energy_type" else DRIVE_TYPES.get(value, value) if field == "drive_type" else value
                 if isinstance(public_value, str) and public_value and public_value in section:
                     add("configuration", f"{field}:{public_value}", "product_master", product_id)
-            for number in (n for n in numbers if entity["end"] <= n["start"] < end):
+            for number in (n for n in numbers if entity_index in owners.get(n["start"], [])):
                 if number["start"] in customer_numbers:
                     continue
                 if (number["start"] in customer_positions or
@@ -203,16 +291,17 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                         expected, "product_master", product_id)
                     if field == "price":
                         priced_ids.add(product_id)
-        # Numeric clauses before any vehicle cannot borrow any later price.
-        first_entity = entities[0]["start"] if entities else len(segment)
-        prefix = segment[:first_entity]
-        for number in (n for n in numbers if n["start"] < first_entity):
+        # Unassigned facts may be a policy or an aggregate, but a number in an
+        # ambiguous vehicle assertion cannot borrow the aggregate price range.
+        for number in (n for n in numbers if n["start"] not in owners):
             if number["start"] in customer_numbers:
                 continue
             value = public_number(number["value"])
             policy = policy_number(number, segment_index)
             valid = policy
-            if amount_role(segment, number["start"]) is None and aggregate_ready(receipt) and value is not None:
+            clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:number["start"]])), default=0)
+            local_entities = [e for e in entities if clause_start <= e["start"] < number["end"]]
+            if not local_entities and amount_role(segment, number["start"]) is None and aggregate_ready(receipt) and value is not None:
                 candidates = [("catalog_match_count", "match_count")] if number["unit"] == "台" else (
                     [("catalog_price_min", "price_min"), ("catalog_price_max", "price_max")]
                     if number["unit"] == "万元" and not receipt.get("price_unknown_count") else [])

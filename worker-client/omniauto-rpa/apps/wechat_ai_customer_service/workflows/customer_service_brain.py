@@ -317,6 +317,13 @@ def classify_no_visible_reply(
 
     validation_errors = no_visible_validation_errors(source)
     if normalized_reason == "brain_plan_validation_failed":
+        for key in ("post_validation_quality_plan_validation", "repaired_plan_validation", "retry_plan_validation", "plan_validation"):
+            checked = source.get(key) or {}
+            if checked and not checked.get("ok"):
+                validation_errors = list(checked.get("errors") or [])
+                if checked.get("failure_category") == "content_review":
+                    no_visible_class = "fact_validation_failed"
+                break
         if "social_message_requires_visible_brain_reply" in validation_errors:
             no_visible_class = "social_reply_missing"
         elif "missing_reply_segments" in validation_errors or "empty_visible_reply" in validation_errors:
@@ -350,6 +357,7 @@ def classify_no_visible_reply(
         "schema_invalid": "output_format", "empty_reply_segments": "output_format",
         "social_reply_missing": "output_format", "catalog_query_invalid": "query_contract",
         "quality_repair_failed": "content_review", "guard_repair_failed": "content_review",
+        "fact_validation_failed": "content_review",
         "input_capacity_exceeded": "input_capacity_exceeded",
     }.get(no_visible_class, ai_failure_category(status_payload))
     if review_requires_recovery(review):
@@ -1153,11 +1161,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
     )
     quality: dict[str, Any] | None = None
     evidence_validation = validate_plan_against_evidence(plan, evidence_pack)
-    if not evidence_validation.get("ok"):
-        validation = {
-            "ok": False,
-            "errors": list(validation.get("errors", []) or []) + list(evidence_validation.get("errors", []) or []),
-        }
+    validation = merge_plan_evidence_validation(validation, evidence_validation)
     hard_opt_out_validation = validate_hard_opt_out_evidence(plan, brain_input)
     if not hard_opt_out_validation.get("ok"):
         validation = {
@@ -1221,11 +1225,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     combined=combined,
                 )
                 retry_evidence_validation = validate_plan_against_evidence(retry_plan, evidence_pack)
-                if not retry_evidence_validation.get("ok"):
-                    retry_validation = {
-                        "ok": False,
-                        "errors": list(retry_validation.get("errors", []) or []) + list(retry_evidence_validation.get("errors", []) or []),
-                    }
+                retry_validation = merge_plan_evidence_validation(retry_validation, retry_evidence_validation)
                 retry_quality = verify_brain_reply_quality(retry_plan, current_message=combined, evidence_pack=evidence_pack, settings=settings)
                 payload["retry_brain_plan"] = compact_brain_plan(retry_plan)
                 payload["retry_plan_validation"] = retry_validation
@@ -1274,11 +1274,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                     combined=combined,
                 )
                 repaired_evidence_validation = validate_plan_against_evidence(repaired_plan, evidence_pack)
-                if not repaired_evidence_validation.get("ok"):
-                    repaired_validation = {
-                        "ok": False,
-                        "errors": list(repaired_validation.get("errors", []) or []) + list(repaired_evidence_validation.get("errors", []) or []),
-                    }
+                repaired_validation = merge_plan_evidence_validation(repaired_validation, repaired_evidence_validation)
                 repaired_quality = verify_brain_reply_quality(repaired_plan, current_message=combined, evidence_pack=evidence_pack, settings=settings)
                 repaired_soft_pass = repaired_deterministic_quality_soft_pass_decision(
                     settings=settings,
@@ -1367,12 +1363,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                             combined=combined,
                         )
                         quality_retry_evidence_validation = validate_plan_against_evidence(quality_retry_plan, evidence_pack)
-                        if not quality_retry_evidence_validation.get("ok"):
-                            quality_retry_validation = {
-                                "ok": False,
-                                "errors": list(quality_retry_validation.get("errors", []) or [])
-                                + list(quality_retry_evidence_validation.get("errors", []) or []),
-                            }
+                        quality_retry_validation = merge_plan_evidence_validation(quality_retry_validation, quality_retry_evidence_validation)
                         quality_retry_quality = verify_brain_reply_quality(
                             quality_retry_plan,
                             current_message=combined,
@@ -1494,11 +1485,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 combined=combined,
             )
             repaired_evidence_validation = validate_plan_against_evidence(repaired_plan, evidence_pack)
-            if not repaired_evidence_validation.get("ok"):
-                repaired_validation = {
-                    "ok": False,
-                    "errors": list(repaired_validation.get("errors", []) or []) + list(repaired_evidence_validation.get("errors", []) or []),
-                }
+            repaired_validation = merge_plan_evidence_validation(repaired_validation, repaired_evidence_validation)
             repaired_quality = verify_brain_reply_quality(repaired_plan, current_message=combined, evidence_pack=evidence_pack, settings=settings)
             repaired_soft_pass = repaired_deterministic_quality_soft_pass_decision(
                 settings=settings,
@@ -1693,11 +1680,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                 combined=combined,
             )
             repaired_evidence_validation = validate_plan_against_evidence(repaired_plan, evidence_pack)
-            if not repaired_evidence_validation.get("ok"):
-                repaired_validation = {
-                    "ok": False,
-                    "errors": list(repaired_validation.get("errors", []) or []) + list(repaired_evidence_validation.get("errors", []) or []),
-                }
+            repaired_validation = merge_plan_evidence_validation(repaired_validation, repaired_evidence_validation)
             repaired_quality = verify_brain_reply_quality(repaired_plan, current_message=combined, evidence_pack=evidence_pack, settings=settings)
             repaired_soft_pass = repaired_deterministic_quality_soft_pass_decision(
                 settings=settings,
@@ -1788,12 +1771,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
                         combined=combined,
                     )
                     guard_quality_retry_evidence_validation = validate_plan_against_evidence(guard_quality_retry_plan, evidence_pack)
-                    if not guard_quality_retry_evidence_validation.get("ok"):
-                        guard_quality_retry_validation = {
-                            "ok": False,
-                            "errors": list(guard_quality_retry_validation.get("errors", []) or [])
-                            + list(guard_quality_retry_evidence_validation.get("errors", []) or []),
-                        }
+                    guard_quality_retry_validation = merge_plan_evidence_validation(guard_quality_retry_validation, guard_quality_retry_evidence_validation)
                     guard_quality_retry_quality = verify_brain_reply_quality(
                         guard_quality_retry_plan,
                         current_message=combined,
@@ -3508,7 +3486,8 @@ def maybe_repair_brain_plan(
 def plan_validation_repair_feedback(validation: dict[str, Any], *, combined: str) -> dict[str, Any]:
     errors = [str(item) for item in validation.get("errors", []) or [] if str(item)]
     instruction_parts = [
-        "BrainPlan未通过权威证据校验。请重新理解客户当前问题并重新生成BrainPlan。",
+        "BrainPlan未通过权威证据校验。请修正指出的正文事实或结构问题并重新生成BrainPlan。",
+        "本轮已冻结的查询条件、预算、排除条件和排序不得因返修改写；事实错误不是JSON格式错误。",
         "结构化校验只提供审稿意见，最终回复仍由Brain决定。",
         "商品名称、价格、车况、库存等商品事实必须回到product_master授权；政策流程必须回到formal_knowledge授权。",
         "当前会话事实只能帮助理解指代，不能单独授权价格、库存、车况或承诺。",
@@ -4888,6 +4867,15 @@ def validate_runtime_brain_plan(plan: dict[str, Any], *, settings: dict[str, Any
     if review.get("ok") and review.get("claim_kind") == "non_factual":
         return {"ok": True, "errors": [], "authority_review": compact_semantic_review(review)}
     return {"ok": False, "errors": errors or ["authority_claim_not_cleared"], "authority_review": compact_semantic_review(review)}
+
+
+def merge_plan_evidence_validation(structure: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    """Keep content rejection distinct from the preceding schema validation."""
+    errors = list(structure.get("errors") or []) + list(evidence.get("errors") or [])
+    return {**structure, "ok": not errors, "errors": errors,
+            "evidence_errors": list(evidence.get("errors") or []),
+            "failure_category": ("output_format" if not structure.get("ok") else
+                                 "content_review" if not evidence.get("ok") else "success")}
 
 
 def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str, Any]) -> dict[str, Any]:

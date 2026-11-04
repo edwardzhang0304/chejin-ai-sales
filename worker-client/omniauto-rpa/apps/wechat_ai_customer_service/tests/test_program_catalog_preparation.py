@@ -308,3 +308,69 @@ def test_final_fact_guard_rechecks_exact_approved_plan_and_mapping(mutation):
     if mutation=='mapping':pack['policy_reference_map']['knowledge']['K1']['content']='改过的内容'
     final=validate_reply_fact_authority(text,pack,reviewed_plan=plan)
     assert final['ok']==(mutation=='none'),final
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['可以看看6.4万元的合成车4和6.8万元的合成车5。'],True),
+    (['可以看看6.4万元的合成车4，还有合成车5报价6.8万元。'],True),
+    (['合成车4报价6.4万元，还有6.8万元的合成车5。'],True),
+    (['合成车4和合成车5分别报价6.4万元、6.8万元。'],True),
+    (['合成车4和合成车5分别报价6.8万元、6.4万元。'],False),
+    (['合成车4和合成车5报价6.4万元、6.8万元。'],False),
+    (['合成车4和合成车5分别报价6.4万元。'],False),
+    (['合成车4和合成车5都报价6.4万元。'],False),
+    (['6.8万元的合成车4和6.4万元的合成车5。'],False),
+    (['9.9万元的合成车4和6.8万元的合成车5。'],False),
+    (['6.4万元的合成车4和6.4万元的合成车5。'],False),
+    (['合成车4。该车报价6.4万元。','合成车5。该车报价6.8万元。'],True),
+    (['合成车4。报价6.4万元。','合成车5。报价6.8万元。'],True),
+    (['合成车4。','该车报价6.4万元。','合成车5报价6.8万元。'],True),
+    (['合成车4。','报价6.4万元。','合成车5报价6.8万元。'],True),
+    (['合成车4和合成车5。前者报价6.4万元，后者报价6.8万元。'],True),
+    (['合成车4和合成车5。','前者报价6.4万元，后者报价6.8万元。'],True),
+    (['合成车4和合成车5。它报价6.4万元。'],False),
+    (['合成车4和合成车5。','该车报价6.4万元。'],False),
+    (['合成车4和合成车5。','报价6.4万元。'],False),
+])
+def test_actual_numeric_entity_assignment_is_word_order_independent(segments,allowed):
+    pack,_,_,_=prepared()
+    result=validate_reply_public_facts({'reply_segments':segments},pack)
+    assert result['ok']==allowed,result
+    if allowed:
+        prices={f['source_id']:f['value'] for f in result['facts_claimed'] if f['fact_type']=='price'}
+        assert prices=={'4':6.4,'5':6.8}
+
+
+@pytest.mark.parametrize('text',[
+    '合成车1和合成车2都报价6.4万元。',
+    '合成车1和合成车2分别报价6.4万元、6.4万元。',
+    '6.4万元的合成车1和6.4万元的合成车2。',
+])
+def test_equal_prices_do_not_require_value_based_entity_guessing(text):
+    pack,_,_,_=prepared(rows=[row('1',6.4),row('2',6.4)])
+    result=validate_reply_public_facts({'reply_segments':[text]},pack)
+    assert result['ok'],result
+    assert {f['source_id'] for f in result['facts_claimed'] if f['fact_type']=='price'}=={'1','2'}
+
+
+@pytest.mark.parametrize('schema_errors,evidence_errors,category',[
+    ([],['reply_numeric_fact_mismatch'],'content_review'),
+    ([],['answer_known_price_omitted'],'content_review'),
+    (['invalid_confidence'],[],'output_format'),
+    (['invalid_confidence'],['reply_numeric_fact_mismatch'],'output_format'),
+])
+def test_plan_rejection_classification_retains_validation_owner(schema_errors,evidence_errors,category):
+    validation=brain.merge_plan_evidence_validation({'ok':not schema_errors,'errors':schema_errors},
+        {'ok':not evidence_errors,'errors':evidence_errors})
+    result=brain.classify_no_visible_reply('brain_plan_validation_failed',payload={'plan_validation':validation})
+    assert result['failure_category']==category,result
+    assert validation['evidence_errors']==evidence_errors
+
+
+def test_latest_fact_error_is_not_overridden_by_repaired_earlier_empty_reply():
+    current=brain.merge_plan_evidence_validation({'ok':True,'errors':[]},
+        {'ok':False,'errors':['reply_numeric_fact_mismatch']})
+    result=brain.classify_no_visible_reply('brain_plan_validation_failed',payload={
+        'plan_validation':{'ok':False,'errors':['missing_reply_segments']},
+        'repaired_plan_validation':current})
+    assert result['class']=='fact_validation_failed' and result['failure_category']=='content_review'
