@@ -248,6 +248,9 @@ def test_pre_call_evidence_failure_is_unsent_and_connection_closed(lab, monkeypa
     assert connections and all(c.closed_for_test for c in connections)
     gap = json.loads((storage.APP_DIR / 'artifacts/runtime/hook-memory-gap.json').read_text())
     assert gap['delivery'] == 'not_attempted'
+    assert gap['process_generation'] == process.generation
+    with storage.db_connection() as db:
+        assert gap['action_id'] == db.execute('SELECT action_id FROM hook_active_calls ORDER BY rowid DESC LIMIT 1').fetchone()[0]
     with storage.db_connection() as db:
         assert db.execute('SELECT state FROM hook_active_calls ORDER BY rowid DESC LIMIT 1').fetchone()[0] == 'completed'
         db.execute('DROP TRIGGER fail_observation'); db.commit()
@@ -286,3 +289,32 @@ def test_pre_call_failure_core_settlement_failure_keeps_barrier(lab):
         db.commit()
     with pytest.raises(sqlite3.IntegrityError):gateway.login_status(process)
     assert not server.requests and unresolved(process.generation)
+
+
+@pytest.mark.parametrize('session', [False, True])
+def test_early_connection_failures_keep_distinct_authoritative_ids_in_zip(lab, monkeypatch, tmp_path, session):
+    from chejin_worker_client import hook_transport, diagnostic_bundle
+    server, gateway, process, *_ = lab
+    # Seed a prior successful call; a later failure must not reuse its ID.
+    assert gateway.login_status(process).logged_in
+    with storage.db_connection() as db:
+        old_id = db.execute('SELECT action_id FROM hook_active_calls ORDER BY rowid DESC LIMIT 1').fetchone()[0]
+    def broken(*_):raise OSError('synthetic connection construction failure')
+    monkeypatch.setattr(hook_transport, 'connection', broken)
+    observed = {old_id}
+    for number in range(2):
+        with pytest.raises(OSError):
+            if session:
+                with gateway.history_session(process, None):pass
+            else:gateway.login_status(process)
+        assert getattr(gateway._call_context, 'action_id', None) is None
+        path = diagnostic_bundle.export_bundle(storage.APP_DIR, tmp_path / f'failure-{number}.zip')
+        with zipfile.ZipFile(path) as zipped:
+            gap = json.loads(zipped.read('logs/runtime/hook-memory-gap.json'))
+            calls = json.loads(zipped.read('state/hook_active_calls.json'))['rows']
+        assert gap['process_generation'] == process.generation and gap['action_id'] not in observed
+        observed.add(gap['action_id'])
+        assert any(c['action_id'] == gap['action_id'] and c['state'] == 'completed' for c in calls)
+        assert 'request_sha256' in gap['unavailable']
+        assert gap['retention'] == 'latest_failure_only'
+    assert len(server.requests) == 1 and not unresolved(process.generation)

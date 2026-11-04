@@ -115,7 +115,7 @@ def provider_summary(route, raw):
     return result
 
 
-def record_gap(route, error):
+def record_gap(route, error, *, generation=None, action_id=None, operation=None, request_sha256=None):
     """One bounded fallback for unavailable pre-call telemetry, no raw payload."""
     from . import storage
     try:
@@ -125,7 +125,11 @@ def record_gap(route, error):
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps({'status': 'pre_call_evidence_failed',
             'delivery': 'not_attempted', 'route': route, 'reason': type(error).__name__,
-            'at': time.time(), 'pid': os.getpid(), 'retention': 'latest_failure_only'}))
+            'at': time.time(), 'pid': os.getpid(), 'retention': 'latest_failure_only',
+            'process_generation': generation, 'action_id': action_id,
+            'operation': operation, 'request_sha256': request_sha256,
+            'unavailable': [key for key, value in {'process_generation': generation,
+                'action_id': action_id, 'operation': operation, 'request_sha256': request_sha256}.items() if value is None]}))
         os.replace(temporary, path)
     except Exception:
         pass  # Active-call settlement still must persist, or stays fail-closed.
