@@ -377,6 +377,7 @@ def _brain_retry_instruction(message_batch: dict) -> str:
             "不要编造库存结果或改变客户条件与预算含义；不支持的条件按协议显式保留，必要时澄清。"
             "校验信息："
             + json.dumps({"code": failure.get("code"), "fields": failure.get("fields", [])}, ensure_ascii=False)[:1000]
+            + "\n" + str(failure.get("repair_instruction") or "")[:2500]
         )
     if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
         return ""

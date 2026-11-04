@@ -26,7 +26,7 @@ api, flow = joined.api, joined.flow
 reviewer = sys.modules[brain.review_brain_reply_semantics.__module__]
 
 
-@pytest.mark.parametrize("failure", ["schema", "budget_unit", "review_timeout", "review_protocol"])
+@pytest.mark.parametrize("failure", ["schema", "budget_unit", "wrapper", "review_timeout", "review_protocol"])
 @pytest.mark.parametrize("recovers", [True, False])
 def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, failure, recovers):
     api.setup_function()
@@ -36,6 +36,7 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
     monkeypatch.setattr(settings, "c3_batch_recovery_max_attempts", 2)
     attempts, calls, receipts, inventory_reads = [], [], [], []
     state = {}
+    query_failure_fields = {"schema": "sort", "budget_unit": "budget.unit", "wrapper": "catalog_query"}
 
     class DBRuntime:
         def __init__(self):
@@ -64,9 +65,9 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         stage = kwargs["progress_stage"]
         calls.append((attempt, stage, deepcopy(kwargs["messages"])))
         broken = attempt == 1 or not recovers
-        if failure in {"schema", "budget_unit"} and attempt > 1:
+        if failure in query_failure_fields and attempt > 1:
             feedback = state["invocation"]["target_state"].get("brain_retry_instruction", "")
-            broken |= ("sort" if failure == "schema" else "budget.unit") not in feedback
+            broken |= query_failure_fields[failure] not in feedback
         if stage == "semantic_reviewer":
             if broken and failure == "review_timeout":
                 return {"ok": False, "status": 0, "error_kind": "transport", "error": "wall_timeout_25s"}
@@ -82,7 +83,7 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
                 q.pop("sort")
             elif broken and failure == "budget_unit":
                 q["budget"].pop("unit")
-            payload = {"catalog_query": q}
+            payload = q if broken and failure == "wrapper" else {"catalog_query": q}
         else:
             receipt = state["receipt"]
             payload = joined.summary_plan(receipt)
@@ -109,7 +110,7 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
 
     worker, binding, initial = flow.generate(monkeypatch, Adapter())
     bid = initial["batch"]["id"]
-    expected = {"schema": "AI_ENGINE_CATALOG_QUERY_INVALID", "budget_unit": "AI_ENGINE_CATALOG_QUERY_INVALID",
+    expected = {"schema": "AI_ENGINE_CATALOG_QUERY_INVALID", "budget_unit": "AI_ENGINE_CATALOG_QUERY_INVALID", "wrapper": "AI_ENGINE_CATALOG_QUERY_INVALID",
                 "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT", "review_protocol": "AI_ENGINE_REVIEW_INVALID_RESPONSE"}[failure]
     with SessionLocal() as db:
         diagnostics = db.get(MessageBatch, bid).ai_response_snapshot
@@ -120,10 +121,11 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         assert not list(db.scalars(select(ReplyAction)))
         assert not list(db.scalars(select(Task).where(Task.task_type == "chat_reply")))
         due = saved.generated_at + timedelta(seconds=settings.c3_batch_retry_delay_seconds + 1)
-        if failure in {"schema", "budget_unit"}:
+        if failure in query_failure_fields:
             assert not inventory_reads
             metadata = saved.ai_response_snapshot["raw_payload"]["omniauto_brain_result"]["catalog_stages"]["validation_error"]
-            assert metadata["fields"] == (["sort"] if failure == "schema" else ["budget.unit"])
+            assert metadata["fields"] == [query_failure_fields[failure]]
+            assert joined.cq.QUERY_FORMAT_INSTRUCTION == metadata["repair_instruction"]
     monkeypatch.setattr(c3_service, "utcnow", lambda: due)
     recovered = recover_due_message_batches_once()
     assert recovered["generated"] == 1 and recovered["failed"] == 0, recovered
@@ -142,9 +144,10 @@ def test_failure_recovers_or_hands_off_without_sending_unreviewed(monkeypatch, f
         else:
             assert not replies and not tasks and len(handoffs) == 1
             assert handoffs[0].handoff_reason_code == "AI_ENGINE_RETRY_EXHAUSTED"
-    if failure in {"schema", "budget_unit"}:
+    if failure in query_failure_fields:
         feedback = attempts[1]["invocation"]["target_state"]["brain_retry_instruction"]
-        assert ("sort" if failure == "schema" else "budget.unit") in feedback
+        assert query_failure_fields[failure] in feedback
+        assert joined.cq.QUERY_FORMAT_INSTRUCTION in feedback
         assert "尚未查询库存" in feedback
         second_generation = next(messages for a, stage, messages in calls if a == 2 and stage == "brain_llm")
         assert "尚未查询库存" in json.dumps(second_generation, ensure_ascii=False)

@@ -23,21 +23,35 @@ from apps.wechat_ai_customer_service.adapters.vehicle_fields import (
 PROTOCOL = "vehicle_query_v1"
 TEXT_FIELDS = {"brand", "series", "model", "energy_type", "drive_type", "location", "displacement"}
 NUMBER_FIELDS = {"mileage_km", "battery_capacity_kwh"}
+QUERY_REQUIRED_FIELDS = ("version", "operation", "requirement_state", "budget", "filters", "reference_ids",
+                         "exclude_ids", "sort", "source_ids", "unsupported_requirements", "interpretation")
+QUERY_ENVELOPE_EXAMPLE = {"catalog_query": {
+    "version": 1, "operation": "search", "requirement_state": "clear",
+    "budget": {"state": "not_mentioned", "unit": "万元", "source_ids": []},
+    "filters": [], "name_queries": [], "reference_ids": [], "exclude_ids": [], "sort": "price_asc",
+    "source_ids": ["消息ID"], "unsupported_requirements": [], "interpretation": "按客户原话说明需求与待核验条件",
+}}
+QUERY_FORMAT_INSTRUCTION = (
+    "首轮查车必须输出完整外层对象，不能把QUERY字段直接放在最外层。合法结构示例（值须按真实需求替换）："
+    + json.dumps(QUERY_ENVELOPE_EXAMPLE, ensure_ascii=False, separators=(",", ":"))
+    + "。catalog_query内必填字段：" + ",".join(QUERY_REQUIRED_FIELDS)
+    + "；只有name_queries可省略。sort即使没有预算也必须填写，只能选price_asc/price_desc/budget_distance；"
+      "不支持的筛选或排序条件保留在unsupported_requirements，不得省略字段或假装已筛选。"
+      "所有预算状态均须保留unit=万元；不允许用示例值替客户设预算。"
+)
 
 QUERY_INSTRUCTION = """
 本轮车辆事实只能通过 catalog_query 获取。未查询不代表没有库存；历史推荐不是当前库存证明。
 先理解完整当前消息和历史，分清当前总预算、以前预算、首付、月供、否定、指代及拒绝旧推荐。
 需要库存、价格、推荐或比较时，首轮只输出 {"catalog_query": QUERY}，不同时输出回复。
 无需车辆事实的闲聊/常识可直接输出原 BrainPlan；意思含糊可用原 send_reply + ask_clarifying_question。
-QUERY格式（仅以下字段）：
-{"version":1,"operation":"search|details|compare","requirement_state":"clear|uncertain",
- "budget":{"state":"specified|unlimited|not_mentioned|uncertain","unit":"万元",
-           "mode":"upper|range|around","value":4,"lower":3,"upper":5,"source_ids":["消息ID"]},
- "filters":[{"field":"brand","op":"eq","value":"大众","source_ids":["消息ID"]}],
- "name_queries":[{"text":"客户点名的完整车型称呼","kind":"reference|exclude","source_ids":["消息ID"]}],
- "reference_ids":[],"exclude_ids":[],"sort":"price_asc|price_desc|budget_distance",
- "source_ids":["消息ID"],"unsupported_requirements":[],"interpretation":"简短说明当前需求与历史取舍"}
+QUERY字段说明：version为整数1；operation选search/details/compare；requirement_state选clear/uncertain。
+budget.state选specified/unlimited/not_mentioned/uncertain，unit固定万元。
+filters每项为{"field":"brand","op":"eq","value":"大众","source_ids":["消息ID"]}这样的条件对象。
+name_queries每项为{"text":"客户点名的完整车型称呼","kind":"reference","source_ids":["消息ID"]}，kind选reference/exclude。
 预算 specified 时 upper/around 仅填写 value，range 仅填写 lower/upper；其他状态不填金额或mode；not_mentioned使用source_ids=[]。
+指定上限预算对象示例：{"state":"specified","unit":"万元","mode":"upper","value":4,"source_ids":["消息ID"]}。
+指定区间预算对象示例：{"state":"specified","unit":"万元","mode":"range","lower":3,"upper":5,"source_ids":["消息ID"]}。金额必须来自真实预算，不照抄示例。
 当前未提但历史有可靠预算时应解析成 specified 并引用该历史消息；未设预算询问品牌允许 not_mentioned。
 unlimited 只用于客户明确取消预算，uncertain 用于含糊或矛盾。首付/月供不等于总价，不用最近出现的数字覆盖总预算。
 支持 brand/series/model/energy_type/drive_type/location/displacement 的 eq（或多值 in），以及 mileage_km（公里）/battery_capacity_kwh（kWh）的 lte/gte。排量如1.5T是文字，不能数值比较。
@@ -55,6 +69,7 @@ source_level=catalog_query，source_id=程序query_id，value=准确数值（价
 """
 
 QUERY_INSTRUCTION += "\n可用能源值：" + json.dumps(ENERGY_TYPES, ensure_ascii=False) + "；驱动：" + json.dumps(DRIVE_TYPES, ensure_ascii=False) + "；车系：" + json.dumps(SERIES_OPTIONS, ensure_ascii=False)
+QUERY_INSTRUCTION += "\n" + QUERY_FORMAT_INSTRUCTION
 
 
 class CatalogQueryError(ValueError):
@@ -116,7 +131,7 @@ def _number(value: Any, *, zero: bool = False) -> float:
 
 
 def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None) -> dict:
-    keys = {"version", "operation", "requirement_state", "budget", "filters", "reference_ids", "exclude_ids", "sort", "source_ids", "unsupported_requirements", "interpretation"}
+    keys = set(QUERY_REQUIRED_FIELDS)
     if not isinstance(raw, dict):
         raise CatalogQueryError("invalid_query_schema", fields=["catalog_query"])
     if set(raw) - {"name_queries"} != keys or type(raw.get("version")) is not int or raw["version"] != 1:
@@ -448,12 +463,15 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
     """At most one read-only query then one completion, inside Brain's time budget."""
     evidence = brain_input["evidence"]
     first = first_result.get("brain_plan") or {}
-    if not first_result.get("ok") or "catalog_query" not in first:
+    query_without_wrapper = "catalog_query" not in first and "operation" in first and ("budget" in first or "filters" in first)
+    if not first_result.get("ok") or ("catalog_query" not in first and not query_without_wrapper):
         return first_result
     audit = {"understanding": {k: first_result.get(k) for k in ("usage", "prompt_estimate", "provider", "model", "status", "elapsed_ms")}}
     started = time.monotonic()
     phase = "validation"
     try:
+        if "catalog_query" not in first:
+            raise CatalogQueryError("catalog_query_wrapper_required", fields=["catalog_query"])
         if set(first) != {"catalog_query"}:
             raise CatalogQueryError("query_and_reply_must_be_separate", fields=["catalog_query"])
         query = normalize_query(first["catalog_query"], message_sources(evidence),
@@ -485,8 +503,11 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         if invalid_query:
             audit["validation_error"] = {
                 "code": str(exc), "fields": exc.fields,
-                "field_evidence": rejected_field_evidence(first.get("catalog_query"), exc.fields),
-                "query_sha256": fingerprint(first.get("catalog_query")),
+                "field_evidence": ([{"field": "catalog_query", "present": False}] if query_without_wrapper else
+                                   rejected_field_evidence(first.get("catalog_query"), exc.fields)),
+                "query_sha256": fingerprint(first.get("catalog_query", first)),
+                "envelope_present": "catalog_query" in first,
+                "repair_instruction": QUERY_FORMAT_INSTRUCTION,
             }
         return {"ok": False, "error": str(exc) if isinstance(exc, CatalogQueryError) else "catalog_query_unavailable",
                 "error_kind": "catalog_query_validation" if invalid_query else "catalog_query_execution",

@@ -135,3 +135,25 @@ def test_year_is_unsupported_without_silently_discarding_condition():
     q["filters"] = []
     q["unsupported_requirements"] = ["年份近一点"]
     assert cq.normalize_query(q, cq.message_sources(evidence()))["unsupported_requirements"] == ["年份近一点"]
+
+
+def test_query_output_template_is_accepted_by_the_actual_validator():
+    example = deepcopy(cq.QUERY_ENVELOPE_EXAMPLE)
+    normalized = cq.normalize_query(example["catalog_query"], [{"id": "消息ID"}])
+    assert normalized["budget"]["state"] == "not_mentioned"
+    assert normalized["sort"] == "price_asc"
+    assert set(cq.QUERY_REQUIRED_FIELDS) <= set(example["catalog_query"])
+    assert cq.QUERY_FORMAT_INSTRUCTION in cq.QUERY_INSTRUCTION
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_envelope_evidence_distinguishes_missing_wrapper_from_extra_fields(wrapped):
+    plan = {"catalog_query": query(), "operation": "search", "budget": {}} if wrapped else query()
+    result = cq.run_catalog_round(first_result={"ok": True, "status": 200, "brain_plan": plan},
+        settings={}, brain_input={"evidence": evidence()},
+        run_llm=lambda **_: pytest.fail("invalid envelope must not call the model"),
+        runtime_factory=lambda: pytest.fail("invalid envelope must not query inventory"))
+    error = result["catalog_stages"]["validation_error"]
+    assert error["envelope_present"] is wrapped
+    assert error["field_evidence"][0]["present"] is wrapped
+    assert error["code"] == ("query_and_reply_must_be_separate" if wrapped else "catalog_query_wrapper_required")
