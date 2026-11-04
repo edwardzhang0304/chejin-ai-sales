@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import hashlib
 import json
 import os
 import shutil
@@ -28,6 +29,8 @@ _PROVIDER_PROGRESS_STRING_FIELDS = {
     "call_id",
     "result_class",
     "provider_request_id",
+    "parent_call_id",
+    "phase",
 }
 
 
@@ -109,6 +112,8 @@ def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
                 event[key] = max(0, int(raw[key]))
             except (TypeError, ValueError):
                 continue
+        if "remaining_budget_seconds" in raw and type(raw["remaining_budget_seconds"]) in {int, float}:
+            event["remaining_budget_seconds"] = max(0.0, float(raw["remaining_budget_seconds"]))
         if "timeout_seconds" in raw:
             try:
                 event["timeout_seconds"] = max(
@@ -507,6 +512,12 @@ class RealOmniAutoAIEngineAdapter:
         from app.services.reply_sequence_policy import sequence_policy
         brain.update(sequence_policy())
         config["customer_service_brain"] = brain
+        config["_brain_config_source"] = {"source":"C3_OMNIAUTO_CONFIG_PATH",
+                                          "effective_brain_sha256":hashlib.sha256(json.dumps(brain,sort_keys=True).encode()).hexdigest(),
+                                          "backend_overrides":[key for key,value in {
+                                              "C3_OMNIAUTO_PROVIDER":settings.c3_omniauto_provider,
+                                              "C3_OMNIAUTO_MODEL":settings.c3_omniauto_model,
+                                              "C3_OMNIAUTO_BASE_URL":settings.c3_omniauto_base_url}.items() if value]}
         return config
 
     @staticmethod
@@ -722,12 +733,23 @@ class RealOmniAutoAIEngineAdapter:
         # Brain runtime, configuration, credentials, or Provider path until
         # the frozen MessageEvent snapshot has passed the sole bridge.
         self._load_brain()
+        catalog = importlib.import_module("apps.wechat_ai_customer_service.workflows.catalog_query")
+        try:
+            catalog.model_contract(conversation_context)
+        except catalog.CatalogQueryError as exc:
+            raise AppError("AI_ENGINE_CATALOG_QUERY_INVALID", "冻结的模型查询合同无效", 503,
+                           {"code": str(exc), "fields": exc.fields}) from exc
         config = self._load_config()
         self._require_api_key(config)
         combined = "\n".join(str(item.get("content") or "").strip() for item in messages).strip()
         target_name = str(conversation_context.get("remark_code") or conversation_context.get("conversation_id") or "customer")
         target_state = {
+            **({"model_query_contract": conversation_context["model_query_contract"]}
+               if "model_query_contract" in conversation_context else {}),
             "conversation_id": conversation_context.get("conversation_id"),
+            "generation_identity": {"conversation_id":conversation_context.get("conversation_id"),
+                                    "batch_id":message_batch.get("id"), "generation_attempt":message_batch.get("generation_attempt"),
+                                    "recall_cycle_id":message_batch.get("recall_cycle_id")},
             # This marker is independent of the projected payload on purpose:
             # if a later refactor drops ``chejin_brain_context``, both normal
             # and fast Brain paths must fail closed instead of reading

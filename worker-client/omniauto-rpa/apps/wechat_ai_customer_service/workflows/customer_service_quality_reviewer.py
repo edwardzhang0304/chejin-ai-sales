@@ -17,6 +17,7 @@ from typing import Any
 
 from apps.wechat_ai_customer_service.llm_config import (
     call_llm_request_with_failover,
+    requires_technical_recovery,
     read_secret,
     resolve_effective_llm_provider,
     resolve_llm_api_key,
@@ -1118,6 +1119,9 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         system += ("核对catalog_protocol中的结构化需求与source_evidence原文是否一致：总预算不是首付/月供，"
                    "当前要求优先于已否定或过去预算，未提预算不等于明确不限。核对拒绝旧车、品牌、比较意图。"
                    "需求理解错误必须repair，不能仅因报价真实放行；你不能自行修改查询需求或回执。"
+                   "model_query_contract=vehicle_need_v2时，预算金额固定以万元表示，核对原话单位，不能把首付/元当总价/万元。"
+                   "核对raw_model_query及sort_origin/sort_source_ids：program_default只表示没有明确偏好；"
+                   "客户明确便宜优先等排序却漏sort、排序来源不支持或排序诉求未保留，必须repair，不能因默认碰巧相同放行。"
                    "未查询不能宣称当前库存事实；匹配数量只对应列出的已支持条件，字段未知或不支持条件必须如实表达。"
                    "references可用于点名比较，recommendations是推荐集合；不能用高价比较对象替代预算内推荐。"
                    "必须另返回catalog_claim_kind：non_inventory=整份正文没有当前库存断言；vehicle_facts=存在具体车辆事实；"
@@ -1447,7 +1451,7 @@ def semantic_review_to_quality(review: dict[str, Any]) -> dict[str, Any]:
 
 def review_requires_recovery(review: dict[str, Any]) -> bool:
     """No valid reviewer verdict exists; content rewriting cannot fix this."""
-    return not review.get("ok") and bool(review.get("unavailable") or review.get("error_kind"))
+    return requires_technical_recovery(review)
 
 
 def skipped_review(reason: str) -> dict[str, Any]:

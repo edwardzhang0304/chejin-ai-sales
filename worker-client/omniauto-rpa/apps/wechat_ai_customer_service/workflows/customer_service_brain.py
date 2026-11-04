@@ -21,6 +21,7 @@ from apps.wechat_ai_customer_service.llm_config import (
     call_llm_request_with_failover,
     is_failoverable_llm_failure,
     llm_total_time_budget,
+    ai_failure_category,
     read_secret,
     resolve_effective_llm_provider,
     resolve_llm_api_key,
@@ -955,6 +956,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
     if target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY:
         from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources, trusted_image_ids
         evidence_pack["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "not_queried",
+                                             **({"model_query_contract": target_state["model_query_contract"]} if "model_query_contract" in target_state else {}),
                                              "sources": message_sources(evidence_pack),
                                              "known_ids": trusted_image_ids(target_state, batch, raw_conversation_id(raw_capture))}
     if str(evidence_pack.get("knowledge_error") or "").strip():
@@ -1873,8 +1875,8 @@ def maybe_run_customer_service_brain(
         DEFAULT_TOTAL_TIME_BUDGET_SECONDS,
         minimum=1,
     )
-    with llm_total_time_budget(total_time_budget_seconds):
-        return _maybe_run_customer_service_brain_within_time_budget(
+    with llm_total_time_budget(total_time_budget_seconds) as accounting:
+        result = _maybe_run_customer_service_brain_within_time_budget(
             config=config,
             target_name=target_name,
             target_state=target_state,
@@ -1890,6 +1892,27 @@ def maybe_run_customer_service_brain(
             raw_capture=raw_capture,
             customer_profile=customer_profile,
         )
+    # Add accounting after the shared deadline closes, including all repairs/reviews.
+    explicit = config.get("customer_service_brain") or {}
+    config_keys = [k for k in settings if k.endswith(("timeout_seconds", "time_budget_seconds", "retry_enabled")) or k in {
+        "max_quality_repair_attempts", "json_structure_repair_enabled", "quality_repair_enabled", "json_structure_repair_raw_max_chars"}]
+    accounting["effective_settings"] = {k:{"value":settings[k], "source":"customer_service_brain_config" if k in explicit else "brain_default"} for k in config_keys}
+    accounting["identity"] = dict(target_state.get("generation_identity") or {})
+    accounting["model_query_contract"] = target_state.get("model_query_contract", "vehicle_query_v1")
+    accounting["final_action"] = (result.get("brain_plan") or {}).get("recommended_action")
+    recovered = bool(result.get("invalid_plan_same_capture_retry")) or any(
+        "retry" in x["stage"] or "repair" in x["stage"] or x.get("failure_category") != "success"
+        for x in accounting["logical_calls"]
+    ) or any(x.get("failure_category") != "success" for x in accounting["http_attempts"])
+    accounting["completion_outcome"] = ("recovered" if recovered else "first_pass") if result.get("adoptable") else "not_completed"
+    review = result.get("quality_gate_v2") or {}
+    status = result.get("llm_status") or {}
+    accounting["failure_category"] = ai_failure_category(review if review.get("unavailable") or review.get("verdict") in {"repair", "block", "handoff_suggest"} else status)
+    if result.get("adoptable"):
+        accounting["failure_category"] = "success"
+    accounting["config_source"] = config.get("_brain_config_source", {"source":"provided_config"})
+    result["model_call_accounting"] = accounting
+    return result
 
 
 def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -1922,6 +1945,9 @@ def effective_brain_settings(config: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("require_fact_claims", True)
     settings.setdefault("blocking_shadow_enabled", False)
     settings.setdefault("quality_verifier_enabled", True)
+    for key in ("same_capture_brain_unavailable_retry_enabled", "same_capture_brain_parse_retry_enabled",
+                "same_capture_brain_invalid_plan_retry_enabled", "same_capture_brain_repair_parse_retry_enabled"):
+        settings.setdefault(key, True)
     settings.setdefault("quality_repair_enabled", True)
     settings.setdefault("max_quality_repair_attempts", 1)
     settings.setdefault("quality_repair_timeout_seconds", 8)
@@ -2949,8 +2975,8 @@ def maybe_repair_brain_json_structure(
     query_allowed = protocol.get("phase") == "not_queried"
     schema = BRAIN_RESPONSE_SCHEMA_PROMPT
     if query_allowed:
-        from apps.wechat_ai_customer_service.workflows.catalog_query import QUERY_FORMAT_INSTRUCTION
-        schema += "\n当前尚未查询库存，原输出可以是查车指令或普通 BrainPlan；必须保留原输出类型，二者不能混合。\n" + QUERY_FORMAT_INSTRUCTION
+        from apps.wechat_ai_customer_service.workflows.catalog_query import query_format_instruction, model_contract
+        schema += "\n当前尚未查询库存，原输出可以是查车指令或普通 BrainPlan；必须保留原输出类型，二者不能混合。\n" + query_format_instruction(model_contract(protocol))
     system = (
         "你是 BrainPlan JSON 结构修复器。只把输入中的原始 Brain 输出修成合法 JSON 对象。"
         "不得新增事实、不得替客户重新作答、不得改变原回答策略；只做字段补齐、去掉Markdown、修复引号/逗号/括号。"
@@ -2969,6 +2995,7 @@ def maybe_repair_brain_json_structure(
         "stage": stage,
         "raw_brain_output": raw_text,
         "schema": schema,
+        "model_query_contract": protocol.get("model_query_contract", "vehicle_query_v1") if protocol else None,
     }
     timeout_seconds = positive_int_setting(settings, "json_structure_repair_timeout_seconds", 8, minimum=3)
     fallback_timeout_seconds = resolve_brain_fallback_timeout(settings, timeout_seconds)
@@ -3179,8 +3206,8 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
         )
     response_schema = BRAIN_RESPONSE_SCHEMA_PROMPT
     if evidence.get("catalog_protocol"):
-        from apps.wechat_ai_customer_service.workflows.catalog_query import QUERY_INSTRUCTION
-        system += QUERY_INSTRUCTION
+        from apps.wechat_ai_customer_service.workflows.catalog_query import query_instruction, model_contract
+        system += query_instruction(model_contract(evidence["catalog_protocol"]))
         response_schema += " 首轮需要车辆事实时允许仅返回 catalog_query 对象，以车辆查询合同为准。"
     if settings.get("reply_sequence_version") == 1:
         response_schema = response_schema.replace(

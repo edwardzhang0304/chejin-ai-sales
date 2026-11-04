@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services import reply_ownership
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 import hashlib
 import hmac
 import json
@@ -1649,6 +1650,7 @@ def create_control_message_batch(
     )
     if existing:
         return {"batch_id": existing.id, "batch_status": existing.status, "batch": _batch_to_dict(existing)}
+    binding = _binding_or_404(db, conversation_id)
     from types import SimpleNamespace
     reply_ownership.require_batch(conversation,SimpleNamespace(trigger_type=trigger_type,ownership_revision=reply_ownership.revision(conversation)))
     active = _active_batch(db, conversation_id)
@@ -1660,6 +1662,7 @@ def create_control_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -1681,6 +1684,11 @@ def create_control_message_batch(
     db.add(batch)
     db.flush()
     return {"batch_id": batch.id, "batch_status": batch.status, "batch": _batch_to_dict(batch)}
+
+
+def _new_model_query_snapshot(binding: WechatSessionBinding) -> dict:
+    """Freeze model wire identity only for NEW Hook batches; old/OCR stays v1."""
+    return {"model_query_contract": "vehicle_need_v2"} if binding.native_self_wxid else {}
 
 
 def collect_message_batch(
@@ -1762,6 +1770,7 @@ def collect_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -1926,6 +1935,7 @@ def collect_recovered_customer_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -2253,6 +2263,8 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         return result
 
     context = {
+        **({"model_query_contract": existing_request_snapshot["model_query_contract"]}
+           if "model_query_contract" in existing_request_snapshot else {}),
         "effective_context_digest": effective_context_digest(db, binding.conversation_id),
         # The immutable snapshot has one canonical storage location in
         # MessageBatch.ai_request_snapshot.  The Adapter receives it
@@ -2363,7 +2375,60 @@ def _preserve_generation_attempt_history(
     history = _generation_attempt_history(batch)
     if history:
         result["generation_attempt_history"] = history
+    totals = (batch.ai_response_snapshot or {}).get("generation_accounting_totals")
+    if isinstance(totals, dict):
+        result["generation_accounting_totals"] = dict(totals)
     return result
+
+
+def _accumulate_generation_accounting(batch: MessageBatch, attempt: int, response: dict) -> dict:
+    """Idempotent counters survive bounded raw history and late results; no retries here."""
+    previous = (batch.ai_response_snapshot or {}).get("generation_accounting_totals") or {}
+    totals = dict(previous)
+    ranges = [list(pair) for pair in previous.get("accounted_attempt_ranges", [])]
+    entries = [] if previous else _generation_attempt_history(batch)
+    # On upgrade, count the retained old attempts but mark missing old ledgers
+    # unknown. Never reinterpret unknown old cost as a complete zero baseline.
+    if not previous and entries:
+        totals["call_counts_complete"] = False
+    entries = [*entries, {"attempt":attempt, "response":response}]
+    for entry in entries:
+        number = _attempt_number(entry.get("attempt"))
+        if any(lo <= number <= hi for lo, hi in ranges):
+            continue
+        raw = (entry.get("response") or {}).get("raw_payload") or {}
+        native = raw.get("omniauto_brain_result") or {}
+        audit = native.get("model_call_accounting") or {}
+        progress = native.get("provider_progress") or (raw.get("provider_error") or {}).get("provider_progress") or []
+        starts = [event for event in progress if event.get("event") == "started" and event.get("call_id")]
+        measure = raw.get("generation_measurement") or {}
+        logical = audit.get("logical_call_count") if audit else len({e.get("parent_call_id") for e in starts if e.get("parent_call_id")})
+        http = audit.get("http_attempt_count") if audit else len({e["call_id"] for e in starts})
+        for key, value in {"recorded_attempt_count":1, "generation_duration_ms":measure.get("duration_ms",0),
+                           "logical_call_count":logical or 0, "http_attempt_count":http or 0}.items():
+            totals[key] = int(totals.get(key) or 0) + max(0,int(value))
+        totals["call_counts_complete"] = bool(totals.get("call_counts_complete",True) and audit
+                                              and not audit.get("omitted_logical_calls") and not audit.get("omitted_http_attempts")
+                                              and not audit.get("diagnostic_errors"))
+        ranges.append([number,number]); ranges.sort()
+        merged = []
+        for lo,hi in ranges:
+            if merged and lo <= merged[-1][1]+1: merged[-1][1]=max(merged[-1][1],hi)
+            else: merged.append([lo,hi])
+        ranges = merged
+    totals["accounted_attempt_ranges"] = ranges
+    totals["configured_max_attempts"] = get_settings().c3_batch_recovery_max_attempts
+    totals["retry_delay_seconds"] = get_settings().c3_batch_retry_delay_seconds
+    totals["provider_timeout_seconds"] = get_settings().c3_brain_provider_timeout_seconds
+    totals["config_source"] = "backend_settings:C3_BATCH_RECOVERY_MAX_ATTEMPTS/C3_BATCH_RETRY_DELAY_SECONDS/C3_BRAIN_PROVIDER_TIMEOUT_SECONDS"
+    totals["capacity_wait_count"] = int(batch.generation_capacity_wait_count or 0)
+    now = utcnow()
+    if now.tzinfo is None: now=now.replace(tzinfo=timezone.utc)
+    if batch.created_at is not None:
+        created = batch.created_at
+        if created.tzinfo is None: created=created.replace(tzinfo=timezone.utc)
+        totals["batch_wait_elapsed_ms"] = max(0,round((now-created).total_seconds()*1000))
+    return totals
 
 
 def _record_generation_attempt(
@@ -2382,6 +2447,7 @@ def _record_generation_attempt(
 
     response = dict(payload)
     response.pop("generation_attempt_history", None)
+    response.pop("generation_accounting_totals", None)
     history = [
         item
         for item in _generation_attempt_history(batch)
@@ -2397,6 +2463,7 @@ def _record_generation_attempt(
     history.sort(key=lambda item: _attempt_number(item.get("attempt")))
     result = dict(response)
     result["generation_attempt_history"] = history[-5:]
+    result["generation_accounting_totals"] = _accumulate_generation_accounting(batch, attempt, response)
     return result
 
 
@@ -2427,6 +2494,7 @@ def _record_stale_generation_attempt_diagnostics(
     current["generation_attempt_history"] = recorded[
         "generation_attempt_history"
     ]
+    current["generation_accounting_totals"] = recorded["generation_accounting_totals"]
     return current
 
 
@@ -2441,6 +2509,8 @@ def _stale_generation_diagnostics_payload(
         else {}
     )
     diagnostics: dict[str, Any] = {}
+    if isinstance(raw_payload.get("generation_measurement"), dict):
+        diagnostics["generation_measurement"] = dict(raw_payload["generation_measurement"])
     for container_name in ("provider_error", "omniauto_brain_result"):
         source = raw_payload.get(container_name)
         if not isinstance(source, dict):
@@ -2451,6 +2521,7 @@ def _stale_generation_diagnostics_payload(
                 "provider_progress_id",
                 "provider_progress",
                 "last_provider_progress",
+                "model_call_accounting",
             )
             if key in source
         }
@@ -3558,6 +3629,7 @@ def generate_for_batch(
                 **context["conversation"],
                 "brain_context_snapshot": context["brain_context_snapshot"],
                 "knowledge_release_snapshot": context["knowledge_release_snapshot"],
+                **({"model_query_contract": context["model_query_contract"]} if "model_query_contract" in context else {}),
             },
             message_batch={
                 "id": prepared_batch_id,
@@ -3593,6 +3665,11 @@ def generate_for_batch(
     generation_duration_ms = int(
         round((time.perf_counter() - generation_started_monotonic) * 1000)
     )
+    decision = replace(decision, raw_payload={**(decision.raw_payload or {}), "generation_measurement": {
+        "duration_ms":generation_duration_ms, "batch_id":prepared_batch_id,
+        "conversation_id":followup_conversation_id, "generation_attempt":generation_attempt,
+        "recall_cycle_id":prepared_recall_cycle_id,
+    }})
 
     # The provider ran outside the transaction; serialize with invalidation again.
     try:

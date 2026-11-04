@@ -21,6 +21,7 @@ from apps.wechat_ai_customer_service.adapters.vehicle_fields import (
 
 
 PROTOCOL = "vehicle_query_v1"
+MODEL_QUERY_CONTRACT = "vehicle_need_v2"
 TEXT_FIELDS = {"brand", "series", "model", "energy_type", "drive_type", "location", "displacement"}
 NUMBER_FIELDS = {"mileage_km", "battery_capacity_kwh"}
 QUERY_REQUIRED_FIELDS = ("version", "operation", "requirement_state", "budget", "filters", "reference_ids",
@@ -70,6 +71,91 @@ source_level=catalog_query，source_id=程序query_id，value=准确数值（价
 
 QUERY_INSTRUCTION += "\n可用能源值：" + json.dumps(ENERGY_TYPES, ensure_ascii=False) + "；驱动：" + json.dumps(DRIVE_TYPES, ensure_ascii=False) + "；车系：" + json.dumps(SERIES_OPTIONS, ensure_ascii=False)
 QUERY_INSTRUCTION += "\n" + QUERY_FORMAT_INSTRUCTION
+
+
+V2_QUERY_EXAMPLE = deepcopy(QUERY_ENVELOPE_EXAMPLE)
+V2_QUERY_EXAMPLE["catalog_query"].pop("version")
+V2_QUERY_EXAMPLE["catalog_query"].pop("sort")
+V2_QUERY_EXAMPLE["catalog_query"]["budget"].pop("unit")
+
+
+def model_contract(protocol: dict) -> str:
+    value = protocol.get("model_query_contract", PROTOCOL)
+    if value not in (PROTOCOL, MODEL_QUERY_CONTRACT):
+        raise CatalogQueryError("unsupported_model_query_contract", fields=["model_query_contract"])
+    return value
+
+
+def query_format_instruction(contract: str = PROTOCOL) -> str:
+    if contract == PROTOCOL:
+        return QUERY_FORMAT_INSTRUCTION
+    model_contract({"model_query_contract": contract})
+    return (
+        "首轮查车必须输出唯一完整外层对象，合法示例（值须按真实需求替换）："
+        + json.dumps(V2_QUERY_EXAMPLE, ensure_ascii=False, separators=(",", ":"))
+        + "。catalog_query必填：" + ",".join(k for k in QUERY_REQUIRED_FIELDS if k not in {"version", "sort"})
+        + "；name_queries可省略。version由程序提供，不用复述。budget金额value/lower/upper均为万元，"
+          "如80000元须理解为8；不输出unit，不猜测含糊金额。"
+          "sort仅在客户有明确排序偏好时填写对象，例如"
+          '{"value":"price_asc","source_ids":["原话消息ID"]}，value只能为price_asc/price_desc/budget_distance。'
+          "没有明确偏好请省略sort，程序按已确认规则排序：有明确预算优先接近budget_bounds.target，无预算价格升序。"
+          "禁止用默认排序代替客户明确偏好；不支持的条件/排序保留unsupported_requirements。"
+          "业务字段/显式空列表仍必填，不得照抄示例或将遗漏条件补为空。"
+    )
+
+
+def query_instruction(contract: str = PROTOCOL) -> str:
+    if contract == PROTOCOL:
+        return QUERY_INSTRUCTION
+    # Shared semantic instructions, with only the v1 wire metadata examples removed.
+    common = QUERY_INSTRUCTION.removesuffix("\n" + QUERY_FORMAT_INSTRUCTION)
+    common = common.replace("QUERY字段说明：version为整数1；", "QUERY字段说明：")
+    common = common.replace("，unit固定万元。", "；所有金额字段以万元计，固定单位由程序提供。")
+    common = common.replace('"unit":"万元",', '')
+    return common + "\n" + query_format_instruction(contract)
+
+
+def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None,
+                          contract: str = PROTOCOL) -> dict:
+    """Adapt trusted wire identity once; never infer a contract from model fields."""
+    if contract == PROTOCOL:
+        return normalize_query(raw, sources, known_ids=known_ids)
+    model_contract({"model_query_contract": contract})
+    if not isinstance(raw, dict):
+        raise CatalogQueryError("invalid_query_schema", fields=["catalog_query"])
+    candidate = deepcopy(raw)
+    redundant = []
+    if "version" in candidate:
+        if type(candidate["version"]) is not int or candidate["version"] != 1:
+            raise CatalogQueryError("model_contract_metadata_conflict", fields=["version"])
+        redundant.append("version")
+    candidate["version"] = 1
+    budget = candidate.get("budget")
+    if isinstance(budget, dict):
+        if "unit" in budget:
+            if budget["unit"] != "万元":
+                raise CatalogQueryError("model_contract_metadata_conflict", fields=["budget.unit"])
+            redundant.append("budget.unit")
+        budget["unit"] = "万元"
+    explicit = "sort" in raw
+    sort_sources = []
+    if explicit:
+        sort = raw["sort"]
+        if not isinstance(sort, dict) or set(sort) != {"value", "source_ids"}:
+            raise CatalogQueryError("invalid_sort_preference", fields=["sort"])
+        sort_sources = _ids(sort["source_ids"], field="sort.source_ids",
+                            allowed={item["id"] for item in sources}, required=True)
+        candidate["sort"] = sort["value"]
+    else:
+        # Validate all business fields first; never infer unlimited or a budget.
+        candidate["sort"] = "price_asc"
+    query = normalize_query(candidate, sources, known_ids=known_ids)
+    if not explicit and query["budget_bounds"]:
+        query["sort"] = "budget_distance"
+    query.update(model_query_contract=contract, raw_model_query=deepcopy(raw),
+                 sort_origin="customer_explicit" if explicit else "program_default",
+                 sort_source_ids=sort_sources, redundant_metadata=redundant)
+    return query
 
 
 class CatalogQueryError(ValueError):
@@ -373,7 +459,8 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
 
 
 def attach_receipt(evidence: dict, receipt: dict) -> None:
-    evidence["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "queried", "receipt": receipt}
+    evidence["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "queried", "receipt": receipt,
+                                    "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
     items = list(receipt["recommendations"])
     known = {p["id"] for p in items}
     items.extend(p for p in receipt["references"] if p["id"] not in known)
@@ -498,7 +585,8 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
     query_without_wrapper = "catalog_query" not in first and "operation" in first and ("budget" in first or "filters" in first)
     if not first_result.get("ok") or ("catalog_query" not in first and not query_without_wrapper):
         return first_result
-    audit = {"understanding": catalog_generation_audit(first_result)}
+    audit = {"understanding": catalog_generation_audit(first_result),
+             "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
     started = time.monotonic()
     phase = "validation"
     try:
@@ -506,8 +594,9 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
             raise CatalogQueryError("catalog_query_wrapper_required", fields=["catalog_query"])
         if set(first) != {"catalog_query"}:
             raise CatalogQueryError("query_and_reply_must_be_separate", fields=["catalog_query"])
-        query = normalize_query(first["catalog_query"], message_sources(evidence),
-                                known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"))
+        query = normalize_model_query(first["catalog_query"], message_sources(evidence),
+                                      contract=model_contract(evidence.get("catalog_protocol") or {}),
+                                      known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"))
         audit["validation_seconds"] = time.monotonic() - started
         phase = "inventory_query"
         runtime = runtime_factory()
@@ -517,7 +606,9 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         attach_receipt(evidence, receipt)
         audit["query_seconds"] = time.monotonic() - started
         phase = "completion"
-        final = run_llm(settings=settings, brain_input=brain_input)
+        from apps.wechat_ai_customer_service.llm_config import llm_stage_context
+        with llm_stage_context("completion"):
+            final = run_llm(settings=settings, brain_input=brain_input)
         audit["completion"] = catalog_generation_audit(final)
         if final.get("ok") and query_plan_errors(final.get("brain_plan") or {}, evidence):
             raise CatalogQueryError("catalog_second_query_or_forged_receipt")
@@ -539,7 +630,7 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
                                    rejected_field_evidence(first.get("catalog_query"), exc.fields)),
                 "query_sha256": fingerprint(first.get("catalog_query", first)),
                 "envelope_present": "catalog_query" in first,
-                "repair_instruction": QUERY_FORMAT_INSTRUCTION,
+                "repair_instruction": query_format_instruction(model_contract(evidence.get("catalog_protocol") or {})),
             }
         return {"ok": False, "error": str(exc) if isinstance(exc, CatalogQueryError) else "catalog_query_unavailable",
                 "error_kind": "catalog_query_validation" if invalid_query else "catalog_query_execution",
