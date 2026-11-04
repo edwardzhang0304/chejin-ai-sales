@@ -14,7 +14,7 @@ from http.server import HTTPServer
 from threading import Thread,local
 from typing import Callable
 
-from . import hook_transport, hook_read_retry
+from . import hook_transport, hook_read_retry, hook_memory
 import uuid
 
 from . import ui_lock
@@ -167,12 +167,15 @@ class HookGateway:
                     raise hook_read_retry.ReadRetryWait('HOOK_READ_RETRY_WAIT')
             old_generation=getattr(self._call_context,'generation',None)
             old_step=getattr(self._call_context,'step',None)
+            old_process=getattr(self._call_context,'process',None)
+            self._call_context.process=process
             self._call_context.step=step
             self._call_context.generation=process.generation
             try:yield lease
             finally:
                 self._call_context.generation=old_generation
                 self._call_context.step=old_step
+                self._call_context.process=old_process
             lease.raise_if_lost()
             self._same_process(process)
         finally:
@@ -277,26 +280,44 @@ class HookGateway:
                 transport_event_id=error.transport_event_id)
 
     def _response_http(self, route: str, payload: dict, *, uncertain_on_failure: bool = False) -> HookLocalResponse:
-        if route not in {"IsLoginStatus", "ConfigureMsgReciveFullURL", "GetDBHandleAndPath", "QueryDB", "SendTextMsg", "GetFriendAndChatRoomList", "Voice2Text"}:
+        if route not in {"IsLoginStatus", "ConfigureMsgReciveFullURL", "GetDBHandleAndPath", "QueryDB", "SendTextMsg", "GetFriendAndChatRoomList", "Voice2Text", *hook_memory.DIAGNOSTIC_ROUTES}:
             raise HookLocalError("HOOK_ROUTE_NOT_ALLOWED")
+        if route in hook_memory.DIAGNOSTIC_ROUTES and (
+                getattr(self._call_context, 'step', None) != 'hook_memory_probe'
+                or getattr(self._call_context, 'generation', None) is None or payload != {}):
+            raise HookLocalError("HOOK_MEMORY_PROBE_NOT_AUTHORIZED")
         reader = getattr(self._call_context,'history_reader',None)
         conn = reader.http_session if reader else hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
         generation = getattr(self._call_context,'generation',None)
         action_id = reader.call_id if reader else getattr(self._call_context,'action_id',None)
+        process = getattr(self._call_context, 'process', None)
+        memory_before = hook_memory.sample_pair(process)
         request_evidence={'request_sha256':hook_read_retry.fingerprint(route,payload),
                           'operation':getattr(self._call_context,'step',None)}
+        event_id = hook_read_retry.record_transport(generation, action_id, route, {
+            **request_evidence, 'phase': 'in_flight', 'delivery': 'unknown',
+            'memory': {'schema': 1, 'before': memory_before, 'after': None,
+                       'delta_bytes': None, 'attribution': 'process_net_change_not_dll_allocation',
+                       'peak_measured': False, 'delayed_release_measured': False}})
         try:
             raw,evidence=hook_transport.post(conn,route,payload,self.max_response_bytes)
-            evidence.update(request_evidence)
-            hook_read_retry.record_transport(generation,action_id,route,evidence)
+            evidence.update(request_evidence, phase='finished')
+            evidence['memory'] = hook_memory.comparison(memory_before, hook_memory.sample_pair(process))
+            if route in hook_memory.DIAGNOSTIC_ROUTES:
+                evidence['dll_diagnostic'] = hook_memory.provider_summary(route, raw)
+            hook_read_retry.complete_transport(event_id, evidence)
             result=HookLocalResponse(raw)
             _=result.payload
             if route!='QueryDB' or getattr(reader,'retry_subject',None) is None:
                 hook_read_retry.succeeded(generation,route,payload)
             return result
         except hook_transport.TransportFailure as exc:
-            exc.evidence.update(request_evidence)
-            event_id=hook_read_retry.record_transport(generation,action_id,route,exc.evidence)
+            exc.evidence.update(request_evidence, phase='finished')
+            exc.evidence['memory'] = hook_memory.comparison(memory_before, hook_memory.sample_pair(process))
+            if route in hook_memory.DIAGNOSTIC_ROUTES:
+                exc.evidence['dll_diagnostic'] = {'status': 'response_unavailable',
+                    'allocation_bytes_known': False}
+            hook_read_retry.complete_transport(event_id, exc.evidence)
             error=HookLocalError(exc.code,outcome_unknown=uncertain_on_failure and exc.evidence['delivery']!='not_sent')
             error.operation=route
             error.delivery=exc.evidence['delivery']
@@ -334,6 +355,18 @@ class HookGateway:
     def login_status(self, process: HookProcessSnapshot) -> HookLoginStatus:
         with self._locked(process, "hook_login_check"):
             return self._login(process)
+
+    def memory_diagnostic(self, process, route, *, operator_requested=False):
+        """Explicit engineering probe only; never invoked by polling or export.
+
+        Use the same identity, lease and durable unknown-call barrier as other
+        DLL calls. A timeout must not authorize a second overlapping probe.
+        """
+        if route not in hook_memory.DIAGNOSTIC_ROUTES or operator_requested is not True:
+            raise HookLocalError("HOOK_MEMORY_PROBE_NOT_AUTHORIZED")
+        with self._locked(process, "hook_memory_probe"):
+            response = self._response(route, {}, uncertain_on_failure=True)
+            return hook_memory.provider_summary(route, response.raw_body)
 
     def register_callback(self, process: HookProcessSnapshot, scope: HookReceiveScope,
                           receiver: HTTPServer, receiver_thread: Thread) -> HookCallbackRegistration:

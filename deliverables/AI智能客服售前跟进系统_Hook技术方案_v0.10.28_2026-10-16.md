@@ -1421,3 +1421,13 @@ r3逐条语音/展示扫描2016b372已通过5号增量本地复审（31项受影
 
 
 PE-02.9 r4复审状态更新：7269f490已获5号源码及受影响本地链路通过；首因、原会话未完整、原数据哈希、重启后桌面ZIP及父版反向控制已独立核对。原Popen仍用于退出核对，不因保留对象即认定泄漏。长期阻塞采样进程、部分线程启动失败和Windows实机未由此证明全覆盖；继续既定PE-02剩余调查，不改发布边界。
+
+
+#### PE-02 r5：DLL诊断入口与逐调用内存证据（2026-11-04，源码候选，实机未启用）
+
+- `HookGateway.memory_diagnostic`统一接入`POST /DiySceneStats {}`与`POST /SwapMemory {}`；复用部署、实际DLL哈希、进程代次、动作锁和原未知调用账本。仅显式工程入口调用，正常任务、启动、轮询、故障导出均不主动调用两个接口。SwapMemory没有定时器，不作为泄漏修复；超时原调用保留，不自动再次调用。
+- 工程入口：候选EXE `--hook-memory-probe stats`；源码 `python -m chejin_worker_client.hook_memory_probe stats`。`trim-working-set`还必须显式带`--confirm-working-set-only`。入口持有原Worker单实例互斥，已开Worker时拒绝，不并行诊断销售业务。使用原数据目录中的部署端口和DLL摘要，不猜端口、不导入新配置、不启动微信、不清记录。Windows实测仍暂停，本轮未执行上述实机操作。
+- `hook_memory`只读记录调用者与微信的PID/创建时间、RSS、Windows私有提交、缺件原因；调用者在正常运行时是Worker，在独立工程排查时是诊断进程。统一HTTP入口调用前先将基线写入`hook_transport_events`，同一事件结束时补后值和有符号净差值；中断保留`phase=in_flight`、`after=null`，完成记录禁止覆盖。关联原动作ID、请求指纹、接口、单调/墙钟时刻、耗时及请求响应大小；不保留正文。诊断失败不伪造0字节。
+- 正常逐调用观察不额外调用DLL、不扫描进程堆、对象图或模块映射；持久化复用原账本及其保护/保留策略，当前调用结束后不留内存样本列表。`state/hook_transport_events.json`随桌面故障ZIP导出。原PE-01进程曲线用于后续空闲区间对照；前后净差不等于调用峰值、延迟释放量或DLL独占分配量。
+- `DiySceneStats`返回保留摘要、尺寸、有限且识别出的数值字段；未知字段/字符串内容不入包并报告省略。数值单位、覆盖范围、释放语义均标为未核验，`allocation_bytes_known=false`；不把示例字符串1、code=0或累计创建次数当释放成功。SwapMemory仅标记工作集操作，绝不声称私有提交已回收。实际DLL字段契约/支持性、Windows原生归因待验。
+- 受影响本地链：合成本机HTTP→真实网关/动作锁→前后计数→SQLite原事件→桌面ZIP；成功、超时、无权限、PID复用、进程中断、字段未知、独立工程入口均覆盖。Windows计数/API响应为替身，不能替代实际DLL或原机验收。

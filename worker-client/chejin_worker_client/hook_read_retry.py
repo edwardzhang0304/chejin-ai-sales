@@ -121,6 +121,19 @@ def record_transport(generation, action_id, route, evidence):
     return event_id
 
 
+def complete_transport(event_id, evidence):
+    """Complete only our in-flight observation; never rewrite a terminal receipt."""
+    with storage.db_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT evidence FROM hook_transport_events WHERE event_id=?',
+                           (event_id,)).fetchone()
+        if row is None or json.loads(row['evidence']).get('phase') != 'in_flight':
+            raise RuntimeError('HOOK_TRANSPORT_OBSERVATION_NOT_OPEN')
+        conn.execute('UPDATE hook_transport_events SET evidence=? WHERE event_id=?',
+                     (json.dumps(evidence, sort_keys=True), event_id))
+        conn.commit()
+
+
 def failed(generation, intent, route, payload, *, now=None, scope_key=None, transport_event_id=None):
     with storage.db_connection() as conn:
         conn.execute('BEGIN IMMEDIATE');row=pending(conn);at=utc_now_iso()

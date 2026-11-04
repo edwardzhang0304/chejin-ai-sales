@@ -158,6 +158,10 @@ def _write_startup_diagnostic(exc: BaseException) -> None:
 
 
 def _load_main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--hook-memory-probe":
+        from functools import partial
+        from chejin_worker_client.hook_memory_probe import main
+        return partial(main, sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--export-diagnostics":
         from chejin_worker_client.diagnostic_ui import main
         return main
