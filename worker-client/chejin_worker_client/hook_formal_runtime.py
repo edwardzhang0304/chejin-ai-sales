@@ -185,8 +185,16 @@ class HookFormalRuntime:
                 acknowledged=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/inflight-flow/start',state)
             except ApiError as exc:
                 if exc.status_code==409 and exc.code in {'WORKER_NEW_FLOW_NOT_ALLOWED','HOOK_CONTACT_REMARK_CONFIRMATION_PENDING'}:
-                    _save(self.private_root/'flow-denials'/f"{task['id']}.json",{'flow_id':task['id'],'error_code':exc.code,
-                        'server_rejected':True,'physical_action_attempted':False})
+                    denial_path=self.private_root/'flow-denials'/f"{task['id']}.json"
+                    denial={'flow_id':task['id'],'error_code':exc.code,
+                        'server_rejected':True,'physical_action_attempted':False}
+                    try:
+                        _save(denial_path,denial)
+                    except FileExistsError:
+                        # Only this definite rejection receipt is replayable.
+                        # Do not replace a conflicting/partial original record.
+                        if rules.loads(denial_path.read_bytes())!=denial:
+                            raise ValueError('HOOK_FLOW_DENIAL_CONFLICT') from None
                     storage.finish_runtime_flow(task['id'])
                     if exc.code=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING':raise
                     raise ValueError('HOOK_RUNTIME_NOT_RUNNING') from None

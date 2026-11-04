@@ -205,3 +205,64 @@ def test_initial_flow_refusal_does_not_leave_local_flow_or_cancel_task(home):
     runtime.client.call=lambda *a:{'flow_id':'original-task','status':'active'}
     assert runtime.start_flow({'id':'original-task'},'conversation')=='original-task'
     assert storage.load_runtime_control()['inflight_flow_id']=='original-task'
+
+
+def rejected_flow_runtime(home, code='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING'):
+    from chejin_worker_client.api import ApiError
+    runtime=object.__new__(HookFormalRuntime)
+    runtime.private_root=home/'transactions'/'hook';runtime.credentials=SimpleNamespace(worker_id='w1')
+    runtime.heartbeat=lambda **kw:None;runtime.active_flow_id=None
+    def rejected(*a):raise ApiError(code,'synthetic admission refusal',409)
+    runtime.client=SimpleNamespace(call=rejected)
+    return runtime
+
+
+@pytest.mark.parametrize('restart',[False,True])
+def test_repeated_initial_flow_refusal_preserves_receipt_and_leaves_no_flow(home,restart):
+    from chejin_worker_client.api import ApiError
+    from chejin_worker_client import storage
+    runtime=rejected_flow_runtime(home);before=None
+    for index in range(4):
+        if restart and index:runtime=rejected_flow_runtime(home)
+        with pytest.raises(ApiError) as error:
+            runtime.start_flow({'id':'original-task'},'conversation')
+        assert error.value.code=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING'
+        assert not storage.load_runtime_control().get('inflight_flow_id')
+        receipt=runtime.private_root/'flow-denials'/'original-task.json'
+        snapshot=(receipt.read_bytes(),receipt.stat().st_mtime_ns)
+        if before is not None:assert snapshot==before
+        before=snapshot
+    runtime.client.call=lambda *a:{'flow_id':'original-task','status':'active'}
+    assert runtime.start_flow({'id':'original-task'},'conversation')=='original-task'
+    assert receipt.read_bytes()==before[0]
+
+
+@pytest.mark.parametrize('failure',['conflict','corrupt','write','network','existing_flow','unknown_send'])
+def test_flow_denial_never_overwrites_or_clears_uncertain_attempt(home,monkeypatch,failure):
+    from chejin_worker_client import storage,hook_formal_runtime as module
+    from chejin_worker_client.api import ApiError
+    runtime=rejected_flow_runtime(home)
+    path=runtime.private_root/'flow-denials'/'original-task.json'
+    original=None
+    if failure in {'conflict','corrupt'}:
+        path.parent.mkdir(parents=True)
+        original=b'{"server_rejected":false}' if failure=='conflict' else b'{unfinished'
+        path.write_bytes(original)
+    if failure=='write':
+        save=module._save
+        def fail(target,value):
+            if target.parent.name=='flow-denials':raise OSError('synthetic disk failure')
+            return save(target,value)
+        monkeypatch.setattr(module,'_save',fail)
+    if failure in {'network','existing_flow','unknown_send'}:
+        code={'network':'HOOK_BACKEND_NETWORK_FAILED','existing_flow':'WORKER_INFLIGHT_FLOW_CONFLICT',
+              'unknown_send':'HOOK_SEND_ALREADY_ATTEMPTED'}[failure]
+        def failed(*a):raise ApiError(code,'synthetic uncertainty',503 if failure=='network' else 409)
+        runtime.client.call=failed
+        if failure!='network':storage.begin_runtime_flow('original-task','chat_reply')
+    expected=ApiError if failure in {'network','existing_flow','unknown_send'} else OSError if failure=='write' else ValueError
+    with pytest.raises(expected):runtime.start_flow({'id':'original-task'},'conversation')
+    assert storage.load_runtime_control()['inflight_flow_id']=='original-task'
+    if original is not None:assert path.read_bytes()==original
+    if failure in {'network','existing_flow','unknown_send','write'}:assert not path.exists()
+    assert not (runtime.private_root/'recovery').exists()
