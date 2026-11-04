@@ -412,3 +412,20 @@ def test_equal_price_entities_keep_independent_authority_in_final_pipeline(monke
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
         with SessionLocal() as db:assert not list(db.scalars(select(ReplyAction)))
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['5到8万这个区间，先给您两台：合成车4报价6.4万，合成车5报价6.8万。'],True),
+    (['您五到八万这个预算，合成车4报价6.4万。','合成车5报价6.8万。','这两台可以比较。'],True),
+    (['50000到80000元这个范围，合成车4报价6.4万元。'],True),
+    (['先给您推荐两台：','合成车4报价6.4万，合成车5报价6.8万。'],True),
+    (['先给您推荐三台：','合成车4报价6.4万，合成车5报价6.8万。'],False),
+    (['5到8万的服务费，合成车4报价6.4万。'],False),
+    (['8万以上可以看合成车4报价6.4万。'],False),
+    (['预算8万以内可以看合成车4报价6.4万。'],False),
+    (['5到8万这个区间，合成车4报价8万。'],False),
+    (['先看两台：合成车4报价6.4万，合成车4报价6.4万。'],False),
+    (['再给您补两台：合成车4报价6.4万，合成车5报价6.8万，合成车3报价6万。'],False),
+])
+def test_budget_and_display_scope_through_actual_downstream(monkeypatch,actual_brain,segments,allowed):
+    test_numeric_entity_assignment_through_review_guard_and_native_permit(monkeypatch,actual_brain,segments,allowed)

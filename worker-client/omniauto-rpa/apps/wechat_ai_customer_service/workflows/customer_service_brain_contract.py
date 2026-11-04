@@ -1280,6 +1280,7 @@ def validate_brain_plan(plan: dict[str, Any], *, require_fact_claims: bool = Fal
             errors.append("hard_opt_out_missing_customer_text")
         if plan.get("reply_segments"):
             errors.append("hard_opt_out_must_not_reply")
+    structure_errors = list(errors)
     facts = plan.get("facts_claimed", []) or []
     if require_fact_claims and plan_requires_fact_claims(plan) and not facts:
         errors.append("missing_fact_claims")
@@ -1299,7 +1300,9 @@ def validate_brain_plan(plan: dict[str, Any], *, require_fact_claims: bool = Fal
             errors.append(f"policy_fact_missing_source_id:{fact_type}")
         if source_level in STYLE_ONLY_LEVELS:
             errors.append(f"style_only_source_used_as_fact:{fact_type or source_level}")
-    return {"ok": not errors, "errors": errors}
+    return {"ok": not errors, "errors": errors, "structure_errors": structure_errors,
+            "content_errors": errors[len(structure_errors):],
+            "failure_category": "output_format" if structure_errors else "content_review" if errors else "success"}
 
 
 def validate_social_visible_reply_contract(plan: dict[str, Any], *, current_message: str) -> dict[str, Any]:

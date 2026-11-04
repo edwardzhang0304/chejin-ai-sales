@@ -105,11 +105,14 @@ def query_format_instruction(contract: str = PROTOCOL) -> str:
     )
 
 
-def query_instruction(contract: str = PROTOCOL) -> str:
+def query_instruction(contract: str = PROTOCOL, *, understanding_only: bool = False) -> str:
+    instruction = QUERY_INSTRUCTION
+    if understanding_only:
+        instruction = re.sub(r"第二轮收到程序查询回执后.*?(?=\n可用能源值)", "", instruction, flags=re.S)
     if contract == PROTOCOL:
-        return QUERY_INSTRUCTION
+        return instruction
     # Shared semantic instructions, with only the v1 wire metadata examples removed.
-    common = QUERY_INSTRUCTION.removesuffix("\n" + QUERY_FORMAT_INSTRUCTION)
+    common = instruction.removesuffix("\n" + QUERY_FORMAT_INSTRUCTION)
     common = common.replace("QUERY字段说明：version为整数1；", "QUERY字段说明：")
     common = common.replace("，unit固定万元。", "；所有金额字段以万元计，固定单位由程序提供。")
     common = common.replace('"unit":"万元",', '')

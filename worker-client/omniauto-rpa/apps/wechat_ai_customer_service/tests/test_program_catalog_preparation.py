@@ -374,3 +374,119 @@ def test_latest_fact_error_is_not_overridden_by_repaired_earlier_empty_reply():
         'plan_validation':{'ok':False,'errors':['missing_reply_segments']},
         'repaired_plan_validation':current})
     assert result['class']=='fact_validation_failed' and result['failure_category']=='content_review'
+
+
+@pytest.mark.parametrize('question,prefix',[
+    ('5—8万有什么车？','5到8万这个区间'),
+    ('5—8万有什么车？','您五到八万这个预算'),
+    ('5—8万有什么车？','50000到80000元这个范围'),
+    ('5—8万有什么车？','预算五万到八万元'),
+    ('8万以内有什么车？','8万以内'),
+    ('8万以内有什么车？','不超过８万元'),
+])
+def test_budget_relation_restatement_does_not_require_prefix_keyword(question,prefix):
+    pack,_,_,_=prepared(question)
+    car=pack['catalog_protocol']['receipt']['recommendations'][0]
+    result=validate_reply_public_facts({'reply_segments':[prefix+'可以看'+car['name']+'，报价'+str(car['price'])+'万。']},pack)
+    assert result['ok'],result
+    assert any(n.get('role')=='customer_requirement' for n in result['occurrences'])
+
+
+@pytest.mark.parametrize('prefix',[
+    '5到9万这个区间','5万以内','8万以上','8万左右','预算8万以内',
+    '以前预算5到8万','服务费5到8万','5到8万的服务费',
+])
+def test_same_endpoint_or_old_budget_does_not_authorize_different_role_or_relation(prefix):
+    pack,_,_,_=prepared()
+    checked=validate_reply_public_facts({'reply_segments':[prefix+'，合成车4报价6.4万。']},pack)
+    assert not checked['ok'],checked
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['先给您两台价格低的：合成车4报价6.4万，合成车5报价6.8万。'],True),
+    (['先说两台：合成车4报价6.4万，合成车5报价6.8万。'],True),
+    (['合成车4报价6.4万。','合成车5报价6.8万。','这两台可供比较。'],True),
+    (['合成车4报价6.4万，合成车5报价6.8万，这两台可供比较。'],True),
+    (['先给两台：合成车4报价6.4万，合成车5报价6.8万，合成车3报价6万。'],False),
+    (['先给两台：合成车4报价6.4万，合成车4报价6.4万。'],False),
+    (['这两台可供比较。','合成车4报价6.4万，合成车5报价6.8万。'],False),
+    (['库存一共2台。合成车4报价6.4万，合成车5报价6.8万。'],False),
+    (['合成车4库存2台，报价6.4万。'],False),
+])
+def test_display_count_has_its_own_actual_unique_entity_scope(segments,allowed):
+    pack,_,_,_=prepared()
+    checked=validate_reply_public_facts({'reply_segments':segments},pack)
+    assert checked['ok'] is allowed,checked
+
+
+@pytest.mark.parametrize('profile',['','lean','routine_product_fast','low_authority_fast'])
+def test_prepared_stage_and_repair_view_do_not_reintroduce_legacy_forms(profile):
+    pack,_,inp,_=prepared('有年份近一点的吗？',history=['有新能源吗'])
+    prompt=brain.build_brain_prompt_pack(settings={'prompt_profile':profile},brain_input=inp)
+    assert prompt['user']['task']=='理解需求并选择唯一查询或非查询分支。'
+    assert '首轮查车必须输出唯一完整外层对象' in prompt['system']
+    assert '第二轮收到程序查询回执后' not in prompt['system']
+    assert '仅非查询分支' in prompt['response_schema']
+    plan={'reply_segments':['原文'], 'facts_claimed':[], 'evidence_used':{}, 'draft_structure_errors':[], 'self_check':{}}
+    original=deepcopy(plan)
+    repair=brain.build_brain_repair_prompt_pack(settings={},brain_input=inp,plan=plan,quality={})
+    view=repair['user']['original_brain_plan']
+    assert 'facts_claimed' not in view and 'evidence_used' not in view and 'draft_structure_errors' not in view
+    assert plan==original and view['reply_segments']==['原文']
+
+
+def test_terminal_validation_keeps_last_actual_plan_and_authority_error_category():
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_brain_plan
+    bad={'reply_segments':['合成车4报价6.4万。'], 'answer_mode':'recommend_from_catalog','recommended_action':'send_reply',
+         'facts_claimed':[{'fact_type':'price','value':6.4,'source_level':'current_conversation','source_id':'4'}]}
+    validation=brain.merge_plan_evidence_validation(validate_brain_plan(bad),{'ok':True,'errors':[]})
+    assert validation['failure_category']=='content_review'
+    original={'reply_segments':['旧稿']}
+    payload=brain.build_brain_no_visible_reply_payload({'brain_plan':original,'plan_validation':{'ok':False,'errors':['old']},
+        'repaired_brain_plan':bad,'repaired_plan_validation':validation},combined='有什么车',reason='brain_plan_validation_failed')
+    assert payload['brain_plan']==bad and payload['initial_brain_plan']==original
+    assert payload['plan_validation']==validation
+    assert payload['no_visible_reply']['failure_category']=='content_review'
+    assert payload['no_visible_reply']['failed_draft']['errors']==validation['errors']
+    malformed={**bad,'draft_structure_errors':['invalid_draft_field:confidence']}
+    newer=brain.merge_plan_evidence_validation(validate_brain_plan(malformed),{'ok':True,'errors':[]})
+    assert newer['failure_category']=='output_format'
+
+
+@pytest.mark.parametrize('parts,allowed',[
+    (['先给您推荐两台：','合成车4报价6.4万，合成车5报价6.8万。'],True),
+    (['先给您推荐三台：','合成车4报价6.4万，合成车5报价6.8万。'],False),
+    (['先给您推荐两台：','合成车4报价6.4万。','合成车5报价6.8万。'],True),
+    (['先给您推荐两台：','合成车4报价6.4万。','另外一组：合成车5报价6.8万。'],False),
+    (['先给您推荐两台：','合成车4报价6.4万。','再补一台：合成车5报价6.8万。'],False),
+    (['先给您推荐两台：','合成车4报价6.4万。','预约需要先核实。','合成车5报价6.8万。'],False),
+])
+def test_explicit_display_list_scope_crosses_segments_but_not_topics(parts,allowed):
+    pack,_,_,_=prepared()
+    checked=validate_reply_public_facts({'reply_segments':parts},pack)
+    assert checked['ok'] is allowed,checked
+
+
+def test_repair_retains_numeric_rejection_position_and_reply_digest():
+    pack,_,_,_=prepared()
+    plan={'reply_segments':['合成车4报价4万。']}
+    validation=brain.merge_plan_evidence_validation({'ok':True,'errors':[]},brain.validate_plan_against_evidence(plan,pack))
+    feedback=brain.compact_quality_verification(brain.plan_validation_repair_feedback(validation,combined='5—8万有什么车'))
+    details=feedback['validation_details']
+    assert len(details['reply_sha256'])==64
+    assert details['rejected_numbers'][0]['text']=='4万'
+    assert details['rejected_numbers'][0]['expected']==6.4
+    assert details['rejected_numbers'][0]['role']=='price'
+
+
+@pytest.mark.parametrize('segments,allowed',[
+    (['先推荐两台：合成车4报价6.4万，合成车5报价6.8万。合成车4更接近预算。'],True),
+    (['先推荐两台：','合成车4报价6.4万。','合成车5报价6.8万。','合成车4更接近预算。'],True),
+    (['先推荐两台：合成车4报价6.4万，合成车4报价6.4万。'],False),
+    (['先推荐两台：合成车4报价6.4万。合成车4更接近预算。'],False),
+    (['先推荐两台：合成车4报价6.4万，合成车5报价6.8万。合成车3报价6万。'],False),
+])
+def test_list_members_differ_from_later_mentions(segments,allowed):
+    pack,_,_,_=prepared()
+    checked=validate_reply_public_facts({'reply_segments':segments},pack)
+    assert checked['ok'] is allowed,checked

@@ -1,6 +1,8 @@
 """Read-only projection of saved, customer-visible CheJin vehicle details."""
 from typing import Any
 from copy import deepcopy
+import hashlib
+import json
 import re
 import unicodedata
 
@@ -152,6 +154,125 @@ def _reply_references(text: str, entities: list[dict], prior: list[dict]) -> lis
     return sorted(result, key=lambda e: e["start"])
 
 
+def _customer_budget_spans(text: str, entities: list[dict], budget: dict) -> list[tuple[int, int]]:
+    """Locate requirement restatements, then compare the complete relation.
+
+    Equality of a lone number is insufficient: a named vehicle or fee owns its
+    amount, and a range/cap/around must retain the frozen customer's meaning.
+    """
+    from apps.wechat_ai_customer_service.workflows.catalog_budget import budget_statement, amount_role
+    if budget.get("state") != "specified":
+        return []
+    expected = (budget.get("mode"), *(public_number(budget.get(k)) for k in ("value", "lower", "upper")))
+    spans = []
+    for clause in re.finditer(r"[^，,。；;！？!?]+", text):
+        first_entity = next((e for e in entities if clause.start() <= e["start"] < clause.end()), None)
+        value = text[clause.start():first_entity["start"] if first_entity else clause.end()]
+        parsed = budget_statement(value)
+        actual = parsed["budget"]
+        if not actual or not parsed["recognized_spans"]:
+            continue
+        mode = {"cap": "upper", "range": "range", "around": "around"}.get(actual.kind)
+        candidate = (mode, None, actual.lower, actual.upper) if mode == "range" else (mode, actual.target, None, None)
+        if candidate != expected:
+            continue
+        recognized = parsed["recognized_spans"]
+        # More than one unrelated monetary expression is not one requirement.
+        if len(recognized) != 1:
+            continue
+        start, end = recognized[0]
+        absolute_start = clause.start() + start
+        role = amount_role(text, absolute_start)
+        if role not in (None, "预算"):
+            continue
+        if any(clause.start() <= e["start"] < absolute_start for e in entities):
+            continue
+        tail = value[end:]
+        if re.match(r"\s*(?:的)?(?:首付|月供|定金|订金|手续费|服务费|车价|售价|报价|价格)", tail):
+            continue
+        if re.search(r"原来|以前|之前|过去|旧预算|不是|并非|不要|不看|不选", value[:start]):
+            continue
+        # A naked amount needs an explicit requirement relation or a budget
+        # noun; '4万的A' is an adjectival price, not a customer budget.
+        relation = re.search(r"以内|以下|封顶|左右|上下|附近|出头|不超过|最多|至多|上限|到|至|[-~—～－]", value)
+        if role != "预算" and not relation and not re.match(r"\s*(?:这个|的)?(?:总预算|预算|区间|价位|范围)", tail):
+            continue
+        if re.fullmatch(r"\s*(?:左右)?的?\s*", tail) and first_entity:
+            continue
+        spans.append((absolute_start, clause.start() + end))
+    return spans
+
+
+def _display_counts(segments: list[str], products: list[dict]) -> dict[tuple[int, int], dict]:
+    """Resolve a displayed list's cardinality independently of stock counts."""
+    text = "\n".join(segments)
+    entities = _reply_entities(text, products)
+    counts = [n for n in factual_number_spans(text, excluded=[(e["start"], e["end"]) for e in entities]) if n["unit"] == "台"]
+    result = {}
+    for number in counts:
+        start = max((m.end() for m in re.finditer(r"[，,。；;！？!?\n]", text[:number["start"]])), default=0)
+        prefix = text[start:number["start"]]
+        retrospective = bool(re.search(r"(?:这|那|上述|以上)(?:共|一共)?\s*$", prefix))
+        prospective = bool(re.search(r"(?:看|推荐|介绍|给|补|列|挑|选|说)", prefix))
+        inventory = bool(re.search(r"库存|在售|全店|一共|总共|仅有|只有|剩余|看到|查到|找到|匹配到", prefix))
+        if inventory or not (retrospective or prospective):
+            continue
+        if retrospective:
+            candidates = [e for e in entities if e["end"] <= number["start"]]
+            if candidates:
+                sentences = list(re.finditer(r"[^。；;！？!?\n]+", text[:number["start"]]))
+                boundary = candidates[-1]["start"]
+                found = False
+                for sentence in reversed(sentences):
+                    mentioned = [e for e in candidates if sentence.start() <= e["start"] < sentence.end()]
+                    if mentioned:
+                        boundary = sentence.start()
+                        found = True
+                    elif found:
+                        break
+                candidates = [e for e in candidates if e["start"] >= boundary]
+        else:
+            # Follow one explicit list through consecutive entity sentences.
+            # An introductory colon may bridge a physical reply segment; a
+            # new list/count or a non-list sentence closes this scope.
+            next_count = next((n["start"] for n in counts if n["start"] > number["end"]), len(text))
+            candidates = []
+            for index, sentence in enumerate(re.finditer(r"[^。；;！？!?\n]+", text[number["end"]:next_count])):
+                a, b = number["end"] + sentence.start(), number["end"] + sentence.end()
+                mentioned = [e for e in entities if a <= e["start"] < b]
+                if not mentioned:
+                    if index == 0 and re.search(r"[:：]\s*$", sentence.group()):
+                        continue
+                    break
+                if candidates and re.match(r"\s*(?:另外一组|另一组|换个话题|至于|再推荐|再补|再给)", sentence.group()):
+                    break
+                candidates.extend(mentioned)
+        # A later sentence discussing existing members adds no new member.
+        # Repetition inside the actual list remains visible and fails below.
+        groups = []
+        for entity in candidates:
+            if not groups or re.search(r"[。；;！？!?\n]", text[groups[-1][-1]["end"]:entity["start"]]):
+                groups.append([])
+            groups[-1].append(entity)
+        members = []
+        for group in groups:
+            known = {i for e in members for i in e["ids"]}
+            if all(len(e["ids"]) == 1 and e["ids"][0] in known for e in group):
+                continue
+            members.extend(group)
+        candidates = members
+        ids = [e["ids"][0] for e in candidates if len(e["ids"]) == 1]
+        valid = bool(candidates) and len(ids) == len(candidates) == len(set(ids)) and public_number(number["value"]) == len(ids)
+        offset = 0
+        for segment_index, segment in enumerate(segments):
+            if number["start"] < offset + len(segment):
+                break
+            offset += len(segment) + 1
+        result[(segment_index, number["start"] - offset)] = {"verified": valid, "role": "display_count", "product_ids": ids,
+            "expected_count": len(set(ids)), "rejection_reason": None if valid else "display_count_scope_mismatch"}
+    return result
+
+
 def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation: dict | None = None) -> dict:
     """Inspect actual text, before/after semantic review; never trust claim IDs.
 
@@ -167,6 +288,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
     errors, facts, occurrences, actual_ids = [], [], [], []
     priced_ids = set()
     customer_statements = []
+    display_counts = _display_counts(plan.get("reply_segments") or [], products)
     policy_numbers = [n for source in formal_knowledge_source_table(evidence).values()
                       for n in factual_number_spans(source["content"])]
 
@@ -187,30 +309,29 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         if fact not in facts:
             facts.append(fact)
 
-    def customer_amount(segment, number):
+    def customer_amount(segment, number, budget_spans):
         role = amount_role(segment, number["start"])
+        budget = (receipt.get("query") or {}).get("budget") or {}
+        if any(start <= number["start"] and number["end"] <= end for start, end in budget_spans):
+            for source in message_sources(evidence):
+                if source["sender"] in ("customer", "client") and source["id"] in budget.get("source_ids", []):
+                    add("customer_requirement", number["text"], "current_conversation", source["id"])
+                    return True
+        if role == "预算":
+            return False  # The whole relation must match, not just an endpoint.
         if role is None or number["unit"] != "万元":
             return False
-        if role != "预算":
-            prefix = re.split(r"[，,。；;！？!?]", segment[:number["start"]])[-1].strip()
-            if not re.fullmatch(r"(?:您|你)(?:的)?(?:希望|计划|打算|预计|考虑)?(?:首付|月供|定金)(?:希望|计划|是|为|预算|大约|约)?", prefix):
-                return False
-        value = public_number(number["value"])
-        budget = (receipt.get("query") or {}).get("budget") or {}
-        # A historic amount is not today's effective budget. Check the frozen
-        # query first, then retain the real customer source (never AI history).
-        if role == "预算" and (budget.get("state") != "specified" or value not in {
-                public_number(budget.get(k)) for k in ("value", "lower", "upper")}):
+        prefix = re.split(r"[，,。；;！？!?]", segment[:number["start"]])[-1].strip()
+        if not re.fullmatch(r"(?:您|你)(?:的)?(?:希望|计划|打算|预计|考虑)?(?:首付|月供|定金)(?:希望|计划|是|为|预算|大约|约)?", prefix):
             return False
+        value = public_number(number["value"])
         for source in message_sources(evidence):
             if source["sender"] not in ("customer", "client"):
-                continue
-            if role == "预算" and source["id"] not in budget.get("source_ids", []):
                 continue
             for n in factual_number_spans(source["content"]):
                 source_role = amount_role(source["content"], n["start"])
                 if (n["unit"] == number["unit"] and value is not None and value == public_number(n["value"])
-                        and (source_role == role or (role == "预算" and source_role in (None, "车价")))):
+                        and source_role == role):
                     add("customer_requirement", number["text"], "current_conversation", source["id"])
                     return True
         return False
@@ -220,6 +341,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         entities = _reply_references(segment, _reply_entities(segment, products), prior_entities)
         numbers = factual_number_spans(segment, excluded=[(e["start"], e["end"]) for e in entities])
         owners = _number_entity_owners(segment, entities, numbers)
+        budget_spans = _customer_budget_spans(segment, entities, (receipt.get("query") or {}).get("budget") or {})
         if entities:
             boundary = segment.rfind("。", 0, entities[-1]["start"])
             prior_entities = [e for e in entities if e["start"] > boundary]
@@ -228,7 +350,16 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:n["start"]])), default=0)
             if amount_role(segment, n["start"]) not in (None, "车价") and not any(clause_start <= e["start"] < n["start"] for e in entities):
                 customer_positions.add(n["start"])
-        customer_numbers = {n["start"] for n in numbers if n["start"] in customer_positions and customer_amount(segment, n)}
+        customer_numbers = {n["start"] for n in numbers if customer_amount(segment, n, budget_spans)}
+        display_positions = set()
+        for number in numbers:
+            display = display_counts.get((segment_index, number["start"]))
+            if display is not None:
+                display_positions.add(number["start"])
+                owners.pop(number["start"], None)
+                occurrences.append({"segment_index": segment_index, **number, **display})
+                if not display["verified"]:
+                    errors.append("reply_display_count_mismatch")
         for clause in re.finditer(r"[^，,。；;！？!?]+", segment):
             clause_numbers = [n for n in numbers if clause.start() <= n["start"] < clause.end()]
             if (clause_numbers and all(n["start"] in customer_numbers for n in clause_numbers)
@@ -255,7 +386,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                 if isinstance(public_value, str) and public_value and public_value in section:
                     add("configuration", f"{field}:{public_value}", "product_master", product_id)
             for number in (n for n in numbers if entity_index in owners.get(n["start"], [])):
-                if number["start"] in customer_numbers:
+                if number["start"] in customer_numbers or number["start"] in display_positions:
                     continue
                 if (number["start"] in customer_positions or
                         (number["unit"] == "万元" and amount_role(segment, number["start"]) not in (None, "车价"))):
@@ -283,7 +414,9 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                     expected = details.get("displacement")
                     valid = str(expected or "").upper() == f"{number['text']}".upper()
                     field = "displacement"
-                occurrences.append({"segment_index": segment_index, **number, "product_id": product_id, "verified": valid})
+                occurrences.append({"segment_index": segment_index, **number, "product_id": product_id, "verified": valid,
+                                    "role": field, "expected": expected, "source_id": product_id,
+                                    "rejection_reason": None if valid else "vehicle_fact_value_mismatch"})
                 if not valid:
                     errors.append("reply_numeric_fact_mismatch" if value is not None else "numeric_expression_unverifiable")
                 else:
@@ -294,7 +427,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         # Unassigned facts may be a policy or an aggregate, but a number in an
         # ambiguous vehicle assertion cannot borrow the aggregate price range.
         for number in (n for n in numbers if n["start"] not in owners):
-            if number["start"] in customer_numbers:
+            if number["start"] in customer_numbers or number["start"] in display_positions:
                 continue
             value = public_number(number["value"])
             policy = policy_number(number, segment_index)
@@ -310,7 +443,10 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                         valid = True
                         add(kind, receipt[field], "catalog_query", receipt["query_id"])
             occurrences.append({"segment_index": segment_index, **number, "verified": valid and (not policy or formal_validation is not None),
-                                "pending_policy_review": policy and formal_validation is None})
+                                "pending_policy_review": policy and formal_validation is None,
+                                "role_candidates": [amount_role(segment, number["start"]), "catalog_aggregate"],
+                                "query_id": receipt.get("query_id"),
+                                "rejection_reason": None if valid else "no_matching_authority_for_role_and_scope"})
             if not valid:
                 errors.append("unverified_reply_numeric_fact")
         if (not entities and aggregate_ready(receipt) and receipt.get("match_count") == 0
@@ -344,7 +480,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             if not product or value is None or value != public_number(product.get("price")):
                 errors.append("model_declared_fact_conflict")
     return {"ok": not errors, "errors": list(dict.fromkeys(errors)), "facts_claimed": facts,
-            "product_ids": actual_ids, "occurrences": occurrences, "customer_statements": customer_statements}
+            "product_ids": actual_ids, "occurrences": occurrences, "customer_statements": customer_statements,
+            "reply_sha256": hashlib.sha256(json.dumps(plan.get("reply_segments") or [], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
 
 
 def validate_reviewed_reply_facts(plan: dict, evidence: dict, *, refs: dict, mapping: dict) -> dict:
