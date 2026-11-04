@@ -149,6 +149,8 @@ class Collector:
     def evidence_issues(self, value, source):
         if not isinstance(value, dict):
             return
+        if value.get('status') == 'pre_call_evidence_failed':
+            self.record(source, 'read_failed', reason='hook_pre_call_evidence_failed')
         if value.get('evidence_kind') == 'python_allocations':
             state = value.get('status')
             if state != 'finished':

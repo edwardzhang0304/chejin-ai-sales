@@ -190,7 +190,8 @@ class Profile:
         try:
             self.root.parent.mkdir(parents=True, exist_ok=True)
             gap = self.root.parent / 'python-memory-gap.json'
-            gap.write_text(json.dumps({'status': 'capture_failed', 'reason': reason,
+            gap.write_text(json.dumps({'evidence_kind': 'python_allocations', 'enabled': True,
+                                       'status': 'capture_failed', 'reason': reason,
                                        'at': time.time(), 'retention': 'latest_failure_only'}))
         except OSError:
             pass
