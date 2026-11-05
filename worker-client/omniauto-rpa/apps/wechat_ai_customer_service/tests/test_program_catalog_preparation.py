@@ -59,6 +59,19 @@ def test_partial_numeric_recognition_cannot_execute_or_drop_conditions(text,hist
     assert not rt.calls and not pack['catalog_protocol'].get('receipt')
 
 
+def expected_model_facts(frozen):
+    expected=deepcopy(frozen)
+    # Only wire/attempt identity is excluded. Keep the complete factual block
+    # assertion: no vehicle, policy, source, price or condition may disappear.
+    expected.pop('generation_identity',None)
+    protocol=expected['catalog_protocol']
+    protocol.pop('protocol',None);protocol.pop('model_query_contract',None)
+    for receipt in (protocol.get('receipt') or {},expected['product_master']['catalog_selection']):
+        receipt.pop('protocol',None);receipt.pop('model_query_contract',None)
+        (receipt.get('query') or {}).pop('model_query_contract',None)
+    return expected
+
+
 @pytest.mark.parametrize('profile',['','lean','routine_product_fast','low_authority_fast'])
 def test_all_prompt_consumers_receive_same_complete_authority(profile):
     rows=[row(str(i),5+i/5,customer_description='公开描述'*350,internal_notes='PRIVATE_SENTINEL') for i in range(1,7)]
@@ -66,10 +79,12 @@ def test_all_prompt_consumers_receive_same_complete_authority(profile):
     generation=brain.build_brain_prompt_pack(settings={'prompt_profile':profile,'prompt_item_text_chars':80},brain_input=inp)
     repair=brain.build_brain_repair_prompt_pack(settings={'prompt_profile':profile},brain_input=inp,plan={},quality={})
     review=reviewer.build_quality_review_request(settings={},brain_input=inp,evidence_pack=pack,plan={'reply_segments':['请看具体车辆']},deterministic_quality={})
-    expected=ev.reply_authority_snapshot(pack)
+    frozen=ev.reply_authority_snapshot(pack)
+    expected=expected_model_facts(frozen)
     assert generation['user']['brain_input']['content_basis']==expected
     assert repair['user']['brain_input']['content_basis']==expected
     assert review['authority_evidence_summary']==expected
+    assert ev.reply_authority_snapshot(pack)==frozen
     assert len(expected['product_master']['items'])==6
     assert expected['product_master']['items'][0]['public_details']['customer_description']=='公开描述'*350
     assert 'PRIVATE_SENTINEL' not in json.dumps(expected,ensure_ascii=False)
@@ -545,7 +560,7 @@ def test_partial_year_preserves_candidates_and_null_through_all_consumers():
     assert receipt['recommendations']==[]
     assert [p['id'] for p in receipt['known_condition_facts']]==['1','2','3','4','5','6']
     assert len(pack['knowledge']['product_master']['items'])==6
-    expected=ev.reply_authority_snapshot(pack)
+    expected=expected_model_facts(ev.reply_authority_snapshot(pack))
     draft={'answer_mode':'ask_clarifying_question','reply_segments':['合成车1报价5.2万，年份还需核实，您希望哪一年之后的车？']}
     for consumer in (
         brain.build_brain_prompt_pack(settings={},brain_input=inp)['user']['brain_input']['content_basis'],

@@ -926,14 +926,35 @@ def prepare_catalog_round(*, evidence: dict, settings: dict, brain_input: dict, 
     return preparation
 
 
+def model_receipt_view(receipt: dict) -> dict:
+    """A model needs query semantics and evidence, not wire version labels."""
+    result = deepcopy(receipt)
+    result.pop("protocol", None)
+    result.pop("model_query_contract", None)
+    if isinstance(result.get("query"), dict):
+        result["query"].pop("model_query_contract", None)
+    return result
+
+
+def model_protocol_view(protocol: dict) -> dict:
+    """Hide wire identifiers only; retain all conditions and source references."""
+    result = deepcopy(protocol)
+    result.pop("protocol", None)
+    result.pop("model_query_contract", None)
+    receipt = result.get("receipt")
+    if isinstance(receipt, dict):
+        result["receipt"] = model_receipt_view(receipt)
+    return result
+
+
 def prompt_protocol(evidence: dict) -> dict | None:
     protocol = evidence.get("catalog_protocol")
     if not protocol:
         return None
-    result = deepcopy(protocol)
+    result = model_protocol_view(protocol)
     receipt = result.get("receipt")
     if receipt:
-        receipt = result["receipt"] = receipt_view(receipt)
+        receipt = result["receipt"] = model_receipt_view(receipt_view(receipt))
         receipt.pop("unknown_fields", None)
         pending = receipt.get("pending_conditions") or {}
         if "unknown_fields" in pending:
