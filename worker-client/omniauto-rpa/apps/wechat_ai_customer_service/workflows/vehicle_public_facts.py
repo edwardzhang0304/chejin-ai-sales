@@ -400,6 +400,23 @@ def _energy_present(receipt, label, *, whole_stock=False):
     return None
 
 
+def _unsupported_condition_claims(text, entities):
+    """Distinguish requirements from assertions about an actual vehicle's history."""
+    for sentence in re.finditer(r"[^。；;！？!?]+", text):
+        value = sentence.group()
+        for condition in re.finditer(r"(?:无|没有|未(?:发生|经过)?)(?:过)?(?:大修|事故|水泡|火烧)", value):
+            before = value[:condition.start()]
+            subject = re.search(r"(?:这|那|该)(?:一)?(?:台|辆|款)(?:车)?|现车|在售车(?:源|辆)?|我们(?:这边)?有(?:一)?[辆台]", before)
+            named = [e for e in entities if sentence.start() <= e["start"] < sentence.start()+condition.start()]
+            if not subject and not named:
+                continue
+            subject_end = max(subject.end() if subject else 0,
+                              named[-1]["end"] - sentence.start() if named else 0)
+            relation = before[subject_end:]
+            if not re.search(r"(?:希望|想要|需求|要求|待核实|未核实|不能确认|是否|有没有|不能保证)", relation):
+                yield "vehicle_history_assertion_not_verified"
+
+
 def _inventory_assertion_errors(text, receipt):
     """Check an explicit existence or resolved-condition assertion at its stated scope."""
     from apps.wechat_ai_customer_service.workflows.catalog_query import receipt_state
@@ -636,6 +653,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         # Negative inventory statements still assert a result, even with no
         # digits. Unknown conditions or nonzero results cannot authorize them.
         errors.extend(_inventory_assertion_errors(segment, receipt))
+        errors.extend(_unsupported_condition_claims(segment, entities))
         for start, end in _inventory_absences(segment):
             category = re.search(_ENERGY_LABEL, segment[start:end])
             whole_stock = "全店" in re.split(r"[，,。；;！？!?]", segment[:start])[-1]

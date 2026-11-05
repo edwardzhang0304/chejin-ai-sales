@@ -202,3 +202,45 @@ def test_missing_vehicle_information_is_not_inventory_absence(monkeypatch,actual
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
     with SessionLocal() as db:assert bool(list(db.scalars(select(ReplyAction))))==allowed,result
+
+
+@pytest.mark.parametrize('text,allowed', [
+    ('收到，2-4年车龄、8-12万、无大修、省油的油车，我记下了。您更偏轿车还是SUV？',True),
+    ('您的需求记下了：车龄2到4年、预算8到12万、油车、无大修。您更偏轿车还是SUV？',True),
+    ('我们有一台现车，已经确认无大修。您更偏轿车还是SUV？',False),
+    ('您的需求记下了。这台现车保证贷款通过。',False),
+])
+def test_recording_customer_requirements_does_not_certify_a_seller_claim(monkeypatch, actual_brain, text, allowed):
+    state = actual_brain
+    configure_partial(monkeypatch,state,'normal')
+    state['brain_config']['semantic_reviewer_enabled'] = False
+    def coverage(binding):
+        value=original_coverage(binding)
+        for scan in value['scans']:
+            for row,content in zip(scan['databases'][0]['pages'][0],['您好','车龄2-4年，价格8-12w，无大修，省油的油车']):
+                row['StrContent']=content
+        return value
+    monkeypatch.setattr(pipeline,'coverage',coverage)
+    monkeypatch.setattr(pipeline.native,'coverage',coverage)
+    def transport(**kw):
+        assert kw['model']!='synthetic-reviewer'
+        if not state.get('receipt'):
+            mid=state['invocations'][-1]['batch'][-1]['id']
+            value={'catalog_query':{'operation':'search','requirement_state':'uncertain',
+                'budget':{'state':'specified','mode':'range','lower':8,'upper':12,'source_ids':[mid]},
+                'filters':[{'field':'energy_type','op':'eq','value':'fuel','source_ids':[mid]}],
+                'source_ids':[mid],'name_queries':[],'reference_ids':[],'exclude_ids':[],
+                'unsupported_requirements':['车龄、油耗和维修情况需核实'],'interpretation':'记录客户需求'}}
+        else:
+            value=pipeline.joined.fixtures.base_plan()
+            value.update(answer_mode='collect_customer_info', reply_segments=[text])
+            value.pop('facts_claimed',None);value.pop('evidence_used',None)
+        return {'ok':True,'status':200,'response_text':json.dumps(value,ensure_ascii=False)}
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch)
+        assert pipeline.generate(bid)['decision'] != 'send_reply'
+    with SessionLocal() as db:
+        assert bool(list(db.scalars(select(ReplyAction)))) is allowed

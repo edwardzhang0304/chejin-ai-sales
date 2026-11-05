@@ -172,6 +172,7 @@ def evaluate_content_rules(
             if current != receipt.get("snapshot_id"):
                 return repair_decision("catalog_changed_or_unavailable_before_guard", candidate,
                                        repair_instruction="库存版本已变或无法读取，旧查询不能授权发送。")
+    prepared = bool((evidence_pack.get("catalog_protocol") or {}).get("preparation"))
     reviewed_finance_refusal = verified_finance_refusal(reply, reviewed_plan, evidence_pack)
     safety = evidence_pack.get("safety", {}) or {}
     if isinstance(safety, dict) and safety.get("must_handoff"):
@@ -181,7 +182,10 @@ def evaluate_content_rules(
             reasons,
             evidence_pack=evidence_pack,
         ) and not candidate_declares_hard_boundary(candidate)
-        soft_advisor_only = advisor_mode in {"clear_common_sense_recommendation", "soft_topic_redirect"} and soft_advisory_only
+        # A prepared draft has already been checked for seller assertions.
+        # Lack of product evidence by itself does not contradict a customer's
+        # stated requirements. Separate hard conditions still run below.
+        soft_advisor_only = (prepared or advisor_mode in {"clear_common_sense_recommendation", "soft_topic_redirect"}) and soft_advisory_only
         if not soft_advisor_only:
             if (reviewed_finance_refusal and reasons and reasons <= SOFT_ADVISORY_SAFETY_REASONS) or existing_safety_can_be_cleared_by_authoritative_reply(
                 candidate=candidate,
@@ -349,7 +353,7 @@ def evaluate_content_rules(
     structured_used = bool(candidate.get("structured_used"))
     require_structured = settings.get("require_structured_for_authority", True) is not False
 
-    if authority_tags and require_structured and not has_structured:
+    if not prepared and authority_tags and require_structured and not has_structured:
         if authority_topic_can_use_conversation_fact(candidate, authority_tags=authority_tags):
             pass
         else:
@@ -359,7 +363,7 @@ def evaluate_content_rules(
                 authority_tags=sorted(authority_tags),
             )
 
-    if authority_tags and rag_used and not structured_used and require_structured:
+    if not prepared and authority_tags and rag_used and not structured_used and require_structured:
         return handoff_decision(
             "rag_only_cannot_authorize_authority_topic",
             candidate,
@@ -389,7 +393,6 @@ def evaluate_content_rules(
     ):
         return handoff_decision("sales_followup_requires_handoff", candidate)
 
-    prepared = bool((evidence_pack.get("catalog_protocol") or {}).get("preparation"))
     fact_authority = {"ok": True} if prepared else validate_reply_fact_authority(reply, evidence_pack, reviewed_plan=reviewed_plan)
     if not fact_authority.get("ok"):
         return handoff_decision(
