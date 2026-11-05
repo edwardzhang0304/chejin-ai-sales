@@ -47,11 +47,28 @@ class FriendDiscovery:
                 # Resuming a saved round is this startup's reconciliation, not
                 # permission to start another sweep when that round completes.
                 if pending['generation'] == self.scope.process_generation:
+                    if state['session'] != self.session:
+                        covered = set(state.get('resume_covered', [])) | {
+                            i['source_task_id'] for i in pending['invitations']}
+                        queued = set(state.get('resume_startup_jobs', []))
+                        queued.update(i['source_task_id'] for i in invitations
+                                      if i['source_task_id'] not in covered)
+                        state['resume_startup_jobs'] = sorted(queued)
+                        state['resume_covered'] = sorted(covered)
                     state['session'] = self.session
                     self._save(db, state)
                     db.commit()
                 return pending
             startup = state['session'] != self.session
+            # New authorizations can appear while a prior round is suspended.
+            # Reconcile only the uncovered jobs after resuming that old round;
+            # do not reset its delayed-read budget or consume unrelated callbacks.
+            queued = set(state.get('resume_startup_jobs', []))
+            extra = [i for i in invitations if i['source_task_id'] in queued]
+            extra_startup = bool(extra) and not startup
+            if startup:
+                state['resume_startup_jobs'] = []
+                state['resume_covered'] = []
             exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='hook_raw_inbox'").fetchone()
             events = []
             seen = dict.fromkeys(state['seen'])
@@ -60,7 +77,7 @@ class FriendDiscovery:
                 # do not turn each old page into another full contact read.
                 state['cursor'] = db.execute('SELECT COALESCE(MAX(receive_seq),0) FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=?',
                     (self.scope.self_wxid, self.scope.account_epoch)).fetchone()[0]
-            if exists and not startup and invitations:
+            if exists and not startup and not extra_startup and invitations:
                 query = '''SELECT * FROM hook_raw_inbox WHERE self_wxid=? AND account_epoch=?
                            AND receive_seq>? ORDER BY receive_seq LIMIT ?'''
                 for row in db.execute(query, (self.scope.self_wxid, self.scope.account_epoch,
@@ -97,18 +114,27 @@ class FriendDiscovery:
             grants = set(state.get('grants', [])) & active
             new_grants = {i['source_task_id'] for i in invitations
                           if i.get('discovery_after_authorization') is True} - grants
+            if extra_startup:
+                new_grants &= {i['source_task_id'] for i in extra}
             state['grants'] = sorted(grants | new_grants)
             state['session'] = self.session
-            if invitations and (startup or events or new_grants):
+            if invitations and (startup or extra_startup or events or new_grants):
+                round_invitations = extra if extra_startup else invitations
                 pending = {'round_id': uuid.uuid4().hex, 'generation': self.scope.process_generation,
-                           'reason': 'startup' if startup else 'authorization' if new_grants else 'incoming_message',
-                           'events': events, 'all_peers': startup,
+                           'reason': 'startup' if startup else 'resume_startup' if extra_startup else 'authorization' if new_grants else 'incoming_message',
+                           'events': events, 'all_peers': startup or extra_startup,
                            'authorized_tasks': sorted(new_grants),
-                           'invitations': invitations, 'stage': 'prepared', 'results': {}, 'snapshot': None}
+                           'invitations': round_invitations, 'stage': 'prepared', 'results': {}, 'snapshot': None}
+                if extra_startup:
+                    state['resume_startup_jobs'] = []
+                    state['resume_covered'] = sorted(set(state.get('resume_covered',[])) |
+                        {i['source_task_id'] for i in round_invitations})
                 state['pending'] = pending
             else:
                 state['pending'] = None
                 pending = None
+                state['resume_startup_jobs'] = []
+                state['resume_covered'] = []
             self._save(db, state)
             db.commit()
             return pending
@@ -128,5 +154,7 @@ class FriendDiscovery:
             if state['pending'] and state['pending']['round_id'] == pending['round_id']:
                 state['last_round'] = {k: v for k, v in pending.items() if k not in {'events', 'invitations'}}
                 state['pending'] = None
+                if not state.get('resume_startup_jobs'):
+                    state['resume_covered'] = []
                 self._save(db, state)
                 db.commit()

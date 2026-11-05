@@ -387,3 +387,36 @@ def test_invalid_contact_shape_ends_with_specific_evidence_without_refresh(env):
     assert report['stage']=='complete' and not env.bound
     assert report['results']['task-1']['reason_code']=='FRIEND_RESPONSE_SHAPE_INVALID'
     assert report['comparisons']['task-1']['reason_code']=='FRIEND_RESPONSE_SHAPE_INVALID'
+
+
+def test_restart_resumes_old_budget_and_reconciles_new_offline_invite(env):
+    env.tick([])
+    env.receive()
+    env.tick()
+    env.advance(2);env.tick()  # old task has one delayed read left
+    env.contacts['data']=[contact('wxid_peer_two','CJTEST2')]
+    env.d.runtime=env.runtime()
+    invitations=[invite(),invite('task-2','CJTEST2')]
+    env.advance(5);env.tick(invitations)  # original task finishes its budget
+    assert not env.bound and len(env.calls)==3
+    env.tick(invitations)  # new offline task gets its own startup capture
+    assert env.bound==['task-2'] and len(env.calls)==4
+    for _ in range(20):env.advance();env.tick(invitations)
+    assert len(env.calls)==4  # original task's budget was not reset
+    reports=[json.loads(p.read_text()) for p in (env.tmp_path/'transactions/hook/friend-discovery').glob('*.json')]
+    extra=next(r for r in reports if r['reason']=='resume_startup')
+    assert [i['source_task_id'] for i in extra['invitations']]==['task-2']
+
+
+def test_uncovered_startup_does_not_consume_new_transfer_grant(env):
+    env.tick()
+    env.d.runtime=env.runtime()
+    items=[invite(),invite('task-2','CJTEST2')]
+    env.tick(items)  # record uncovered task while old round waits
+    for _ in range(2):env.advance();env.tick(items)
+    env.contacts['data']=[contact('wxid_peer_two','CJTEST2'),contact('wxid_peer_three','CJTEST3')]
+    transfer={**invite('task-3','CJTEST3'),'discovery_after_authorization':True}
+    env.tick(items+[transfer])  # only the queued offline task
+    assert env.bound==['task-2']
+    env.tick([invite(),transfer],bindings=[{'peer_wxid':'wxid_peer_two'}])
+    assert env.bound==['task-2','task-3']
