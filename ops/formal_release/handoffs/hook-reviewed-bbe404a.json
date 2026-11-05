@@ -3,9 +3,9 @@
   "repository": "edwardzhang0304/chejin-ai-sales",
   "transport": "hook",
   "reuse_mode": "reviewed_delta",
-  "approval": "User authorized both reviewed fixes, preserve-data strong upgrade, Mac delivery; reuse completed tests.",
-  "reviewed_commit": "3326a738c158341ff30a3fa1a6024fea7c9c5271",
-  "target_version": "0.10.32",
+  "approval": "User authorized reviewed fixes via original 0.10.32 settings button; reuse completed tests.",
+  "reviewed_commit": "e365732b03ea1a047b21f6871fe88585da03a347",
+  "target_version": "0.10.33",
   "source_sha256": {
     ".dockerignore": "953c4ae7fbf88d1f9655d96aac647bb20157d4531062155de4922562c924cc6c",
     ".gitattributes": "c3fb393b0b0757bb56c2aa4c733114aa8d394be2ca0d60bf11fc5cba47dfaf3a",
@@ -15,7 +15,7 @@
     "backend/.env.example": "ed7c5734c98665f2da1e6d4d6918be0529dbb4609560eb5851a60db60f9c9336",
     "backend/.gitignore": "8b318bea4f5c746fe6ca7be41e98f0bf331e7325f63141bb90609e23b54e6dfc",
     "backend/Dockerfile": "04085e37fc190b6e6b0124fb240cc2d54cefad329921e994bfbaf8a4d78c95c4",
-    "backend/README.md": "b4cb7295c7132da3619a9a8ec5f058ec497db643b2c662501c106b91fada4048",
+    "backend/README.md": "fc94128467a92579ab4a55fdf2e8237d6357b54a310c53d864149a4f2917a165",
     "backend/alembic.ini": "10ec633dfef6fbfb3e27a073d6d7dd4e18e6acc668794811364e042585721651",
     "backend/alembic/env.py": "f5be2904c022729043ff3b310708dce49b4a9ea148f4061f41b9f8232c15593a",
     "backend/alembic/versions/20260603_0001_initial_schema.py": "1fe592366e724473b586a2ea6a5f5ec4062194bda80f10c340c922d7e3b84b11",
@@ -134,7 +134,7 @@
     "backend/app/scripts/import_chejin_knowledge.py": "580f50c3dd7aa55a0b16a033603f15c88969068d0c0d090c13ca5d4462dc1f6b",
     "backend/app/scripts/register_client_release.py": "d58fe9657c35acc8c76cf67e16aecbad54f83130394dc5fe916f9fb73a1adbdc",
     "backend/app/services/__init__.py": "03b856fd659eeeba191caea3dc000419afec0fd8e3ff394179489c8f6b06afdf",
-    "backend/app/services/ai_adapter.py": "b0268cb8cc93d69e01930f7827bbc8476ea87043ff54cdf65003cffdc61960f3",
+    "backend/app/services/ai_adapter.py": "0a8677b71f5989449f345dc7e9ae164ae4602543ac5c099efd0813d01850f132",
     "backend/app/services/ai_capacity_service.py": "c6fb0d5d75df193bb873d7ad55825307c8045d84559f6cb99c0eafb437e8c218",
     "backend/app/services/ai_provider_worker.py": "e4e8595a1cd76a79d120b899d7cf4729bb9f6a454ed43ecee5d35f696a36e882",
     "backend/app/services/assignment_service.py": "c980552488cc3374b0865c5c1ca12fc8eca0aaa368ccd49a3dea082fbd3e4747",
@@ -203,11 +203,11 @@
     "backend/app/services/worker_token_service.py": "afe266c745229920a75c836415469437b51891ebe03b1b63c3ff50b3b58b9142",
     "backend/app/services/worker_vision_credential_service.py": "6d427532d9e56f6cf9da8845f0ad6fb184fce066f5cac30c6302c3dc199f6f3c",
     "backend/compose.uat.yml": "58bf77325c1667295eab1bbaa5d42f4b81032f1a82e2104467a0371cb2a076f0",
-    "backend/compose.web.yml": "4e750844a4616636bdcbc0108a95b233df8c3179460e8062b94cc95feb89be72",
-    "backend/configs/chejin_c3_brain.json": "e83598ec354a4fc5ed6ca8b82c3b0866f2171f76b33d1647de37e905fe1ef5ba",
-    "backend/docker-compose.yml": "63ebd015a485f17c197566a4ec6d75ebd2ab9f58cb1cdf5d8027b3c32c048063",
+    "backend/compose.web.yml": "6fa680213af97d5ac585c9b3ce46b04bc27b120ca306932777dc5789bc90cd70",
+    "backend/configs/chejin_c3_brain.json": "95ebe6c0ab8a15c46ae2a9ad82239e9fc2000fbbf41cdf7a2392092059282280",
+    "backend/docker-compose.yml": "b158485d64fa3114eb9183102b2dc4e08d2a21aa564b930a1224f08d9746c93a",
     "backend/docker/entrypoint.sh": "2db4def08af9248f4d4215154ce20ca474b7188a7c985a8458be1035e2a3509d",
-    "backend/pyproject.toml": "a4a316f8e45280bc143d92120a9ea780ace21165c645416a89339c19ce6a20fa",
+    "backend/pyproject.toml": "dfdc1ac1a0c0cb9e8be4c919e7788ae0cf098896306dc3058e9bdaaae04d8826",
     "backend/requirements.lock": "e50b91f6bf1794bf7cd589604c8c6adba248fa97762da3f2b981d21731b4d573",
     "backend/requirements.txt": "158c8f61c1b48f2473561cc8543fe5b55b62fc45d9c34e46286ac015384c7117",
     "backend/scripts/admin_accounts.py": "8d142e4d7ce889b19ff05b4d1a3816110ca47c8fa7b87a8cc1c7e3da281d8f6b",
@@ -263,7 +263,7 @@
     "backend/tests/test_client_releases_api.py": "852db05f27b1ee02eb7a41a12f308b49d35fcbbc9cc821fdca4d60901114e6b8",
     "backend/tests/test_clock_reference.py": "8c96da75145fdbc9891ca85f325216eeb41aa931fd8b8e11fb896c99dc376738",
     "backend/tests/test_closed_read_receipts.py": "5acbcb194bbc363c9c04f5a6941f5f53b80402473cd58d46d1c92d8108cc8af3",
-    "backend/tests/test_config_safety.py": "b9378344ff7d4b6eaed6098eb2fe4bd46fced61c6d35a494ec40335ceee129c7",
+    "backend/tests/test_config_safety.py": "d8999eb70dd7df71d5198217f25d12ed71fb1d62f22bcc64010d9ee01efda807",
     "backend/tests/test_confirmed_sent_history_http.py": "1e6b718db6abb746792ae437052c1ef662d94a20b721e9dbeb9a6c825d8a52bc",
     "backend/tests/test_contract_equivalent_recovery.py": "d3b90e996685a5fdee4691deaae3678becf0e81cf024ad4266e2094c57b69a06",
     "backend/tests/test_correction_business_resolution.py": "35de2cde4e8812148f13e4327959a6b1c03d984574d086066c7655c33c3e4d90",
@@ -355,13 +355,14 @@
     "backend/tests/test_leads_api.py": "d29011b5e0ac1623642d3ff818046b01e98ebdae2d1a4f54eb37c52331a3c3a1",
     "backend/tests/test_legacy_media_recovery_api.py": "38cac724ac0f805bc6185034b351c36d4785b7c620d69e296345fb2c4337d272",
     "backend/tests/test_legacy_unknown_worker_release.py": "64db4ca754f63d95d2f152260e46020962c97ceedd821d5d191231bf38769ae6",
-    "backend/tests/test_llm_response_diagnostics.py": "2cae8d1444d139542da79faae56df346b65e7640c808e495842b68be8dfc8cb6",
+    "backend/tests/test_llm_response_diagnostics.py": "d19c587a9117c6ade869e97e069d6275d746bdf3e42fcffb672bc802c58239d5",
     "backend/tests/test_media_business_recovery.py": "e33ad71dc1af6d2dd6830d0be7b6477bf5bb449a8393084daedbb832171032b2",
     "backend/tests/test_media_recovery_contract_guards.py": "b5e7e4e6800b22ab43c69720b3e663e782d0424eab14b155e7988dfe62ca3e42",
     "backend/tests/test_memory_business_process.py": "2fe54ddf92a36918cf79880b776f6ea8abf38a3a9fd9eaa8e60159260349d923",
     "backend/tests/test_memory_ownership_process.py": "add19d849606d0bef64c869df839cee097c19dd4cc052b9555dd9557fb4b9b89",
     "backend/tests/test_migration_rollback_safety.py": "144857798c4569f4e3a274d6ca182738de055fd70b9a611ed3750a4340616173",
     "backend/tests/test_model_http_accounting.py": "bc16dc36de95165cabe03c42d0a59cd62ea09638c30513b88c7e73ae77ff3fbb",
+    "backend/tests/test_model_prompt_boundary.py": "5eafbcc3b09c61cff1426c925903974b17124e5dca18fef378b57460204e503e",
     "backend/tests/test_model_query_hook_pipeline.py": "00b3ae3f5d3e682f3407c02b0bc4abc7865cf6fdc19450f69aee2ccaa325d01a",
     "backend/tests/test_notification_recovery_boundaries.py": "4baba99ff7f1a4fcedcbf6a49cf2968767a638e66d23d113e634ad82a9c3c155",
     "backend/tests/test_observability.py": "de5e1543985fb5849aec60e7036816e07ec5f80c2847bce658f98370a2a7a239",
@@ -438,10 +439,10 @@
     "backend/tests/worker_media_recovery_probe.py": "cec15755d5c7d0aee1aef709e675bc3251f01cddf9895815e504c079752c3783",
     "backend/tests/worker_partition_recovery_probe.py": "c94d000b8cd179da6091c87a90806d1aeed3fc1d40495c69340e2aff91c66af2",
     "backend/tests/worker_sequence_recovery_probe.py": "89402c39e79193530cb17dacd9bf9e1c55873e84baf744a7eb541ab8441c2a01",
-    "contracts/c2_contract_v3.json": "7874eea72265618e8c0af691bf9f5377d0bc05673e61aae4b4ecfde7a725f7f2",
+    "contracts/c2_contract_v3.json": "0c7e6d91643418c8c66c9e184a59109eb18c7e12e1fff041c5c08f7f25d3ae45",
     "contracts/examples/c2_v3_mixed_roundtrip.json": "0e9023e920627328c49eac031c34fd3ce77d504195d5ef6f7a9848ccf1e4f98f",
     "contracts/feiyu-hook-integration.md": "68bd149bb7616fe12afc74776755ea1ed60c158028db97a1f8e8b555f72dd04b",
-    "contracts/hook_contract_v1.json": "802ed5d4c45174adfdf742603d8cefb23a99fe5ecfc8689f358a96df40315a62",
+    "contracts/hook_contract_v1.json": "82f1543534182031336a4efcb02937dd76e9e16d4e3b3e38f87f906d4545d374",
     "contracts/recovery/c2_contract_v3_0.9.75.json": "b7b4b2ab04d2feca8766c84bc4655ccf56170d2fc645e3e161e9b5a0fdf47f51",
     "contracts/recovery/c2_contract_v3_0.9.78.json": "c17c82e54ab5f1736f74384e3720f7dc158af058dc46673230cbf87d074792d5",
     "contracts/recovery/c2_contract_v3_0.9.80.json": "52c984a290e9029c3eb6f475ce5a05581502b04c3cd0c4a5f3b44a1fb194e585",
@@ -455,7 +456,7 @@
     "frontend/.gitignore": "23b7ede583be8ca215ffe4f491ec44e1953f381aba0aea67d8d1b077d667655a",
     "frontend/Dockerfile": "b504d18db2c1129e366f2831f7e6859b732779ef84212f1c7adcaf003de2fda7",
     "frontend/Dockerfile.dockerignore": "52e40f48dd3e7170465825714aa94570ef1d7960d9ec5d4f1673f52a697613d2",
-    "frontend/README.md": "f776c347570cf22d6df3435fba854dbf511095943b9e89e3c0f487fe3f1e9108",
+    "frontend/README.md": "ddb900327a7d2429b139fe8151eea9a9b1aad25fd504d5f36e5cd10bc1129932",
     "frontend/design-evidence/knowledge-common-button-sizing-1280x720.png": "33587f04fdf6476483a9e73a0bdf99cd7718f0139f27cd7a4e877cbb34a21f1b",
     "frontend/design-evidence/knowledge-common-components-1280x720.png": "e91c998bc1f7b4e365e4514ccbb1766ac41ae62973d8b34a369760a252f1f268",
     "frontend/design-evidence/knowledge-common-drawer-1280x720.png": "f76d57207b1e07a779ab40f307312abe615d5fa11702a28d2acf25619bc1cfb9",
@@ -487,8 +488,8 @@
     "frontend/design-evidence/knowledge-title-only-list-1280x720.png": "0aba9e306baa1b8689364ce9d4ba461231394e0ed3dcdfd8c86ba271b7c99e16",
     "frontend/docker/default.conf": "9c1da4ae99181da52716e57611b9db46c8411e9cdefb3a63fce48181eb6f058c",
     "frontend/index.html": "3e106d2519d0b3ad9a6bc94da7ce98280758330ba6ad7a7ce304804296908e56",
-    "frontend/package-lock.json": "449350f942dacbacf791405f4e8f89283720ae5468f16d3ffc83ce1f07bdc7cf",
-    "frontend/package.json": "f26cc8ab6afedf6258a2d9b68240a2fb74f686d859264220680ac0f9a3cc79f7",
+    "frontend/package-lock.json": "81674ad3c5047d3d18f44bf5dbf9ee3c36d66c2dac7fcf9c83fe8028289d1cff",
+    "frontend/package.json": "5c86d21b76cfb212b7cb73e11829d52acd7d7aec2a4f0b26f2db36fa0117c11f",
     "frontend/scripts/run-unit-tests.mjs": "6f2855f6cb9e7cab5c55277f5982dbb18f336de409b33f3699de3378cb3b0f2d",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
@@ -630,7 +631,7 @@
     "website/worker-workbench.html": "2f36ee72bfd4d3cafe13cc5caf17a49150d2ca7fcb94412fd1fc02891258d7ad",
     "website/worker-workbench.js": "b6530e214ab5e7870c1f6621dd1c1438c053c0442cdad46791fc9830055820d7",
     "worker-client/README.md": "c512311ca588a301dcb8db8d07260f1505853bed8dc4b023dd17c197793b97aa",
-    "worker-client/chejin_worker_client/__init__.py": "1cfabbe3183b12edc2c528901e2e81681236a1ed4ab183df3d04b0a68f192641",
+    "worker-client/chejin_worker_client/__init__.py": "57f54b6ad0b6f09e13bc259b3222ceb25da734b68a60817a2844b749b2224be6",
     "worker-client/chejin_worker_client/action_journal.py": "e9cfb2fc0158a7d619fa6390a35f5a4a62cbfb227512d29f6e1b4efcaacd1f6c",
     "worker-client/chejin_worker_client/api.py": "34d1b77833f868edeee47feb1671400735074f3c8db0115ba2313f060da980d4",
     "worker-client/chejin_worker_client/artifact_retention.py": "f931d724041b160908485feb41a9c93dac273d0db8a8fe878369890b23f3fc65",
@@ -782,7 +783,7 @@
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
     "worker-client/chejin_worker_client/windows_exit_evidence.py": "ca6b6e6c9e2a38011247e6fd4426f611af562dd8648d1d3e8b402a468ca27cae",
-    "worker-client/omniauto-rpa/.chejin-source.json": "deaf78e79b38bfbc54a2e1b78920db09c400a8ae693da0711dd7de84a93a0ad7",
+    "worker-client/omniauto-rpa/.chejin-source.json": "2441d5cc63ac958f18ab9b18599b4affa596e94a5b2753bc12fd4ba665bc8dee",
     "worker-client/omniauto-rpa/PROJECT_STRUCTURE.md": "ca9b8b2d1bf0c59c88fc1ff9fd86fbd1cafa500b06ee60f00c910bfef6f5c486",
     "worker-client/omniauto-rpa/README.md": "b8c509514efd339d87ea2e515a9bccf761426a29804b1076854e30d15cffe11a",
     "worker-client/omniauto-rpa/START_HERE.md": "372e6fdcefcc012da3f554af9227781cf05181d9b733b933671f17ee25e73b89",
@@ -808,7 +809,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_routes.py": "8c93cc66252318df0885109ab05961bf33b88d84d34d5e25527e0f7e42ac5b7d",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_screenshot.py": "60bf1a90a13ed86ecfe85065337c3ac8979e2c379fc03bfc71bf42c262571eb2",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/business_viewport_continuity.py": "82ffb5747acb753d20f4e70cb5ae5254f7e4ba51f2858307613e36e61c9a23e7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "5bb94efbe4b729f5c3f95a2642498a0b0d36a0ba8b3a64b60c92dc8515c0b132",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "df7b02568b0982845ad1066ed85a87cab939108e9f3efdfcf5e1e3817314b6ad",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/circle_plus_icon.py": "2367e83de1dfd25508a560657cb7efd93d9e2e8bafa5d1edeadd155d57734d6f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/client_release_rules.py": "f2d1a4077f5d10064158dae89050020e7a2a21a4e786ff2f8fa85bc6e222efd5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/confirmed_sent_history.py": "d2371d89dbbd41f215440ed01a54ebbbf960cd3f344d7627e9d70313ffcb0d89",
@@ -1017,7 +1018,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/exports/readable_export.py": "826a305b23f212f6a709ab5eaa3d81b838f4b6381be0ebfca02d6189ca57e7c5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/industry_catalog.py": "cc6c0c02de7549410f0d88fe2a981808926b4868af9e60e590d36e4df5b921e7",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/knowledge_paths.py": "efb7d24b0ecf82928b2274dbd0248a264d82dcc05e61e894cba043db16642da9",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/llm_config.py": "75c86b787edb3f8127a0e474eb5dd16000d2cbe3d896e7ba5de7c3b4c1e09cac",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/llm_config.py": "8237a32856f4161ae49482117c9f5da9ba558b404cb36fe5f9f50561e8cfa9c0",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/message_identity.py": "c9333f9b8735f681bff7d4468cd405026f09f4b985b9a1b5248d354ca4645ea4",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/optional_plugins/__init__.py": "aac13f8545ba784850f1113da61a443d7f00b310c356b56c0ab1851af6d22470",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/optional_plugins/contract.py": "8b4b7082eea5051b418e779a5974ec557e22ce384f29b8bdbd7aa46a1659acce",
@@ -1274,7 +1275,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_model_query_contract.py": "4db453a99c10d1d982c7cbe3ebe43294d04ca9e914b2c1456fed67286bbfbbe8",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_post_send_customer_suffix.py": "598cb68668a6de6a062217e57638aa227890b990ef52c27a330ec4002973126c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_pre_send_read_cleanup_contract.py": "f06d862fa7276afc0792c198f9a35934143fb7cb60cb63c24e4bfe63b5db9ac5",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_program_catalog_preparation.py": "540683bb76cd7199df557c9d475dfe3f0b94998e56a292e4e390954e65c28b43",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_program_catalog_preparation.py": "5176d29e994e0cf52f654d5bbed0ce747048c74997d1751225c5b791ea30fc5c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_query_json_recovery.py": "51d4a5241b6a5ebcd091f2141737ad058e4eefa585b981b00bef9e12af02f9dd",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_review_failure_recovery.py": "3597a681f53909dfff24954a229d971512eb82dab505069b9c1233e77420ca50",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "fd6b7467629b02a082594da69191028cb8cbaf6b5cc58800267e50d712068a5e",
@@ -1307,17 +1308,17 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/build_evidence_pack.py": "7e4a82ba9356da1818a19d9ce867a8039ce5ee36757f1fec2b03348f9a23bc63",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/cargo_claim_scope.py": "94a0686fe7831a86bbb12e740c671ad87bf4ca93023ba3632bae21fd67969e74",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_budget.py": "4f6694ce690692f8738f7a248b0c2b3511570b860529f13ce812d5a3441e499b",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "c7a1242e7a37ffe2203bf19e3bd625e02d4832ddde51da72b2763d01bc7461f7",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "1e65ac483cb9dcdeccdacba82ad92f348c5546354a3a5aca5ec487c317cb531f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/chejin_brain_context_bridge.py": "16f80fd2650653449b945a673d8d5f1ec5a62fa5613eaa69440387633839943f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/compile_knowledge_bases.py": "91ab897f60d099caa911c666668d6c40971a25d45daafe9a9a8004cecde1fdca",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_data_capture.py": "a94a2794f58583d82bba3d0452b6bad92aaf35b32795ea1646aa9dae9b8783eb",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_image_turn_router.py": "6e42465326690040d910d2117a29582ccc7cd717cada2da3c25ec33bbb6d69fa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_intent_assist.py": "df3152dde47b76d3d02aa416adc3d8a7962db0209d09276f0a7713a430ab3fcc",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "9f4ddcb3316e96f4202a99363dafb8864a51d777003ddcce2a4693d4d42b0864",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "8c4e3f878357e618febc308992b2f05196cd8b114dbffe65552ae22cdf500f2c",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "de1da3ea945163a02c35821c1994b9f8abc27c269ab2183d09579a3512cb9493",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "c8a588383d3a458a5bf8526081a46606a92e631d44557c3ab9df99d1489c6b84",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_conversation_strategy.py": "c47805e4a646c9e3eeb854b0b99a408226dc1f5f647abaf31da5f30395b5ea81",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_loop.py": "0a1b4c1ac28208032fabaaaaf1fdffac8c273ce822f3f3b1684d22a9c9e34f11",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "a7c8b9ee6ef776c4abd42fafa29a2f4d143742e9bb27dcc0d450866f01bc2412",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "aaffe4286eb7c699b48f922b25ee32e34aca1e340e1af4be5e0290d466f04d47",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_review_queue.py": "2668925232c70a8f28f17d2fea7e1026fc6fbb07586e86a1f644bbcf5e36c4d7",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_authority.py": "74444dd82096e9e4e5870c1dc6919c3191ef472c64d9d38c3ab1a451bef4280e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/evidence_resolver.py": "4dad3e850a57718efd1b5b84088cd08f2c4fa74605f54e12b65f219affe900aa",
@@ -1350,7 +1351,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/real_chat_learning.py": "f2c22571edf31c043e68e0c6763a25c30d5f51c092a6c6f3c4cda4a204a5f4d9",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/realtime_reply_router.py": "36e1accfcc1507523df737439e516022e965a0376b941db2ac89d90b707693d3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/recorder_loop.py": "a7734715cc78c01304a9705ae730795ba4a8af0a91967b5722cad88c4360b9e8",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "12bddc99dafc328f1b769a8190eca202cef91edbbeadd924240cb34994ed521f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "093f7ed327cd0f5e262caf3bb06814e866abfe5d9c7463a836c3ab9f3acff8e4",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_style_adapter.py": "8db41a53a38255467e7f8a59b9da83a045942f2e65396696a2f3000b19259701",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/style_memory_store.py": "f5cc0391b33bfa8ad3a096b282f81772838c105c0c79a88f8cc5ff8b53df0958",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "8356764f53a978f3bddbbae5e7d2ac995336b2c24c0c480e1a38b95012ff59ce",
@@ -1365,7 +1366,7 @@
     "worker-client/packaging/chejin-updater.spec": "494684136967d5da2eb1b039cfae84dc226571f071faf5b7dba6828bf5a74062",
     "worker-client/packaging/chejin-worker-client.spec": "66cab3bb85b28db08c39642d3de8d98a192e2c84324c3786884dd64c3aad35f0",
     "worker-client/packaging/chejin_updater_entry.py": "0fe85c173c3c6f6e74cb8bc42a98698b6479bef0dde0dfb90cc851439bc0e4da",
-    "worker-client/packaging/chejin_worker_client_entry.py": "bc0e248720040c30a4f48439bfdcc5997c5d0218301583d76dfd034c92d35a93",
+    "worker-client/packaging/chejin_worker_client_entry.py": "fb66872440096029eabc3c500cf0951545efc3377b0273dd5373acceab22b22c",
     "worker-client/packaging/collect-uat-evidence.ps1": "f7a84bce02dc1b04eb148139a371755d85966d57bd794d10d100ff11334f9fce",
     "worker-client/packaging/collect_uat_evidence.py": "f6feda78c4c6a45b7c367a9416b17c0145019ac7d314dd1d9216a8992b4e61ae",
     "worker-client/packaging/release-signing-public-keys.json": "2be8440e9e3f564d5f1a5e930aa9e75f15fe492145cefd8804b5b12cbb0a6924",
@@ -18399,12 +18400,673 @@
       ],
       "evidence": "frozen-final-r3.xml",
       "scope": "Only passed final case identities reused; corrected failures accounted in final r3 report."
+    },
+    {
+      "original_xml_sha256": "20735106d3166245636890075f3997586f2290c80a32a5f4c9e94bb18dd22cd2",
+      "count": 125,
+      "cases": [
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wall_timeout_preserves_transport_phase_and_backend_evidence[headers-200-waiting_for_headers]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wall_timeout_preserves_transport_phase_and_backend_evidence[body-200-reading_body]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wall_timeout_preserves_transport_phase_and_backend_evidence[body-503-reading_error_body]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_stop_reason_survives_http_and_backend_progress[model_context_window_exceeded-model_context_window_exceeded]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_stop_reason_survives_http_and_backend_progress[max_tokens-max_tokens]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_stop_reason_survives_http_and_backend_progress[end_turn-end_turn]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_stop_reason_survives_http_and_backend_progress[PRIVATE-UNKNOWN-STOP-SENTINEL-other]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[PRIVATE-REPLY-SENTINEL-stop-string-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[-stop-string-0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[None-stop-null-0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[None-length-null-0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[   -stop-string-0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_wire_content_and_extraction_are_recorded_separately[content5-stop-list-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_nonempty_wire_content_with_empty_extractor_is_detectable",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[not-json-expected0]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[body1-expected1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[body2-expected2]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[body3-expected3]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[body4-expected4]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_failure_and_alternative_response_shapes_have_bounded_evidence[body5-expected5]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_text_blocks_are_counted_without_saving_thinking",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_http_error_is_not_misreported_as_successful_empty_content[400]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_http_error_is_not_misreported_as_successful_empty_content[502]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[truncated-200]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[truncated-400]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[truncated-503]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[socket_timeout-200]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[socket_timeout-400]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_interrupted_body_keeps_known_status_through_backend[socket_timeout-503]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_diagnostics_failure_cannot_change_model_result[collector]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_diagnostics_failure_cannot_change_model_result[writer]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_backend_drops_injected_text_and_invalid_diagnostic_types",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[missing-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[missing-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[missing-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[null-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[null-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[null-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[wrong_type-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[empty-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[empty-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[empty-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[present-reasoning_content-reasoning_chars--PRIVATE-THINKING-SENTINEL-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[present-refusal-refusal_chars--PRIVATE-REPLY-SENTINEL-22]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_optional_counts_preserve_unknown_through_http_and_progress[present-tool_calls-tool_calls_count-empty2-present2-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[None-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content1-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content2-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content3-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content4-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content5-0-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content6-25-1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content7-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content8-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_anthropic_optional_counts_only_measure_readable_reported_blocks[content9-None-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_empty_response_and_retry_evidence_survive_real_brain_and_database",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_quality_repair_keeps_its_own_call_evidence_in_database",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_protocol_error_has_structured_kind_and_is_not_transport_failover[{\"choices\":]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_llm_response_diagnostics",
+          "name": "test_protocol_error_has_structured_kind_and_is_not_transport_failover[body1]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_packaged_review_timeout_reaches_transport_within_shared_budget[10-60]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_packaged_review_timeout_reaches_transport_within_shared_budget[150-25]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_packaged_review_timeout_reaches_transport_within_shared_budget[175-None]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_projection_hides_wire_identity_without_changing_frozen_facts",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_nested_query_metadata_is_hidden_but_conditions_and_raw_evidence_survive",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_every_prompt_stage_has_one_field_constraint_and_no_wire_contract[understanding]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_every_prompt_stage_has_one_field_constraint_and_no_wire_contract[completion]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_every_prompt_stage_has_one_field_constraint_and_no_wire_contract[repair]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_every_prompt_stage_has_one_field_constraint_and_no_wire_contract[review]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_model_prompt_boundary",
+          "name": "test_json_repair_also_uses_the_field_constraint",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-schema]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-budget_unit]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-wrapper]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-json]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-json_oversize]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_timeout]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_protocol]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-sort_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-name_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-filter_field_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-filter_op_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-budget_mode_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-budget_value_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-ids_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_two_objects]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_reversed]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_array]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[True-review_tail]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-schema]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-budget_unit]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-wrapper]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-json]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-json_oversize]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_timeout]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_protocol]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-sort_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-name_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-filter_field_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-filter_op_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-budget_mode_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-budget_value_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-ids_type]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_two_objects]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_reversed]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_array]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_duplicate]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_review_query_recovery_pipeline",
+          "name": "test_failure_recovers_or_hands_off_without_sending_unreviewed[False-review_tail]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-normal]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-oversize]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-syntax]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-ambiguous]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-exhausted]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[False-oversize_completion]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-normal]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-oversize]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-syntax]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-ambiguous]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-exhausted]",
+          "result": "passed"
+        },
+        {
+          "classname": "tests.test_query_recovery_audit_pipeline",
+          "name": "test_generation_history_survives_catalog_completion_and_database[True-oversize_completion]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_response_body_exception_retains_phase[200]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_response_body_exception_retains_phase[503]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_truncated_response_preserves_received_status_and_phase[200]",
+          "result": "passed"
+        },
+        {
+          "classname": "",
+          "name": "test_truncated_response_preserves_received_status_and_phase[503]",
+          "result": "passed"
+        }
+      ],
+      "evidence": "architect-r2/results.xml",
+      "scope": "Architect5 final r2 independent passes, unchanged baseline failures excluded."
+    },
+    {
+      "original_xml_sha256": "e8ccec42d7de97ce0ba7b8458642e564d9859cb786cb9208e1c79f2ad7b9792d",
+      "count": 4,
+      "cases": [
+        {
+          "classname": "test_response_close",
+          "name": "test_error_response_closed_without_losing_known_evidence[False-400]",
+          "result": "passed"
+        },
+        {
+          "classname": "test_response_close",
+          "name": "test_error_response_closed_without_losing_known_evidence[False-503]",
+          "result": "passed"
+        },
+        {
+          "classname": "test_response_close",
+          "name": "test_error_response_closed_without_losing_known_evidence[True-400]",
+          "result": "passed"
+        },
+        {
+          "classname": "test_response_close",
+          "name": "test_error_response_closed_without_losing_known_evidence[True-503]",
+          "result": "passed"
+        }
+      ],
+      "evidence": "architect-r2/close.xml",
+      "scope": "Architect5 final r2 independent passes, unchanged baseline failures excluded."
     }
   ],
   "packaging_reviewed_commit": "ffc6a97718d4d75f58b9fa90ae601a3132331101",
   "reviewed_delta_sha256": {
     "backend/.env.example": "ed7c5734c98665f2da1e6d4d6918be0529dbb4609560eb5851a60db60f9c9336",
-    "backend/README.md": "b4cb7295c7132da3619a9a8ec5f058ec497db643b2c662501c106b91fada4048",
+    "backend/README.md": "fc94128467a92579ab4a55fdf2e8237d6357b54a310c53d864149a4f2917a165",
     "backend/alembic/versions/20261022_0042_reply_ownership.py": "89f604cd391984c723bf2d02528a5af1cb2c495fab2433ca1d2c7d7a15e82e2f",
     "backend/alembic/versions/20261028_0043_history_review.py": "bf09e7e446f207ce776b84ea15a2fc25d6006db79c20e26a155144c48a282024",
     "backend/alembic/versions/20261029_0044_feiyu_lead_receipts.py": "133383c8dcfb0c4a9c6bd5ce4dcd1c3cf5afc4722d2d24452dee86bb0a531733",
@@ -18424,7 +19086,7 @@
     "backend/app/schemas/hook_identity.py": "50140651be6b27c939db6ccabbaa30f04be22c62098a33a4e30b42b0738bdc46",
     "backend/app/schemas/vehicle.py": "b4fa6a129514ebc7153d95ccf69879d316959a8008cb5a39eaa9ff4e3695b6e7",
     "backend/app/schemas/worker.py": "18159de3ebfd2a0266a0a5f378474a878205f03d85438e27727272a628aa29af",
-    "backend/app/services/ai_adapter.py": "b0268cb8cc93d69e01930f7827bbc8476ea87043ff54cdf65003cffdc61960f3",
+    "backend/app/services/ai_adapter.py": "0a8677b71f5989449f345dc7e9ae164ae4602543ac5c099efd0813d01850f132",
     "backend/app/services/ai_capacity_service.py": "c6fb0d5d75df193bb873d7ad55825307c8045d84559f6cb99c0eafb437e8c218",
     "backend/app/services/c3_recovery.py": "c7c41be484735ce6f767c3480750ea889465bd655e253c6749ca5ab7e27dcd97",
     "backend/app/services/c3_service.py": "17bda221f94e8714c288b8da23a65c64859d3b746d8859ecb163f64ebf7be68f",
@@ -18460,9 +19122,10 @@
     "backend/app/services/vehicle_service.py": "430aa16c058fe990c78106e1eacb428083a65af120b0e3ba70155a36fe01eb34",
     "backend/app/services/wechat_service.py": "dbcb46e5ed0c79f6e17b866ec18253210ed160f770115b8bce2e2672177955be",
     "backend/app/services/worker_service.py": "76f3d22cc08e1f6c0f79f7cdc64081609e932daba89be4c464d049607c6ae0a6",
-    "backend/compose.web.yml": "4e750844a4616636bdcbc0108a95b233df8c3179460e8062b94cc95feb89be72",
-    "backend/docker-compose.yml": "63ebd015a485f17c197566a4ec6d75ebd2ab9f58cb1cdf5d8027b3c32c048063",
-    "backend/pyproject.toml": "a4a316f8e45280bc143d92120a9ea780ace21165c645416a89339c19ce6a20fa",
+    "backend/compose.web.yml": "6fa680213af97d5ac585c9b3ce46b04bc27b120ca306932777dc5789bc90cd70",
+    "backend/configs/chejin_c3_brain.json": "95ebe6c0ab8a15c46ae2a9ad82239e9fc2000fbbf41cdf7a2392092059282280",
+    "backend/docker-compose.yml": "b158485d64fa3114eb9183102b2dc4e08d2a21aa564b930a1224f08d9746c93a",
+    "backend/pyproject.toml": "dfdc1ac1a0c0cb9e8be4c919e7788ae0cf098896306dc3058e9bdaaae04d8826",
     "backend/tests/maintenance_recovery_fixture.py": "4f2df35463f04bb1cd361cf4bc106478e2b9c923a5a6f04dfbae6a7aad5d296c",
     "backend/tests/memory_bundle_checks.py": "b839c3410185e261b2bf8c69b0dbcf78171b0d77a31fb2ae262df3c4784393d6",
     "backend/tests/test_auth_api.py": "e3fd2a9023945ed27c9b3954fdb54928e0708e79bda1dfc1ce41ccd1b311b2a4",
@@ -18477,6 +19140,7 @@
     "backend/tests/test_catalog_hook_chain.py": "718f750b1ad7bc12d88304ec53390747e8f11abc8153bc6a1f158e82a833b12c",
     "backend/tests/test_catalog_partial_pipeline.py": "340ae2bae7fd49d6077a041c2dc3a535445b4ac2c6257be295d26455c9de7723",
     "backend/tests/test_clock_reference.py": "8c96da75145fdbc9891ca85f325216eeb41aa931fd8b8e11fb896c99dc376738",
+    "backend/tests/test_config_safety.py": "d8999eb70dd7df71d5198217f25d12ed71fb1d62f22bcc64010d9ee01efda807",
     "backend/tests/test_dashboard_api.py": "78821e5bcbb88ab101081fec501e38a09b7632e6a4d166a0351882fdc81280a4",
     "backend/tests/test_dashboard_history_http.py": "492189c82b1bced98aa0b459109976d00728bf80d627e4cee4b7a9680546e32d",
     "backend/tests/test_dashboard_metrics.py": "c140a31d636f60248138593df5a9395fab6f8ccc2400c0e5031b053317fab219",
@@ -18531,9 +19195,11 @@
     "backend/tests/test_human_reply_ownership.py": "13c361f10cc3ad2cedce5f200ef2449d857af2ee0a07adb7e5a07b310fad9641",
     "backend/tests/test_lead_followup_eligibility.py": "88e33ecf33a9c7c5b3f8778cd9ee381d7dd536b2347d0ce075ff45fc73dff91a",
     "backend/tests/test_lead_followup_p1_regressions.py": "e94f4abd89528de45638f73ab7f584cc60573f69fa5dd67828956705323e4350",
+    "backend/tests/test_llm_response_diagnostics.py": "d19c587a9117c6ade869e97e069d6275d746bdf3e42fcffb672bc802c58239d5",
     "backend/tests/test_memory_business_process.py": "2fe54ddf92a36918cf79880b776f6ea8abf38a3a9fd9eaa8e60159260349d923",
     "backend/tests/test_memory_ownership_process.py": "add19d849606d0bef64c869df839cee097c19dd4cc052b9555dd9557fb4b9b89",
     "backend/tests/test_model_http_accounting.py": "bc16dc36de95165cabe03c42d0a59cd62ea09638c30513b88c7e73ae77ff3fbb",
+    "backend/tests/test_model_prompt_boundary.py": "5eafbcc3b09c61cff1426c925903974b17124e5dca18fef378b57460204e503e",
     "backend/tests/test_model_query_hook_pipeline.py": "00b3ae3f5d3e682f3407c02b0bc4abc7865cf6fdc19450f69aee2ccaa325d01a",
     "backend/tests/test_notification_recovery_boundaries.py": "4baba99ff7f1a4fcedcbf6a49cf2968767a638e66d23d113e634ad82a9c3c155",
     "backend/tests/test_original_questions_worker_chain.py": "fe895c39fc5f8ca3d5b24a7e4c74d3e50c6c33a9e56ff1d71b7a3766b5da77e1",
@@ -18549,12 +19215,12 @@
     "backend/tests/test_semantic_reviewer_c3_pipeline.py": "858c5049ff0c0945b5f66387b39d802f8a919309e09147e144ea597d28c27b74",
     "backend/tests/test_semantic_reviewer_completion.py": "37e18d8df43bfeb49d31651b830dc1736107e8adb37f0c00fcb867aa5832fb72",
     "backend/tests/test_wechat_c2_api.py": "18634f624d0ea0148abc287b924c46ecd5397349b8a30f5f9355a37501c0d0cf",
-    "contracts/c2_contract_v3.json": "7874eea72265618e8c0af691bf9f5377d0bc05673e61aae4b4ecfde7a725f7f2",
+    "contracts/c2_contract_v3.json": "0c7e6d91643418c8c66c9e184a59109eb18c7e12e1fff041c5c08f7f25d3ae45",
     "contracts/feiyu-hook-integration.md": "68bd149bb7616fe12afc74776755ea1ed60c158028db97a1f8e8b555f72dd04b",
-    "contracts/hook_contract_v1.json": "802ed5d4c45174adfdf742603d8cefb23a99fe5ecfc8689f358a96df40315a62",
-    "frontend/README.md": "f776c347570cf22d6df3435fba854dbf511095943b9e89e3c0f487fe3f1e9108",
-    "frontend/package-lock.json": "449350f942dacbacf791405f4e8f89283720ae5468f16d3ffc83ce1f07bdc7cf",
-    "frontend/package.json": "f26cc8ab6afedf6258a2d9b68240a2fb74f686d859264220680ac0f9a3cc79f7",
+    "contracts/hook_contract_v1.json": "82f1543534182031336a4efcb02937dd76e9e16d4e3b3e38f87f906d4545d374",
+    "frontend/README.md": "ddb900327a7d2429b139fe8151eea9a9b1aad25fd504d5f36e5cd10bc1129932",
+    "frontend/package-lock.json": "81674ad3c5047d3d18f44bf5dbf9ee3c36d66c2dac7fcf9c83fe8028289d1cff",
+    "frontend/package.json": "5c86d21b76cfb212b7cb73e11829d52acd7d7aec2a4f0b26f2db36fa0117c11f",
     "frontend/src/App.test.tsx": "1ab020138232217c8b19d55ebca8b714c943206c939b9071724cc1d66911fbb7",
     "frontend/src/App.tsx": "570df29154f664be4bd8009459f1d1c7ca17f041821bc8a27f96ff7c0f5e1693",
     "frontend/src/features/auth/LoginPage.tsx": "b81b9d6acb4ceef34e15206b9bbdaf3c8ec2687b36487e2a66d1b1e4c2cfa572",
@@ -18617,7 +19283,7 @@
     "packages/worker-ui-baseline/tests/runtime-startup-checks.test.mjs": "83470d03957e0fcdc436514024ca99b21fd8f8ed5d6861df58441ffb2fc3b7af",
     "packages/worker-ui-baseline/tests/runtime-update-admission.test.mjs": "8456b16cd2b2e5140c081ec7198701fd37122dec6c7440f44454374ed2103b1d",
     "worker-client/README.md": "c512311ca588a301dcb8db8d07260f1505853bed8dc4b023dd17c197793b97aa",
-    "worker-client/chejin_worker_client/__init__.py": "1cfabbe3183b12edc2c528901e2e81681236a1ed4ab183df3d04b0a68f192641",
+    "worker-client/chejin_worker_client/__init__.py": "57f54b6ad0b6f09e13bc259b3222ceb25da734b68a60817a2844b749b2224be6",
     "worker-client/chejin_worker_client/artifact_retention.py": "f931d724041b160908485feb41a9c93dac273d0db8a8fe878369890b23f3fc65",
     "worker-client/chejin_worker_client/c1_diagnostics.py": "1a5137c8ba2e4954a46151e0ff970d8e9e4cd2fd0c6a4f8a08954d3b4ad23c68",
     "worker-client/chejin_worker_client/chejin_updater.py": "5004c75c7a54ea827b97f685c16005b82d199e63700476a836c3aa0f792ad4c7",
@@ -18716,10 +19382,10 @@
     "worker-client/chejin_worker_client/window_render_evidence.py": "1c6764c970f685d337df338e7d39147f475a49ce96c1699ebac5419736b3e8c8",
     "worker-client/chejin_worker_client/windows_clock_sync.py": "c07b32861bfa8bfc9fc865d3b96515aa2d30e201d90d8a00747e2a8cd1f562dc",
     "worker-client/chejin_worker_client/windows_exit_evidence.py": "ca6b6e6c9e2a38011247e6fd4426f611af562dd8648d1d3e8b402a468ca27cae",
-    "worker-client/omniauto-rpa/.chejin-source.json": "deaf78e79b38bfbc54a2e1b78920db09c400a8ae693da0711dd7de84a93a0ad7",
+    "worker-client/omniauto-rpa/.chejin-source.json": "2441d5cc63ac958f18ab9b18599b4affa596e94a5b2753bc12fd4ba665bc8dee",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_layout.py": "2978fdb588bd256f6a91958e9dd17088d0cf584b5a6a338c28a123941997369f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/add_friend_ocr.py": "92b8c5f66499c86d4e60f2c2559dcdbaa433abd1e532feb07affe3704e13b6a7",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "5bb94efbe4b729f5c3f95a2642498a0b0d36a0ba8b3a64b60c92dc8515c0b132",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/chejin_c2_observation_schema.generated.json": "df7b02568b0982845ad1066ed85a87cab939108e9f3efdfcf5e1e3817314b6ad",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contact_rules.py": "4da9c46a3f249a63c356e8b6efc8b9a521c21ee541c040566d3dd329baa89cb0",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_contract_rules.py": "11ffbfad750add6cecd4db53ffdd02eb1b15b4ef13b804110d89d20d10a462c3",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/hook_event_rules.py": "dca03c51031100f9fc8438cbbacf25225ed858525e7dd749efa9a57c53077e41",
@@ -18734,7 +19400,7 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1.py": "5968f1c6f958becaf0c8482afca18f72a0a2604a322cebeeab25fb92febfc452",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/hook_c1_flow.py": "f407bd14cc733391b23fac011e1215f3c6089b3fc7f15805c4294724003c6960",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/window_action_planning.py": "54fd8e05e07e85250836383b6f99baacb35f030e4744e5f9a696e45591a3f380",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/llm_config.py": "75c86b787edb3f8127a0e474eb5dd16000d2cbe3d896e7ba5de7c3b4c1e09cac",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/llm_config.py": "8237a32856f4161ae49482117c9f5da9ba558b404cb36fe5f9f50561e8cfa9c0",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/run_customer_service_brain_contract_checks.py": "c57b8e27d74b986420baffaef8cd47d00bb15cbbf19a55eb40069bba16103b79",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_c1_layout_reuse.py": "3cb4f88033b9ad1df9dd0bc038100bbef7107c201e057454b8db7345ae670eb5",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_catalog_query.py": "a0c01a3ee506411d2277c82abcff62f55319c43928e48edb6b6f94c4005743fb",
@@ -18746,28 +19412,28 @@
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_hook_c1_startup.py": "1778f4b803c3b4a281adecd4c66e44a9d5cb7977fa83231f3f5e2d491afaed64",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_model_call_accounting.py": "c129dfbffc2e2568f8e4490418ecac94a93b3abba3daa1591eea7a58ca84b523",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_model_query_contract.py": "4db453a99c10d1d982c7cbe3ebe43294d04ca9e914b2c1456fed67286bbfbbe8",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_program_catalog_preparation.py": "540683bb76cd7199df557c9d475dfe3f0b94998e56a292e4e390954e65c28b43",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_program_catalog_preparation.py": "5176d29e994e0cf52f654d5bbed0ce747048c74997d1751225c5b791ea30fc5c",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_query_json_recovery.py": "51d4a5241b6a5ebcd091f2141737ad058e4eefa585b981b00bef9e12af02f9dd",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_review_failure_recovery.py": "3597a681f53909dfff24954a229d971512eb82dab505069b9c1233e77420ca50",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_search_control_icons.py": "fd6b7467629b02a082594da69191028cb8cbaf6b5cc58800267e50d712068a5e",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_semantic_fact_routing.py": "1f21505f450983076588181638a541f61cd1b5211c0c34d1e492af57870a8d14",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/tests/test_vehicle_public_facts.py": "f29fc9190071695cb730de9b2f5b48974872a20d62ed46075280e0ad22a1ff85",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_budget.py": "4f6694ce690692f8738f7a248b0c2b3511570b860529f13ce812d5a3441e499b",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "c7a1242e7a37ffe2203bf19e3bd625e02d4832ddde51da72b2763d01bc7461f7",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/catalog_query.py": "1e65ac483cb9dcdeccdacba82ad92f348c5546354a3a5aca5ec487c317cb531f",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/chejin_brain_context_bridge.py": "16f80fd2650653449b945a673d8d5f1ec5a62fa5613eaa69440387633839943f",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "9f4ddcb3316e96f4202a99363dafb8864a51d777003ddcce2a4693d4d42b0864",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "8c4e3f878357e618febc308992b2f05196cd8b114dbffe65552ae22cdf500f2c",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "a7c8b9ee6ef776c4abd42fafa29a2f4d143742e9bb27dcc0d450866f01bc2412",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain.py": "de1da3ea945163a02c35821c1994b9f8abc27c269ab2183d09579a3512cb9493",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_brain_contract.py": "c8a588383d3a458a5bf8526081a46606a92e631d44557c3ab9df99d1489c6b84",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/customer_service_quality_reviewer.py": "aaffe4286eb7c699b48f922b25ee32e34aca1e340e1af4be5e0290d466f04d47",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/fact_review_routing.py": "c13d8af31beb73fc594ef561fcbe973059d3dc0db9d9db88adab310d2339cf30",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_output_adapter.py": "65e68dbd0c2d9a2350b8df0acd1ac22a9a9daffd43780db52e3622ab5e3956fa",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/llm_reply_guard.py": "c3ea72e31191c125a8e0f393aad0960eee0fbdf1e8cf2e699dc1e0bbc5291d56",
-    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "12bddc99dafc328f1b769a8190eca202cef91edbbeadd924240cb34994ed521f",
+    "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/reply_evidence_builder.py": "093f7ed327cd0f5e262caf3bb06814e866abfe5d9c7463a836c3ab9f3acff8e4",
     "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/workflows/vehicle_public_facts.py": "8356764f53a978f3bddbbae5e7d2ac995336b2c24c0c480e1a38b95012ff59ce",
     "worker-client/packaging/Diagnose-CheJin.cmd": "3c00362034cefab35ddf887818373cf87cf5bd2e6246529bf5c0ebceef340541",
     "worker-client/packaging/Rollback-CheJin-Hook.cmd": "510f5d6b45003efb9f2801bb04154789f67a50abbf4ccba7fc4011c6792ed8ad",
     "worker-client/packaging/Update-CheJin-Hook.cmd": "46e00b1f8f78d9a02e78449466100610d40bb4eeb7d6a7827dc0634796363ac1",
     "worker-client/packaging/chejin-updater.spec": "494684136967d5da2eb1b039cfae84dc226571f071faf5b7dba6828bf5a74062",
-    "worker-client/packaging/chejin_worker_client_entry.py": "bc0e248720040c30a4f48439bfdcc5997c5d0218301583d76dfd034c92d35a93",
+    "worker-client/packaging/chejin_worker_client_entry.py": "fb66872440096029eabc3c500cf0951545efc3377b0273dd5373acceab22b22c",
     "worker-client/packaging/start-hook.ps1": "1a9f543993fa90b3acd1265f3fc2f4fd2faf1061ba98cb40b925d9ca01fb4080",
     "worker-client/packaging/update-hook-component.ps1": "39a288d057967a2d3dc62d7d2d1bbc9fb63501fb833d2e200cc51649da25721a",
     "worker-client/scripts/run-windows-hook-preserve-install.py": "c7a2bf31c1af8f9b47b546b5d5317dcdd2ee7be3b38d63592c10c9c60a4ce5ab",
@@ -18866,19 +19532,20 @@
     "worker-client/tests/test_windows_exit_evidence.py": "fe0f293bc3a11dd1f40a2f288f61111364860ef73a86dbe00b006374a096aeeb"
   },
   "delta_review": {
-    "commit": "3326a738c158341ff30a3fa1a6024fea7c9c5271",
+    "commit": "e365732b03ea1a047b21f6871fe88585da03a347",
     "result": "passed for source push",
     "thread_id": "architect-5",
-    "turn_id": "report:semantic-file-architect-20261105/architect-review.json",
-    "scope": "Reviewed semantic fact routing and customer-scoped file isolation. Release metadata synchronized under SOP18.0.4; no extra product changes.",
+    "turn_id": "report:ai-input-timeout-audit-20261105/architect-review-r2.json",
+    "scope": "Reviewed AI prompt field cleaning, sixty-second review limit and HTTP response failure diagnostics. Product merge exact, metadata only under SOP18.0.4.",
     "source_reviews": [
       {
-        "report": "semantic-file-architect-20261105/architect-review.json",
-        "sha256": "181b974e75b511b2db06908cd3b0377fad9e114490063337f4260eaaa1679d18",
-        "candidate": "745c58465c9e200fc92ddcd8f9d7f5cfe4350495",
-        "decision": "source_and_affected_local_chains_approved",
-        "final_unique_passes": 74,
-        "scope": "Reviewed semantic fact routing and customer-scoped file isolation. Release metadata synchronized under SOP18.0.4; no extra product changes."
+        "report": "ai-input-timeout-audit-20261105/architect-review-r2.json",
+        "sha256": "2c72459cc4c82fdee7a2270480ec50a3adf3675de61aa75340b9b838f5a8625c",
+        "candidate": "26d6285ea93ca699aec46c7e6098d0ae223eef0b",
+        "decision": "approved_source_and_local_validation",
+        "final_unique_passes": 129,
+        "baseline_failures": 18,
+        "scope": "Reviewed AI prompt field cleaning, sixty-second review limit and HTTP response failure diagnostics. Product merge exact, metadata only under SOP18.0.4."
       }
     ]
   },
@@ -18937,7 +19604,8 @@
     "0.10.27 Windows reset/rebind and first-sales real WeChat/DLL acceptance pending. Four unchanged baseline failures remain recorded in PR18 review, not counted as passed.",
     "0.10.28: Frozen performance sampler lifecycle and button upgrade need Windows acceptance; final physical Windows and actual 48-hour endurance pending. Source review does not establish memory leak diagnosis or eliminate reported lag.",
     "0.10.31 friend discovery: local HTTP/SQLite real, Hook/AI synthetic; Windows long-duration memory/WeChat crash fix not proven. Source review is not production acceptance.",
-    "0.10.32 source/replay review reused; no sales Windows or live customer acceptance claimed. No database migration or Hook DLL change."
+    "0.10.32 source/replay review reused; no sales Windows or live customer acceptance claimed. No database migration or Hook DLL change.",
+    "0.10.33: 18 unchanged baseline failures excluded. 60 seconds is per-attempt limit, no guaranteed response latency. Windows CI and sales hardware acceptance separate."
   ],
   "prior_recovery_review": {
     "commit": "a1de7f317d600b65650eb44c16d404067e22ef58",
@@ -19761,6 +20429,15 @@
       "decision": "source_and_affected_local_chains_approved",
       "final_unique_passes": 74,
       "scope": "Reviewed semantic fact routing and customer-scoped file isolation. Release metadata synchronized under SOP18.0.4; no extra product changes."
+    },
+    {
+      "report": "ai-input-timeout-audit-20261105/architect-review-r2.json",
+      "sha256": "2c72459cc4c82fdee7a2270480ec50a3adf3675de61aa75340b9b838f5a8625c",
+      "candidate": "26d6285ea93ca699aec46c7e6098d0ae223eef0b",
+      "decision": "approved_source_and_local_validation",
+      "final_unique_passes": 129,
+      "baseline_failures": 18,
+      "scope": "Reviewed AI prompt field cleaning, sixty-second review limit and HTTP response failure diagnostics. Product merge exact, metadata only under SOP18.0.4."
     }
   ],
   "prior_release_delta_review_01011": {
@@ -19937,6 +20614,23 @@
         "decision": "source_and_local_increment_review_passed",
         "scope": "仅FD-04增量。原FD-01/02/03及正常绑定下游的未变实现复用r2证据；不代表全项目零缺陷。",
         "reused_r2": "FD-01/02/03 and downstream original evidence retained; FD-04 closed by r3."
+      }
+    ]
+  },
+  "prior_release_delta_review_01033": {
+    "commit": "3326a738c158341ff30a3fa1a6024fea7c9c5271",
+    "result": "passed for source push",
+    "thread_id": "architect-5",
+    "turn_id": "report:semantic-file-architect-20261105/architect-review.json",
+    "scope": "Reviewed semantic fact routing and customer-scoped file isolation. Release metadata synchronized under SOP18.0.4; no extra product changes.",
+    "source_reviews": [
+      {
+        "report": "semantic-file-architect-20261105/architect-review.json",
+        "sha256": "181b974e75b511b2db06908cd3b0377fad9e114490063337f4260eaaa1679d18",
+        "candidate": "745c58465c9e200fc92ddcd8f9d7f5cfe4350495",
+        "decision": "source_and_affected_local_chains_approved",
+        "final_unique_passes": 74,
+        "scope": "Reviewed semantic fact routing and customer-scoped file isolation. Release metadata synchronized under SOP18.0.4; no extra product changes."
       }
     ]
   }
