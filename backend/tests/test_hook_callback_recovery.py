@@ -108,7 +108,7 @@ def test_callback_during_post_send_scan_and_retained_settlement(identity_client,
         now=int(time.time())
         table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'8000000000000000001',1,0,now,now*1000+1,0,1,binding['peer_wxid'],'想了解二手车，暂时不预约'))
     else:
-        binding=runtime.discover(t['id'])
+        binding=runtime.discover(t['id'], runtime.gateway.friend_list(runtime.process, runtime.scope).payload)
     if mode == 'projection_policy':
         # Receive real callback HTTP, cross the former 32 MiB limit using
         # official producers, then consume through business/Brain/send/recovery.

@@ -15,7 +15,13 @@ from test_hook_business_http import clean, post, body, proof, client
 from test_hook_history_business_http import bound as checked_bound, coverage, upload
 
 def bound():
-    return checked_bound(confirm_initial=False)
+    # Legacy bindings still require their original unresolved confirmation.
+    values = checked_bound(confirm_initial=False)
+    with SessionLocal() as db:
+        binding = db.get(WechatSessionBinding, values[3]['binding_id'])
+        binding.native_context = {**binding.native_context, 'relationship_initial_check':'pending'}
+        db.commit()
+    return values
 from test_hook_native_send_http import beginning, permitted
 
 

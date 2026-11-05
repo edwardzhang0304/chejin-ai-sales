@@ -53,9 +53,7 @@ class HookBusinessDispatcher:
         self._started_generations=set()
         self._startup_window_lock=threading.Lock()
         self._next_customer=0
-        self._friend_read_due=0
         self._binding_conflicts=set()
-        self._relationship_read_due=0
         self._reconciled=False
         self._last_wait_codes={}
         self._sync_cache=HistoryReceiptCache()
@@ -433,34 +431,98 @@ class HookBusinessDispatcher:
         rt.c1_results.settle_before_ui(task)
         rt.finish(task['id'],rt.active_flow_id,token)
 
-    def _discover_invitations(self,runner,invitations):
-        rt=self.runtime
+    def _discover_invitations(self, runner, invitations, bindings, relationships=()):
+        from .shared_rules import hook_contact_rules
+        from .hook_friend_discovery import CONTACT_REFRESH_DELAYS
+        rt = self.runtime
         self._binding_conflicts.intersection_update(i['source_task_id'] for i in invitations)
-        # Discover only invitations proved to originate from this system.
-        if invitations and time.monotonic()>=self._friend_read_due:
-            self._friend_read_due=time.monotonic()+8
-            for invite in invitations:
-                task_id=invite['source_task_id']
-                self.diagnostic_context={'source_task_id':task_id,'phase':'native_friend_binding'}
-                try:
-                    rt.discover(task_id)
-                    self._binding_conflicts.discard(task_id)
-                except ApiError as exc:
-                    if exc.status_code==409 and exc.code in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:
-                        continue  # Next inventory refresh removes this customer's stale work.
-                    if exc.status_code==409 and exc.code=='HOOK_INVITE_AUTHORIZATION_RETIRED':
-                        emit_progress(runner,invite['source_task_id'],'bind','done','invite_replaced')
-                        continue
-                    if exc.status_code==409 and exc.code=='HOOK_BINDING_CONFLICT':
-                        emit_progress(runner,task_id,'bind','waiting','binding_conflict')
-                        if task_id not in self._binding_conflicts:
-                            storage.append_log('WARN','hook_binding_conflict','客户绑定待运营确认，其他客户继续处理。',
-                                task_id=task_id,error_code=exc.code,include_exception_text=False,
-                                metadata={'source_task_id':task_id,'phase':'native_friend_binding'})
-                            self._binding_conflicts.add(task_id)
-                        continue
-                    emit_progress(runner,task_id,'bind','waiting','recipient')
-                    if exc.code not in {'HOOK_SHORTCODE_NOT_UNIQUE','HOOK_FRIEND_NOT_FOUND','HOOK_SHORTCODE_MATCH_REQUIRED','HOOK_FRIEND_CANDIDATE_UNRESOLVED'}:raise
+        if any(not isinstance(i.get('remark_code'), str) for i in invitations):
+            raise ValueError('HOOK_FRIEND_DISCOVERY_PROTOCOL_REQUIRED')
+        jobs = list(invitations) + [dict(source_task_id='relationship:'+b['binding_id'],
+                    remark_code=b['remark_code'], relationship=b) for b in relationships]
+        legacy_peers = {b['peer_wxid'] for b in relationships}
+        round_data = rt.discovery_round(jobs, {b['peer_wxid'] for b in bindings} - legacy_peers)
+        if round_data is None:
+            return
+        pending, friends = round_data
+        current = {i['source_task_id'] for i in jobs}
+        peers = {e['peer_wxid'] for e in pending['events']}
+        legacy = [i['relationship'] for i in pending['invitations']
+                  if i.get('relationship') and i['source_task_id'] in current
+                  and i['source_task_id'] not in pending['results']
+                  and (pending['all_peers'] or i['relationship']['peer_wxid'] in peers)]
+        reviewed = (rt.review_relationships(legacy, initial_friends=friends) or {}) if legacy else {}
+        for invite in pending['invitations']:
+            task_id = invite['source_task_id']
+            if pending['results'].get(task_id, {}).get('state') not in {None, 'binding', 'refresh_wait'}:
+                continue
+            if task_id not in current:
+                rt.record_discovery(pending, task_id, {'state': 'retired'})
+                continue
+            self.diagnostic_context = {'source_task_id': task_id, 'phase': 'native_friend_binding'}
+            if invite.get('relationship'):
+                binding = invite['relationship']
+                if not pending['all_peers'] and binding['peer_wxid'] not in peers:
+                    rt.record_discovery(pending, task_id, {'state':'not_triggered'})
+                    continue
+                waiting = reviewed.get(binding['binding_id'], True)
+                for item in bindings:
+                    if item['binding_id'] == binding['binding_id']:
+                        item['relationship_confirmation_pending'] = waiting
+                rt.record_discovery(pending, task_id, {'state':'unresolved' if waiting else 'verified'})
+                continue
+            try:
+                candidate = hook_contact_rules.resolve_friend_shortcode(friends, invite['remark_code'], rt.scope.self_wxid)
+            except ValueError as exc:
+                pending.setdefault('comparisons', {})[task_id] = hook_contact_rules.contact_observation(
+                    friends, invite['remark_code'], rt.scope.self_wxid, None)
+                rt.record_discovery(pending, task_id, {'state':'unresolved','reason_code':str(exc)})
+                emit_progress(runner, task_id, 'bind', 'waiting', 'friend_evidence_wait')
+                continue
+            comparison = hook_contact_rules.contact_observation(
+                friends, invite['remark_code'], rt.scope.self_wxid, candidate.candidate_wxid)
+            pending.setdefault('comparisons', {})[task_id] = comparison
+            if (candidate.matching_objects != 1 or not candidate.candidate_wxid
+                    or comparison['state'] != 'matched'
+                    or (not pending['all_peers'] and task_id not in pending['authorized_tasks']
+                        and candidate.candidate_wxid not in peers)):
+                absent = candidate.matching_objects == 0
+                retry = absent and pending.get('refresh_attempt',0) < len(CONTACT_REFRESH_DELAYS)
+                reason = ('HOOK_FRIEND_SHORTCODE_ABSENT' if absent else
+                          'HOOK_FRIEND_IDENTITY_UNCONFIRMED' if comparison['state'] != 'matched' else
+                          'HOOK_FRIEND_EVENT_PEER_MISMATCH')
+                rt.record_discovery(pending, task_id, {'state': 'refresh_wait' if retry else 'unresolved',
+                    'reason_code': reason})
+                emit_progress(runner, task_id, 'bind', 'waiting', 'friend_refresh_wait' if retry else 'friend_evidence_wait')
+                continue
+            rt.record_discovery(pending, task_id, {'state': 'binding'})
+            try:
+                result = rt.discover(task_id, friends)
+                rt.record_discovery(pending, task_id, {'state': 'bound', 'binding_id': result['binding_id']})
+                self._binding_conflicts.discard(task_id)
+            except ApiError as exc:
+                known = {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE','HOOK_INVITE_AUTHORIZATION_RETIRED',
+                         'HOOK_BINDING_CONFLICT','HOOK_SHORTCODE_NOT_UNIQUE','HOOK_FRIEND_NOT_FOUND',
+                         'HOOK_SHORTCODE_MATCH_REQUIRED','HOOK_FRIEND_CANDIDATE_UNRESOLVED'}
+                if exc.code not in known:
+                    raise  # Keep capture for an idempotent backend retry, never reread the DLL.
+                rt.record_discovery(pending, task_id, {'state': 'unresolved', 'reason_code': exc.code})
+                if exc.code == 'HOOK_INVITE_AUTHORIZATION_RETIRED':
+                    emit_progress(runner, task_id, 'bind', 'done', 'invite_replaced')
+                elif exc.code == 'HOOK_BINDING_CONFLICT':
+                    emit_progress(runner, task_id, 'bind', 'waiting', 'binding_conflict')
+                    if task_id not in self._binding_conflicts:
+                        storage.append_log('WARN','hook_binding_conflict','客户绑定待运营确认，其他客户继续处理。',
+                            task_id=task_id,error_code=exc.code,include_exception_text=False,
+                            metadata={'source_task_id':task_id,'phase':'native_friend_binding'})
+                        self._binding_conflicts.add(task_id)
+                else:
+                    emit_progress(runner, task_id, 'bind', 'waiting', 'friend_evidence_wait')
+        if any(r.get('state') == 'refresh_wait' for r in pending['results'].values()):
+            rt.defer_discovery(pending)
+        else:
+            pending['stage'] = 'complete'
+            rt.finish_discovery(pending)
 
     def tick(self,runner,services):
         before=self._wait_events
@@ -505,6 +567,7 @@ class HookBusinessDispatcher:
                 wait=lambda seconds: runner.stop_event.wait(seconds))
             self._reconciled=False
         rt=self.runtime
+        rt._friend_connection_identity=prepared.registration
         rt._progress_started_at=self._started_at
         rt.lifecycle_runner=runner
         self._progress_runner=runner
@@ -540,14 +603,6 @@ class HookBusinessDispatcher:
         if runner.binding.run_status=='faulted':
             self._observe_clock(rt,prepared.account)
             self.resolve_wait('business',phase='clock_wait')
-        if (inventory.get('relationship_query_version')==1 and inventory.get('relationship_bindings')
-                and inventory['run_status']!='faulted' and runner.binding.run_status!='faulted'
-                and services.startup_window_ready_for(prepared) and time.monotonic()>=self._relationship_read_due):
-            self._relationship_read_due=time.monotonic()+30
-            pending=rt.review_relationships(inventory['relationship_bindings']) or {}
-            for binding in inventory['bindings']:
-                if binding['binding_id'] in pending:
-                    binding['relationship_confirmation_pending']=pending[binding['binding_id']]
         self._adopt_flow(runner,inventory)
         byid={b['binding_id']:b for b in inventory['bindings']}
         for metadata in inventory['retained_sends']:
@@ -595,7 +650,8 @@ class HookBusinessDispatcher:
         if not services.startup_window_ready_for(prepared):
             self._report_wait('HOOK_STARTUP_WINDOW_PENDING');return
         self._business_cycle_verified=True
-        self._discover_invitations(runner,inventory['invitations'])
+        self._discover_invitations(runner,inventory['invitations'],inventory['bindings'],
+            inventory.get('relationship_bindings',[]) if inventory.get('relationship_query_version')==1 else [])
         if not rt.active_flow_id and time.monotonic()>=self._housekeeping_due:
             from .hook_retention import retire_inbox,retire_c1_roi,retire_history_artifacts
             from .config import CONFIG

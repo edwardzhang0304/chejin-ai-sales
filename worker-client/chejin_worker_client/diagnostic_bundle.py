@@ -32,7 +32,7 @@ MAX_FILES = 3000
 MAX_ROWS = 1000
 MAX_SECONDS = 45
 TABLES = (
-    "local_logs", "hook_raw_inbox", "hook_observation_projection",
+    "local_logs", "hook_friend_discovery", "hook_raw_inbox", "hook_observation_projection",
     "hook_delivery_outbox", "hook_voice_attempts", "hook_voice_interruptions", "hook_active_calls", "hook_transport_events", "hook_read_retry", "hook_process_recovery",
     "hook_history_pages", "hook_retired_observations", "hook_retired_deliveries",
     "c2_runtime_state", "c2_message_ledger", "c2_ingest_outbox",
@@ -738,7 +738,7 @@ class Collector:
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             if prefix == "receipts" and directory == self.root/"transactions"/"hook" and entry.name in {
-                                "sends", "send-receipts", "history-receipts", "history-captures", "relationship-reviews",
+                                "sends", "send-receipts", "history-receipts", "history-captures", "friend-discovery", "friend-reads", "relationship-reviews",
                             }:
                                 continue
                             if folder == artifacts(self.root) and entry.name in {
@@ -847,6 +847,9 @@ class Collector:
                     "telemetry_stage_attempts", "telemetry_authority_snapshots"))
                 self.tree(self.root/"transactions"/"hook"/"relationship-reviews",
                           "receipts/hook/relationship-reviews", archive, allowed_root=self.root)
+                for directory in ('friend-discovery',):
+                    self.tree(self.root/"transactions"/"hook"/directory,
+                              "receipts/hook/"+directory, archive, allowed_root=self.root)
                 self.priority_recovery(archive)
                 self.priority_incidents(archive)
                 self.file(self.root/"storage-maintenance.json", "logs/storage-maintenance.json",

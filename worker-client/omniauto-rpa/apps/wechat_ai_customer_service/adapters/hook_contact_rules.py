@@ -22,8 +22,7 @@ def resolve_friend_shortcode(data: Any, shortcode: str, self_wxid: str) -> Short
     matches: list[set[str]] = []
     fields: set[str] = set()
     for value in _contact_objects(data):
-        remarks = [key for key, part in value.items() if _key(key) in REMARK_KEYS
-                   and isinstance(part, str) and token.search(part)]
+        remarks = _matching_remarks(value, token)
         if remarks:
             identities = _identities(value)
             usable = identities if _valid_identity(identities) else set()
@@ -41,6 +40,11 @@ IDENTITY_KEYS = {'wxid', 'username', 'user'}
 
 def _key(key):
     return key.casefold().replace('_', '') if isinstance(key, str) else ''
+
+
+def _matching_remarks(value, token):
+    return [key for key, part in value.items() if _key(key) in REMARK_KEYS
+            and isinstance(part, str) and token.search(part)]
 
 
 def _identities(value):
@@ -94,35 +98,45 @@ def inspect_bound_contact(data: Any, shortcode: str, self_wxid: str, peer_wxid: 
     return 'remark_changed'
 
 
-def contact_observation(data: Any, shortcode: str, self_wxid: str, peer_wxid: str) -> dict:
+def _observation_fields(peer):
+    import hashlib
+    fields = []
+    selected = [(k, v) for k, v in peer.items() if _key(k) in REMARK_KEYS | IDENTITY_KEYS]
+    for key, value in selected[:16]:
+        field = {'field': key[:64], 'type': type(value).__name__}
+        if isinstance(value, str):
+            raw = value.encode('utf-8')
+            field.update(value=value[:256], truncated=len(value)>256,
+                         utf8_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        fields.append(field)
+    return {'fields': fields, 'omitted_fields': max(0,len(selected)-16)}
+
+
+def contact_observation(data: Any, shortcode: str, self_wxid: str, peer_wxid: str | None) -> dict:
     """Bounded target-only comparison evidence, using the decision's own parser.
 
     No other contact names, remarks or message bodies are retained. Truncated
     fields carry an explicit marker and a digest; a digest is not raw evidence.
     """
     from .hook_contract_rules import digest
-    import hashlib
     result = {'expected_shortcode': shortcode, 'peer_wxid': peer_wxid,
-              'response_digest': digest(data), 'peer_objects': [], 'omitted_peer_objects': 0}
+              'response_digest': digest(data), 'peer_objects': [], 'omitted_peer_objects': 0,
+              'shortcode_objects': [], 'omitted_shortcode_objects': 0}
     try:
-        result['state'] = inspect_bound_contact(data, shortcode, self_wxid, peer_wxid)
+        result['state'] = inspect_bound_contact(data, shortcode, self_wxid, peer_wxid) if peer_wxid else 'unconfirmed'
         candidate = resolve_friend_shortcode(data, shortcode, self_wxid)
         result['shortcode_matching_objects'] = candidate.matching_objects
         result['matched_remark_fields'] = list(candidate.matched_remark_fields)
         peers = [v for v in _contact_objects(data) if peer_wxid in _identities(v)]
         result['peer_object_count'] = len(peers)
         result['omitted_peer_objects'] = max(0, len(peers)-2)
-        for peer in peers[:2]:
-            fields = []
-            selected = [(k, v) for k, v in peer.items() if _key(k) in REMARK_KEYS | IDENTITY_KEYS]
-            for key, value in selected[:16]:
-                field = {'field': key[:64], 'type': type(value).__name__}
-                if isinstance(value, str):
-                    raw = value.encode('utf-8')
-                    field.update(value=value[:256], truncated=len(value)>256,
-                                 utf8_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
-                fields.append(field)
-            result['peer_objects'].append({'fields': fields, 'omitted_fields': max(0,len(selected)-16)})
+        result['peer_objects'] = [_observation_fields(v) for v in peers[:2]]
+        # Preserve the conflicting target rows even when there is no unique peer.
+        # Never include unrelated contacts or imply that absence proves deletion.
+        token = re.compile(r'(?<![A-Za-z0-9])' + re.escape(shortcode) + r'(?![A-Za-z0-9])')
+        targets = [v for v in _contact_objects(data) if _matching_remarks(v, token)]
+        result['shortcode_objects'] = [_observation_fields(v) for v in targets[:2]]
+        result['omitted_shortcode_objects'] = max(0, len(targets)-2)
     except ValueError as exc:
         result.update(state='unconfirmed', reason_code=str(exc))
     return result

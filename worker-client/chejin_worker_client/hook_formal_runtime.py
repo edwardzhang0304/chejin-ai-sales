@@ -299,16 +299,120 @@ class HookFormalRuntime:
         self.finish(task['id'],flow,token)
         return {'task_id':task['id'],'outcome':outcome,'settlement':result,'preparation':preparation}
 
-    def discover(self,task_id):
-        friends=self.gateway.friend_list(self.process,self.scope)
-        path=self.private_root/'friend-reads'/f'{rules.digest([self.process.generation,friends.payload])}.json'
-        if not path.exists():_save(path,friends.payload)
-        elif rules.loads(path.read_bytes())!=friends.payload:raise ValueError('HOOK_FRIEND_LOCAL_EVIDENCE_CHANGED')
-        result=self.client.bind_friend(self.credentials,task_id,self.account,friends.payload)
-        self.progress(task_id,'bind','done')
+    def discovery_round(self, invitations, bound_peers):
+        from .hook_friend_discovery import FriendDiscovery
+        from .hook_read_retry import ReadRetryWait
+        from .ui_lock import UiLockError, UI_LOCK_BUSY, UI_LOCK_ACQUIRE_TIMEOUT
+        connection = getattr(self, '_friend_connection_identity', None)
+        if (not hasattr(self, '_friend_discovery')
+                or getattr(self, '_friend_discovery_connection', None) is not connection):
+            self._friend_discovery = FriendDiscovery(self.scope)
+            self._friend_discovery_connection = connection
+        store = self._friend_discovery
+        pending = store.prepare(invitations, bound_peers)
+        if pending is None:
+            return None
+        if pending['generation'] != self.scope.process_generation:
+            pending['stage'] = 'process_changed'
+            self.finish_discovery(pending)
+            return None
+        if not any(i['source_task_id'] in {x['source_task_id'] for x in invitations} for i in pending['invitations']):
+            pending['stage'] = 'retired'
+            self.finish_discovery(pending)
+            return None
+        if pending['stage'] == 'reading':
+            # Interrupted queries remain in the original Hook call journal.
+            # Do not silently execute another contact call on every tick.
+            pending['stage'] = 'interrupted'
+            self.finish_discovery(pending)
+            return None
+        if pending['stage'] == 'waiting_contact_refresh':
+            from .hook_friend_discovery import monotonic
+            if monotonic() < pending['refresh_due']:
+                return None
+        if pending['snapshot'] is None:
+            pending['stage'] = 'reading'
+            store.update(pending)
+            try:
+                friends = self.gateway.friend_list(self.process, self.scope).payload
+                digest = rules.digest(friends)
+                path = self.private_root / 'friend-reads' / f'{digest}.json'
+                if not path.exists():
+                    _save(path, friends)
+                elif rules.loads(path.read_bytes()) != friends:
+                    raise ValueError('HOOK_FRIEND_LOCAL_EVIDENCE_CHANGED')
+                pending.update(snapshot=digest, stage='captured')
+                store.update(pending)
+            except ReadRetryWait as exc:
+                # Only the gateway can prove a request was not sent. Reuse its
+                # durable budget and operator reset; never create a fresh budget.
+                pending.update(stage='prepared', reason_code=exc.code)
+                store.update(pending)
+                raise
+            except UiLockError as exc:
+                # These two errors occur before the lease is acquired and before
+                # friend_list performs I/O. A lease lost after I/O is different.
+                if exc.code in {UI_LOCK_BUSY, UI_LOCK_ACQUIRE_TIMEOUT}:
+                    pending.update(stage='prepared', reason_code=exc.code)
+                    store.update(pending)
+                else:
+                    pending.update(stage='read_failed', reason_code=exc.code)
+                    self.finish_discovery(pending)
+                raise
+            except Exception as exc:
+                pending.update(stage='read_failed', reason_code=getattr(exc,'code',type(exc).__name__))
+                self.finish_discovery(pending)
+                raise
+        else:
+            path = self.private_root / 'friend-reads' / f"{pending['snapshot']}.json"
+            friends = rules.loads(path.read_bytes())
+            if rules.digest(friends) != pending['snapshot']:
+                raise ValueError('HOOK_FRIEND_LOCAL_EVIDENCE_CHANGED')
+        return pending, friends
+
+    def record_discovery(self, pending, task_id, result):
+        pending['results'][task_id] = result
+        self._friend_discovery.update(pending)
+
+    def finish_discovery(self, pending):
+        path = self.private_root / 'friend-discovery' / f"{pending['round_id']}.json"
+        if not path.exists():
+            _save(path, pending)
+        elif rules.loads(path.read_bytes()) != pending:
+            raise ValueError('HOOK_FRIEND_LOCAL_EVIDENCE_CHANGED')
+        self._friend_discovery.finish(pending)
+        if pending['stage'] in {'read_failed', 'interrupted'}:
+            for invite in pending['invitations']:
+                self.progress(invite['source_task_id'], 'bind', 'waiting', 'friend_query_failed')
+
+    def defer_discovery(self, pending):
+        from .hook_friend_discovery import CONTACT_REFRESH_DELAYS, monotonic
+        attempt = pending.get('refresh_attempt', 0)
+        if attempt >= len(CONTACT_REFRESH_DELAYS):
+            raise ValueError('HOOK_FRIEND_REFRESH_BUDGET_EXHAUSTED')
+        # Preserve each actual capture/comparison before replacing the snapshot.
+        report = {**pending, 'stage': 'waiting_contact_refresh',
+                  'refresh_due': monotonic() + CONTACT_REFRESH_DELAYS[attempt]}
+        path = self.private_root / 'friend-discovery' / f"{pending['round_id']}-refresh-{attempt}.json"
+        if not path.exists():
+            _save(path, report)
+        else:
+            saved = rules.loads(path.read_bytes())
+            report['refresh_due'] = saved['refresh_due']
+            if saved != report:
+                raise ValueError('HOOK_FRIEND_LOCAL_EVIDENCE_CHANGED')
+        pending.update(stage='waiting_contact_refresh', refresh_due=report['refresh_due'],
+                       refresh_attempt=attempt+1, snapshot=None)
+        self._friend_discovery.update(pending)
+
+    def discover(self, task_id, friends):
+        # This is the same captured list for the entire round, not one DLL
+        # query per invitation. Backend identity/shortcode/origin gates remain.
+        result = self.client.bind_friend(self.credentials, task_id, self.account, friends)
+        self.progress(task_id, 'bind', 'done')
         return result
 
-    def review_relationships(self, bindings):
+    def review_relationships(self, bindings, *, initial_friends=None):
         from .hook_relationship_evidence import save_review
         from .shared_rules import hook_contact_rules
         from uuid import uuid4
@@ -321,7 +425,11 @@ class HookFormalRuntime:
             except HookLocalError as exc:
                 attempt.update(read_failed=True,reason_code=exc.code)
                 return None, attempt, exc
-        friends, first, failure = read()
+        if initial_friends is None:
+            friends, first, failure = read()
+        else:
+            friends, first, failure = initial_friends, {'attempt_id':uuid4().hex,
+                'observed_at':utc_now_iso(),'stage':'shared_discovery_capture'}, None
         if failure:
             for binding in bindings:
                 save_review(self.private_root,self.account,binding,[first])

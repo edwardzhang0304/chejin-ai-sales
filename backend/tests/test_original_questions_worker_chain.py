@@ -61,7 +61,7 @@ def test_original_questions_run_through_worker_and_durable_recovery(identity_cli
         if path=='/SendTextMsg':
             append(server.requests[-1][1]['msg'],1);server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
-    binding=runtime.discover(t['id'])
+    binding=runtime.discover(t['id'], runtime.gateway.friend_list(runtime.process, runtime.scope).payload)
     for i in range(6 if case=='budget' else 3):
         vid=joined.api._create_listed_vehicle()
         response=joined.api.client.put(f'/api/vehicles/{vid}',json={'display_name':f'合成车{i+1}','public_price':f'{5.2+i*.4:.2f}','energy_type':'electric'},headers=joined.api.HEADERS)

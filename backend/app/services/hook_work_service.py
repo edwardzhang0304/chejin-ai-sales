@@ -70,7 +70,8 @@ def inventory(db,authenticated,instance,payload):
             if (previous is None or previous.replacement_binding_id or
                     ((previous.native_context or {}).get('reinvite_request') or {}).get('task_id')!=task.id):
                 continue
-        invitations.append({'source_task_id':task.id})
+        invitations.append({'source_task_id':task.id, 'remark_code':data['shortcode'],
+                            'discovery_after_authorization':bool(authorization.get('reuse_previous_invitation'))})
     bindings=with_open_handoffs(db,w.id,payload.self_wxid,payload.account_epoch,bindings)
     flow=dict(w.inflight_flow_state or {})
     current=db.get(Task,flow.get('flow_id')) if flow.get('flow_id') else None

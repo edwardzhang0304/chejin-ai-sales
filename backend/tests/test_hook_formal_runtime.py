@@ -83,7 +83,7 @@ def drive_reply(runtime, binding, batch_id, *, max_wait_seconds=30):
 
 @pytest.mark.parametrize('peer',['wxid_customer_A','nativecustomer2468','Legacy-Customer_42'])
 @pytest.mark.parametrize('segments',[1,2])
-def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments,peer,clock_offset=0):
+def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(identity_client,lab,tmp_path,monkeypatch,segments,peer,clock_offset=0,discovery_case=None):
     if clock_offset:
         from datetime import datetime, timedelta
         from chejin_worker_client import hook_sender, hook_history_sync
@@ -143,7 +143,49 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
             table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,peer,text))
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
-    binding=runtime.discover(t['id'])
+    # Drive the actual callback discovery entry, not a direct binding shortcut.
+    from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
+    from chejin_worker_client.hook_inbox import NativeInbox
+    dispatch=HookBusinessDispatcher(runtime.client,tmp_path/'coordinator',None,None,automatic_transcription_disabled=True)
+    dispatch.runtime=runtime
+    dispatch._discover_invitations(None,[],[])
+    event={'ServerPort':str(scope.hook_api_port),'selfwxid':scope.self_wxid,
+           'sendorrecv':'2','msgnumber':'1','msglist':[{'msgsvrid':'900001','msgtype':'1','fromtype':'1',
+           'fromid':peer,'toid':scope.self_wxid,'msg':'我通过了你的朋友验证请求，现在我们可以开始聊天了',
+           'time':time.strftime('%Y-%m-%d %H:%M:%S')}]}
+    created=int(time.time()+clock_offset)
+    table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'900001',1,0,created,created*1000+1,0,1,peer,event['msglist'][0]['msg']))
+    NativeInbox(max_body_bytes=4096,max_inbox_bytes=1024*1024).persist(json.dumps(event).encode(),scope)
+    work_path=f'/workers/{w["id"]}/wechat/native-work'
+    inventory=post(w,work_path,account).json()['data']
+    assert inventory['invitations'][0]['remark_code']==code
+    if discovery_case=='lock':
+        from chejin_worker_client import ui_lock
+        gateway.lock_timeout_seconds=.1
+        lease=ui_lock.acquire_ui_lock(operation_type='hook_control',owner='other-test-action',timeout_seconds=.1)
+        try:
+            with pytest.raises(ui_lock.UiLockError) as error:
+                dispatch._discover_invitations(None,inventory['invitations'],inventory['bindings'])
+            assert error.value.code==ui_lock.UI_LOCK_BUSY
+            assert not [r for r in server.requests if r[0]=='/GetFriendAndChatRoomList']
+        finally:lease.release()
+    if discovery_case=='contact_lag':
+        from chejin_worker_client import hook_friend_discovery
+        clock=[1000.0]
+        monkeypatch.setattr(hook_friend_discovery,'monotonic',lambda:clock[0])
+        original_handler=server.on_request
+        def delayed_contacts(path):
+            original_handler(path)
+            if path=='/GetFriendAndChatRoomList':server.raw_override=b'{"code":0,"data":[]}'
+        server.on_request=delayed_contacts
+        dispatch._discover_invitations(None,inventory['invitations'],inventory['bindings'])
+        server.on_request=original_handler
+        clock[0]+=2
+    dispatch._discover_invitations(None,inventory['invitations'],inventory['bindings'])
+    inventory=post(w,work_path,account).json()['data']
+    assert not inventory['invitations'] and not inventory['relationship_bindings']
+    binding=inventory['bindings'][0]
+    assert not binding['relationship_confirmation_pending']
     assert binding['peer_wxid']==peer
     before=runtime.sync(binding);assert before['history_ready']
     batch=before['message_batch']['batch_id']
@@ -156,7 +198,17 @@ def test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(ident
         messages=list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role=='self')))
         assert all(m.raw_payload['sender_source']=='ai' for m in messages)
     assert list((tmp_path/'coordinator'/'finished').glob('*.json'))
+    for _ in range(3):dispatch._discover_invitations(None,[],[binding])
+    assert len([r for r in server.requests if r[0]=='/GetFriendAndChatRoomList'])==(2 if discovery_case=='contact_lag' else 1)
+    final=post(w,work_path,account).json()['data']
+    assert final['run_status']=='running' and not final['inflight_flow']
     table.close()
+
+
+@pytest.mark.parametrize('discovery_case',['lock','contact_lag'])
+def test_discovery_wait_recovery_through_send_ack(identity_client,lab,tmp_path,monkeypatch,discovery_case):
+    test_coordinator_pulls_formal_invite_binds_history_generates_and_sends(
+        identity_client,lab,tmp_path,monkeypatch,segments=1,peer='wxid_customer_A',discovery_case=discovery_case)
 
 
 @pytest.mark.parametrize('clock_offset',[-3600,-2,2,3600])

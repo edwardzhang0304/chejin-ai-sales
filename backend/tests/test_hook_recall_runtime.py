@@ -56,7 +56,7 @@ def test_recall_through_actual_worker_sender_and_ack(identity_client,lab,tmp_pat
                 table.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(seq,str(8000000000000000000+seq),1,1,created,created*1000+seq,0,seq,'wxid_customer_A',text))
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
-    binding=runtime.discover(t['id'])
+    binding=runtime.discover(t['id'], runtime.gateway.friend_list(runtime.process, runtime.scope).payload)
     before=runtime.sync(binding);assert before['history_ready']
     batch=before['message_batch']['batch_id']
     result=drive_reply(runtime,binding,batch,max_wait_seconds=30)

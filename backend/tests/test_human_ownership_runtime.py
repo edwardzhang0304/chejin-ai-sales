@@ -68,7 +68,7 @@ def human_runtime(identity_client,lab,tmp_path,monkeypatch):
             if after:after()
             server.raw_override=b'{"SendTextMsg":"1"}'
     server.on_request=on_request
-    binding=runtime.discover(t['id'])
+    binding=runtime.discover(t['id'], runtime.gateway.friend_list(runtime.process, runtime.scope).payload)
     # Clear the invite's ambiguous boundary second without changing production guards.
     time.sleep(1.05)
     return runtime,binding,table,server,w

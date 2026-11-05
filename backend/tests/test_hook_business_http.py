@@ -309,3 +309,16 @@ def test_invalid_persisted_invite_clock_keeps_original_evidence():
     with SessionLocal() as db:
         assert db.scalar(select(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission')).extra_metadata==original
         assert db.scalar(select(WechatSessionBinding)) is None
+
+
+def test_binding_rejects_conflicting_rows_for_same_peer():
+    w,t,p,h,prep=submitted()
+    b=body(t,p,prep)
+    b['friend_list']['data'].append({'wxid':'wxid_customer_A','markname':'CJOTHER'})
+    b['raw_evidence_digest']=shared_adapter('hook_contract_rules').digest(b['friend_list'])
+    r=post(w,f"/workers/{w['id']}/wechat/native-bindings",b)
+    assert r.status_code==409 and r.json()['code']=='HOOK_FRIEND_CANDIDATE_UNRESOLVED',r.text
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(WechatSessionBinding))==0
+        assert db.scalar(select(func.count()).select_from(Conversation))==0
+        assert db.scalar(select(func.count()).select_from(TaskEvidence).where(TaskEvidence.evidence_type=='hook_invite_submission'))==1

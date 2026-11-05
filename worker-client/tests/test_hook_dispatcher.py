@@ -12,6 +12,22 @@ from test_hook_backend import peer as backend_peer
 import pytest,json
 
 
+class DiscoveryFixture:
+    """Scheduler tests inject one captured round; durable intake is tested separately."""
+    def discovery_round(self, invitations, bound_peers):
+        if getattr(self, '_discovery_finished', False) or not invitations:
+            return None
+        friends = {'code':0, 'data':[{'wxid':'wxid_pending_friend','markname':'CJTEST1'}]}
+        return {'invitations':invitations,'events':[],'results':{},'all_peers':True,
+                'authorized_tasks':[]}, friends
+
+    def record_discovery(self, pending, task_id, result):
+        pending['results'][task_id] = result
+
+    def finish_discovery(self, pending):
+        self._discovery_finished = True
+
+
 def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
     assert create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api')) is None
     with storage.db_connection() as conn:
@@ -29,7 +45,7 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
     scope=prepared.registration.scope
     account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
     bindings=[{'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':f'wxid_customer_{i}',
-        'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
+        'remark_code':'CJTEST1','conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
         'batch_ids':[str(uuid.uuid4())]} for i in range(2)]
     bindings[0]['relationship_confirmation_pending'] = pending_review=='inventory'
     calls=[];sends=[]
@@ -38,14 +54,14 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
             calls.append(path)
             if path.endswith('native-work'):
                 return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,'run_status':run_status,'inflight_flow':{},
-                    'bindings':bindings,'invitations':[{'source_task_id':'pending-friend'}] if pending_friend else [],'retained_sends':[],'inflight_task':None,
+                    'bindings':bindings,'invitations':[{'source_task_id':'pending-friend','remark_code':'CJTEST1'}] if pending_friend else [],'retained_sends':[],'inflight_task':None,
                     'relationship_query_version':1,'relationship_bindings':bindings if pending_review=='fresh' else []}
             if not pending_review and bindings[0]['batch_ids'][0] in path:return {'processing':True,'observation_only':run_status=='paused'}
             return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())},'observation_only':run_status=='paused'}
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*args,**kwargs):self.credentials=credentials;self.account=account;self.scope=scope;self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
-        def review_relationships(self,bindings):return {bindings[0]['binding_id']:True}
-        def discover(self,task_id):
+        def review_relationships(self,items,**kwargs):return {b['binding_id']:b is bindings[0] for b in items}
+        def discover(self,task_id,friends):
             from chejin_worker_client.api import ApiError
             calls.append(task_id)
             raise ApiError('HOOK_BINDING_CONFLICT' if pending_friend=='conflict' else 'HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
@@ -82,7 +98,7 @@ def test_reply_attempt_invalidates_dispatch_receipt_without_callback(lab,backend
     prepared=manager.prepare(credentials,state);scope=prepared.registration.scope
     account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
     binding={'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':'wxid_customer_A',
-        'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
+        'remark_code':'CJTEST1','conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
         'batch_ids':[str(uuid.uuid4()),str(uuid.uuid4())]}
     reads=[];attempts=[]
     class Client:
@@ -93,7 +109,7 @@ def test_reply_attempt_invalidates_dispatch_receipt_without_callback(lab,backend
                     'invitations':[],'retained_sends':[],'inflight_task':None}
             if path.endswith('tasks/pull'):return {'task':None}
             return {'reply_action':{'status':'queued'},'task':{'id':str(uuid.uuid4())}}
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*args,**kwargs):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
@@ -128,7 +144,7 @@ def test_transcript_receipt_replaces_pending_cache_without_new_callback(lab,back
     prepared=manager.prepare(credentials,state);scope=prepared.registration.scope
     account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
     binding={'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':'wxid_customer_A',
-        'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','history_ready':False,
+        'remark_code':'CJTEST1','conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','history_ready':False,
         'voice_jobs':[{'native_msg_id':'123'}],'batch_ids':[str(uuid.uuid4())]}
     from test_hook_voice import persist, AUDIO
     from chejin_worker_client.hook_voice import HookVoiceTranscriber
@@ -152,7 +168,7 @@ def test_transcript_receipt_replaces_pending_cache_without_new_callback(lab,back
             published.append(args[-1])
             binding['history_ready']=True;binding['voice_jobs']=[]
             return {'accepted':True}
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*args,**kwargs):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
@@ -236,7 +252,7 @@ def test_voice_admission_and_update_share_lock(lab, backend_peer, tmp_path, monk
                     'invitations':[],'retained_sends':[],'inflight_task':None}
             return {'task':None}
         def voice_result(self,*args):return {'accepted':True}
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*a,**kw):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
@@ -268,7 +284,7 @@ def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(la
     prepared=manager.prepare(credentials,state);scope=prepared.registration.scope
     account={k:getattr(scope,k) for k in ('self_wxid','account_epoch','process_generation')}
     bindings=[{'binding_id':str(uuid.uuid4()),'binding_revision':1,'peer_wxid':f'wxid_customer_{i}',
-        'conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
+        'remark_code':'CJTEST1','conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
         'batch_ids':[]} for i in range(2)]
     reviews=[];reads=[]
     status='faulted' if mode=='faulted' else 'paused'
@@ -276,14 +292,14 @@ def test_relationship_review_respects_gates_and_retirement_is_customer_scoped(la
         def call(self,credentials,method,path,body=None,**kwargs):
             assert path.endswith('native-work')
             return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,
-                'run_status':status,'inflight_flow':{},'bindings':bindings,'invitations':[{'source_task_id':'old-round'}] if mode=='retired_invite' else [],
+                'run_status':status,'inflight_flow':{},'bindings':bindings,'invitations':[{'source_task_id':'old-round','remark_code':'CJTEST1'}] if mode=='retired_invite' else [],
                 'retained_sends':[],'inflight_task':None,'relationship_query_version':1,'relationship_bindings':bindings}
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*args,**kwargs):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=None;self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda x:None)
-        def review_relationships(self,items):reviews.append([b['binding_id'] for b in items])
-        def discover(self,task_id):raise ApiError('HOOK_INVITE_AUTHORIZATION_RETIRED','old invite retired',409)
+        def review_relationships(self,items,**kwargs):reviews.append([b['binding_id'] for b in items])
+        def discover(self,task_id,friends):raise ApiError('HOOK_INVITE_AUTHORIZATION_RETIRED','old invite retired',409)
         def barrier(self,b):return (0,0)
         def sync(self,b):
             reads.append(b['binding_id'])
@@ -325,7 +341,7 @@ def test_history_owner_supersedes_stale_voice_inventory(lab,backend_peer,tmp_pat
                     'invitations':[],'retained_sends':[],'inflight_task':None}
             if path.endswith('tasks/pull'):return {'task':None}
             pytest.fail(path)
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self,*a,**kw):
             self.credentials=credentials;self.account=account;self.scope=scope
             self.active_flow_id=self.active_task_id=None;self.clock=SimpleNamespace(observe=lambda _:None)

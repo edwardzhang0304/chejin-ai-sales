@@ -134,6 +134,9 @@ def bind_friend(db, authenticated, instance, payload):
     if candidate.matching_objects != 1 or candidate.candidate_wxid is None:
         raise AppError('HOOK_FRIEND_CANDIDATE_UNRESOLVED', '未找到唯一短码好友，等待接受或人工核对', 409)
     peer = candidate.candidate_wxid
+    if shared_adapter('hook_contact_rules').inspect_bound_contact(
+            payload.friend_list, proof['shortcode'], w.hook_self_wxid, peer) != 'matched':
+        raise AppError('HOOK_FRIEND_CANDIDATE_UNRESOLVED', '好友身份或备注证据存在矛盾，等待核对', 409)
     if len(peer) > 64:
         raise AppError('HOOK_FRIEND_CANDIDATE_UNRESOLVED', '好友身份格式不正确', 409)
     existing = list(db.scalars(select(WechatSessionBinding).where(WechatSessionBinding.deleted_at.is_(None),
@@ -177,7 +180,8 @@ def bind_friend(db, authenticated, instance, payload):
             bind_status='bound', listen_status='listening', allow_listening=True,
             native_context={'account_epoch': w.hook_account_epoch, 'source_task_id': task.id,
                 'invite_evidence_id': proof_row.id, 'business_enabled': True,
-                'relationship_initial_check': 'pending',
+                # The original binding capture already proved the unique identity and shortcode.
+                'relationship_initial_check': 'verified',
                 'history_since_create_time': str(int(boundary.timestamp())) if boundary else '0',
                 **({'native_boundary_review_reason': review_reason} if review_reason else {}),
                 'history_ready': False,
