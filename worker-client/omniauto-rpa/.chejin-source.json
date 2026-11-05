@@ -683,7 +683,7 @@
   ],
   "current_release": {
     "version": "0.10.31",
-    "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
+    "source_commit": "c941dfd6ba17228a9733b1108efe3df73c447314",
     "source_state": "gray_release_candidate",
     "published": false,
     "contract_revision": "0.10.31",
