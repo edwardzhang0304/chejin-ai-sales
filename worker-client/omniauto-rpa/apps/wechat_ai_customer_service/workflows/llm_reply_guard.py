@@ -115,13 +115,13 @@ def guard_synthesized_reply(
     if not (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
         return evaluate_content_rules(candidate=candidate, evidence_pack=evidence_pack,
                                       settings=settings, reviewed_plan=reviewed_plan)
-    from apps.wechat_ai_customer_service.workflows.catalog_query import clearance_kind, fingerprint, inventory_snapshot, snapshot_id
+    from apps.wechat_ai_customer_service.workflows.catalog_query import prepared_binding_matches, fingerprint, inventory_snapshot, snapshot_id
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
     proof = evidence_pack.get("_catalog_clearance") or {}
     reply = str(candidate.get("reply") or "").strip()
     guard = proof.get("guard") or {}
     valid = (proof.get("version") == 2 and guard.get("allowed") and
-             proof.get("plan") == fingerprint(reviewed_plan) and clearance_kind(reply, evidence_pack))
+             prepared_binding_matches(reply, reviewed_plan, evidence_pack))
     receipt = evidence_pack["catalog_protocol"].get("receipt")
     if valid and receipt:
         try:
@@ -907,23 +907,9 @@ def validate_reply_fact_authority(reply: str, evidence_pack: dict[str, Any], *, 
             aggregate_prices = {format_wan_price(float(receipt[k])) for k in ("price_min", "price_max") if receipt.get(k) is not None}
     product_items = collect_product_evidence_items(evidence_pack)
     if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
-        from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint
-        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
-        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reviewed_reply_facts
-        proof = evidence_pack.get("_catalog_clearance") or {}
-        mapping = evidence_pack.get("policy_reference_map") or {}
-        # Reuse the same fact owner with the exact approved plan. Merely
-        # recognizing a valid citation or price somewhere is not clearance.
-        if (not isinstance(reviewed_plan, dict) or proof.get("plan") != fingerprint(reviewed_plan)
-                or text.strip() != join_reply_segments(reviewed_plan.get("reply_segments") or []).strip()
-                or proof.get("policy_map") != fingerprint(mapping)):
-            return {"ok": False, "reason": "catalog_semantic_clearance_missing_or_stale"}
-        validation = validate_reviewed_reply_facts(reviewed_plan, evidence_pack,
-            refs=proof.get("source_refs", reviewed_plan.get("policy_refs")), mapping=mapping)
-        if not validation["ok"]:
-            return {"ok": False, "reason": "reviewed_reply_fact_conflict", "errors": validation["errors"]}
-        if proof.get("version") == 2:
-            return {"ok": True, "reason": "final_reply_and_scope_checked"}
+        from apps.wechat_ai_customer_service.workflows.catalog_query import prepared_binding_matches
+        return {"ok": prepared_binding_matches(text, reviewed_plan, evidence_pack),
+                "reason": "prepared_reply_binding"}
     else:
         # OCR/saved legacy candidates have no program-owned policy mapping.
         # Keep their existing authority checks, rather than inventing approval.

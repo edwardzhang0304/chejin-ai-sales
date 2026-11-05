@@ -243,14 +243,14 @@ def review_brain_reply_semantics(
     if not (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
         return _review_content(settings=settings, brain_input=brain_input, evidence_pack=evidence_pack,
                                plan=plan, deterministic_quality=deterministic_quality, force=force)
-    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, clearance_kind
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, prepared_binding_matches
     from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments, brain_plan_to_guard_candidate
     from apps.wechat_ai_customer_service.workflows.customer_service_brain import brain_plan_allows_soft_evidence_override
     from apps.wechat_ai_customer_service.workflows.llm_reply_guard import evaluate_content_rules
     text = join_reply_segments(plan.get("reply_segments") or []).strip()
     proof = evidence_pack.get("_catalog_clearance") or {}
     if (proof.get("version") == 2 and proof.get("guard", {}).get("allowed") and
-            proof.get("plan") == fingerprint(plan) and clearance_kind(text, evidence_pack)):
+            prepared_binding_matches(text, plan, evidence_pack)):
         return deepcopy(proof["content_result"])
     result = _review_content(settings=settings, brain_input=brain_input, evidence_pack=evidence_pack,
                              plan=plan, deterministic_quality=deterministic_quality, force=force)

@@ -816,7 +816,7 @@ class RealOmniAutoAIEngineAdapter:
 
         if result.get("adoptable") and result.get("reply_text") and target_state.get("model_query_contract") == "vehicle_need_v2":
             from apps.wechat_ai_customer_service.workflows.catalog_query import serialized_clearance_valid
-            if not (result.get("catalog_protocol") or {}).get("preparation") or not serialized_clearance_valid(result):
+            if not (result.get("catalog_protocol") or {}).get("preparation") or not serialized_clearance_valid(result, require_current=True):
                 return AIEngineDecision(
                     decision="retry_later", guard_result="failed",
                     error_code="AI_ENGINE_REVIEWED_CONTENT_CHANGED", suggested_action="retry_later",

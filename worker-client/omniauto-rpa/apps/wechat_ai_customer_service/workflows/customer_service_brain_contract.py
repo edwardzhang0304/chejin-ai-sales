@@ -56,9 +56,11 @@ def validate_policy_refs(refs: Any, *, segments: list[str], mapping: dict,
     from apps.wechat_ai_customer_service.workflows.catalog_budget import amount_role
     facts, source_ids, covered_numbers = [], [], []
     remaining = list(segments)
+    policy_statements = []
     for sid, keys in refs.items():
         statement = mapping["statements"][sid]
         si, start, end, text = (statement[k] for k in ("segment_index", "start", "end", "text"))
+        policy_statements.append((si, start, end))
         selected = [mapping["knowledge"][key] for key in dict.fromkeys(keys)]
         remaining[si] = remaining[si][:start] + " " * (end-start) + remaining[si][end:]
         source_numbers = [(n, source["content"]) for source in selected for n in factual_number_spans(source["content"])]
@@ -90,7 +92,7 @@ def validate_policy_refs(refs: Any, *, segments: list[str], mapping: dict,
         if contains_any(text, AUTHORITY_POLICY_HINT_TERMS + FINANCE_DETAIL_HINT_TERMS + HIGH_RISK_COMMITMENT_ECHO_TERMS):
             errors.append("formal_policy_assertion_not_covered")
     return {"ok": not errors, "errors": list(dict.fromkeys(errors)), "facts_claimed": facts,
-            "source_ids": source_ids, "covered_numbers": covered_numbers}
+            "source_ids": source_ids, "covered_numbers": covered_numbers, "policy_statements": policy_statements}
 
 
 def reply_trigger_context(trigger_type: Any) -> dict[str, str]:

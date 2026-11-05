@@ -50,6 +50,7 @@ def actual_brain(monkeypatch):
     cfg=joined.fixtures.base_config(joined.fixtures.base_plan())
     cfg['customer_service_brain'].update(mode='brain_first',provider='openai',api_key='synthetic',model='synthetic-brain',
         semantic_reviewer_model='synthetic-reviewer',semantic_reviewer_cache_enabled=False,semantic_reviewer_force=True)
+    state['brain_config'] = cfg['customer_service_brain']
     def transport(**kw):
         state['wire'].append(kw);mode=state['scenario']
         if kw['model']=='synthetic-reviewer':
@@ -65,7 +66,6 @@ def actual_brain(monkeypatch):
                 else:return {'ok':False,'status':0,'error_kind':'transport','error':'synthetic_review_timeout','wall_timeout':True}
 
             if mode=='review_timeout':return {'ok':False,'status':0,'error_kind':'transport','error':'synthetic_timeout','wall_timeout':True}
-            if mode=='sort_omitted':result=joined.review('query_summary',verdict='repair',semantic_errors=['客户明确便宜优先但遗漏sort'],repair_instruction='保留客户明确排序')
         elif not state.get('receipt'):
             state['query_calls']=state.get('query_calls',0)+1
             if mode in {'recover','failover'} and state['query_calls']==1:
@@ -116,6 +116,11 @@ def actual_brain(monkeypatch):
             elif mode=='case_year':
                 result['answer_mode']='ask_clarifying_question';result['evidence_used']={};result['facts_claimed']=[]
                 result['reply_segments']=['年份这一项目前还没核实，不能直接说已经筛到更近年份的车。您希望哪一年之后的新能源车？']
+            if mode=='review_timeout':
+                result['reply_segments'].append('预约看车请等门店确认排期后再到店。')
+            if mode=='wrong_order':
+                assert len(cars) >= 2
+                result['reply_segments']=['，'.join(f"{c['name']}报价{c['price']}万" for c in reversed(cars))+'。']
             state['drafts'].append(deepcopy(result))
         return {'ok':True,'status':200,'response_text':json.dumps(result,ensure_ascii=False),'usage':{'prompt_tokens':100,'completion_tokens':50}}
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
@@ -143,9 +148,12 @@ def generate(bid):
         value=c3_service.generate_for_batch(db,batch_id=bid,expected_generation_attempt=claim['attempt'],native_client_admitted=True);db.commit();return value
 
 
-@pytest.mark.parametrize('scenario',['normal','explicit','recover','failover','unit_conflict','review_timeout','sort_omitted','legacy'])
+@pytest.mark.parametrize('scenario',['normal','explicit','recover','failover','unit_conflict','review_timeout','wrong_order','legacy'])
 def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_brain,scenario):
     state=actual_brain;state['scenario']=scenario
+    if scenario=='wrong_order':
+        from test_program_preparation_pipeline import listed
+        listed('第二辆排序测试车', 10.0)
     w,p,b,bid=created(monkeypatch)
     with SessionLocal() as db:
         batch=db.get(MessageBatch,bid)
@@ -173,9 +181,9 @@ def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_
         totals=snap['generation_accounting_totals'];assert totals['recorded_attempt_count']==1
         assert totals['logical_call_count']==accounting['logical_call_count'] and totals['call_counts_complete']
         actions=list(db.scalars(select(ReplyAction)))
-    if scenario in {'unit_conflict','review_timeout','sort_omitted'}:
+    if scenario in {'unit_conflict','review_timeout','wrong_order'}:
         assert result['decision']=='retry_later' and not actions
-        assert accounting['failure_category']=={'unit_conflict':'query_contract','review_timeout':'service_unavailable','sort_omitted':'content_review'}[scenario]
+        assert accounting['failure_category']=={'unit_conflict':'query_contract','review_timeout':'service_unavailable','wrong_order':'content_review'}[scenario]
         if scenario=='unit_conflict':assert not state['receipts']
         if scenario=='review_timeout':assert not any('repair' in x['stage'] for x in accounting['logical_calls'])
     else:
@@ -186,7 +194,7 @@ def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_
         if scenario in {'recover','failover'}:assert accounting['completion_outcome']=='recovered'
         if scenario=='normal':assert accounting['completion_outcome']=='first_pass'
         if scenario=='recover':
-            assert accounting['http_attempt_count']==5
+            assert accounting['http_attempt_count']==4 and not state['reviews']
             assert '503' in json.dumps(model['catalog_stages']['understanding'])
             assert any(x['failure_category']=='service_unavailable' for x in accounting['http_attempts'])
 

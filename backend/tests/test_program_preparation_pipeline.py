@@ -151,7 +151,7 @@ def test_explicit_capacity_failure_uses_single_handoff_without_retry(monkeypatch
         assert n['no_visible_reply']['failure_category']=='input_capacity_exceeded'
 
 
-@pytest.mark.parametrize('mutation',['text','plan','authority','clearance','protocol','policy_map'])
+@pytest.mark.parametrize('mutation',['text','plan','authority','clearance','protocol','policy_map','unknown_version','legacy_downgrade','guard_missing','unconsumed'])
 def test_serialized_approved_result_cannot_change_content_or_drop_review(monkeypatch,actual_brain,mutation):
     state=actual_brain;configure(monkeypatch,state,'M02','normal')
     original=pipeline.c3_service.get_ai_engine_adapter
@@ -164,6 +164,10 @@ def test_serialized_approved_result_cannot_change_content_or_drop_review(monkeyp
             elif mutation=='authority':result['reply_authority_snapshot']['content']['product_master']['items']=[]
             elif mutation=='protocol':result.pop('catalog_protocol')
             elif mutation=='policy_map':result['policy_reference_map']['statements']={}
+            elif mutation=='unknown_version':result['_catalog_clearance']['version']=99
+            elif mutation=='legacy_downgrade':result['_catalog_clearance'].pop('version')
+            elif mutation=='guard_missing':result['_catalog_clearance'].pop('guard')
+            elif mutation=='unconsumed':result['reply_check_history'].pop()
             else:result.pop('_catalog_clearance')
             return result
     monkeypatch.setattr(pipeline.c3_service,'get_ai_engine_adapter',Changed)
@@ -466,3 +470,61 @@ def test_budget_relation_integrity_reaches_final_consumers(monkeypatch,actual_br
             n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
             assert n['no_visible_reply']['failure_category']=='content_review'
             assert n['failed_draft']['errors']==n['plan_validation']['errors']
+
+
+@pytest.mark.parametrize('case,allowed', [
+    ('complete_standard', True), ('customer_requests_guarantee', True),
+    ('paraphrase_needs_review', False), ('added_guarantee', False),
+    ('condition_removed', False),
+])
+def test_offline_reviewer_separates_standard_answers_and_policy_interpretation(monkeypatch, actual_brain, case, allowed):
+    state = actual_brain
+    state['brain_config']['semantic_reviewer_enabled'] = False
+    appointment = '预约看车需提前一天联系。门店核实车源和排期后确认。'
+    finance = '贷款不能保证通过，审批结果以资方审核为准。'
+    publish_policy(appointment)
+    publish_policy(finance)
+    question = '预约看车有什么要求？'
+    reply = appointment
+    if case == 'customer_requests_guarantee':
+        question = '贷款能保证一定通过吗？'
+        reply = finance
+    elif case == 'paraphrase_needs_review':
+        reply = '预约看车请提前1天联系，门店需要先确认车源和排期。'
+    elif case == 'added_guarantee':
+        reply += '贷款保证通过。'
+    elif case == 'condition_removed':
+        reply = '预约看车需提前一天联系。'
+
+    def coverage(binding):
+        value = original_coverage(binding)
+        for scan in value['scans']:
+            for row in scan['databases'][0]['pages'][0]:
+                row['StrContent'] = question
+        return value
+
+    monkeypatch.setattr(pipeline, 'coverage', coverage)
+    monkeypatch.setattr(pipeline.native, 'coverage', coverage)
+    def transport(**kw):
+        assert kw['model'] != 'synthetic-reviewer', 'offline reviewer must never be called'
+        value = pipeline.joined.fixtures.base_plan()
+        value.update(answer_mode='direct_answer', reply_segments=[reply], understanding={'user_intent': question})
+        value.pop('facts_claimed', None)
+        value.pop('evidence_used', None)
+        return {'ok':True, 'status':200, 'response_text':json.dumps(value, ensure_ascii=False)}
+    monkeypatch.setattr(llm_config, 'call_llm_request_once_with_wall_timeout', transport)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _, _, _, bid = pipeline.created(monkeypatch)
+        assert pipeline.generate(bid)['decision'] != 'send_reply'
+    with SessionLocal() as db:
+        actions = list(db.scalars(select(ReplyAction)))
+        assert bool(actions) == allowed
+        if allowed:
+            result = db.scalar(select(MessageBatch)).ai_response_snapshot['raw_payload']['omniauto_brain_result']
+            proof = result['_catalog_clearance']
+            assert proof['method'] == 'program' and proof['source_refs']
+            assert not result.get('review_history') and 'policy_refs' not in result['brain_plan']
+            assert actions[0].reply_text == reply
+            assert [v['stage'] for v in result['reply_check_history']] == ['content_decision','consume_decision']

@@ -187,7 +187,7 @@ def test_missing_policy_refs_is_protocol_failure_for_http_and_config_replay():
     assert not reviewer.quality_reviewer_contract_is_complete(raw,policy_refs_required=True)
     result=reviewer.review_brain_reply_semantics(settings={'semantic_reviewer_enabled':True,
         'semantic_reviewer_result':raw},brain_input=inp,evidence_pack=pack,
-        plan={'reply_segments':['您好']},deterministic_quality={'ok':True})
+        plan={'reply_segments':[POLICY_TEXT]},deterministic_quality={'ok':True})
     assert not result['ok'] and result['error_kind']=='protocol',result
     assert result['contract_errors']==['policy_refs:expected_object']
 
@@ -673,3 +673,47 @@ def test_known_count_does_not_drop_budget_scope(text,allowed):
     pack,_,_=partial_year_pack(changes={'budget':{'state':'specified','mode':'upper','value':8,'source_ids':['m1']}})
     result=validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[text]},pack)
     assert result['ok']==allowed,result
+
+
+@pytest.mark.parametrize('text,allowed', [
+    ('您希望是2022年以后，还是2023年以后的？', True),
+    ('您说的年份近一点，是指近三年还是近五年？', True),
+    ('您倾向哪档：2020年以后，或者2022年以后？', True),
+    ('举个例子，您偏向2019年以后的吗？', True),
+    ('您倾向2022年以后的？合成车1是2023年上牌的，您喜欢吗？', False),
+    ('这辆车的上牌年份是2023年，您希望是2022年以后吗？', False),
+])
+def test_years_in_a_preference_do_not_authorize_an_actual_registration_year(text, allowed):
+    pack, _, _ = partial_year_pack()
+    plan = {'answer_mode':'ask_clarifying_question','reply_segments':[text]}
+    assert validate_reply_public_facts(plan, pack)['ok'] is allowed
+
+
+@pytest.mark.parametrize('last_type,claim,valid', [
+    ('hybrid','有纯电车',False), ('hybrid','有新能源车',True),
+    ('hybrid','有纯电车，您想看看吗？',False), ('hybrid','没有纯电车。',True),
+    ('electric','没有纯电车。',False), (None,'全店没有纯电车。',False),
+    ('electric','有纯电车',True), (None,'有纯电车吗？',True),
+])
+def test_claim_scope_uses_all_matching_rows_not_only_displayed_examples(last_type, claim, valid):
+    rows = [row(str(i), i + 1, energy_type='hybrid') for i in range(10)]
+    rows[-1]['data']['additional_details']['energy_type'] = last_type
+    pack, _, receipt = partial_year_pack(rows=rows)
+    assert len(receipt['known_condition_facts']) < 10
+    assert receipt['known_energy_counts']['electric'] == int(last_type == 'electric')
+    assert validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[claim]},pack)['ok'] == valid
+
+
+@pytest.mark.parametrize('declared', [None,'price_asc','budget_distance'])
+def test_frozen_customer_order_survives_the_semantic_supplement(declared):
+    pack, prep, inp, runtime = prepared('总价8万以内，便宜的先推荐。', history=['只看纯电车'])
+    assert prep['route'] == 'semantic'
+    raw = {'operation':'search','requirement_state':'clear','budget':{'state':'specified','mode':'upper','value':8,'source_ids':['m1']},
+           'filters':[{'field':'energy_type','op':'eq','value':'electric','source_ids':['h0']}],
+           'name_queries':[], 'reference_ids':[], 'exclude_ids':[], 'source_ids':['h0','m1'],
+           'unsupported_requirements':[],'interpretation':'纯电，总价不超过八万'}
+    if declared:
+        raw['sort'] = {'value':declared,'source_ids':['m1']}
+    query = cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT)
+    assert query['raw_model_query'] == raw
+    assert (query['sort'],query['sort_origin'],query['sort_source_ids']) == ('price_asc','customer_explicit',['m1'])

@@ -119,6 +119,18 @@ def query_instruction(contract: str = PROTOCOL, *, understanding_only: bool = Fa
     return common + "\n" + query_format_instruction(contract)
 
 
+_CHEAP_FIRST = re.compile(r"便宜的?先(?:给我看|看|推荐)?|价格从低到高|从低到高|低价优先")
+
+
+def explicit_cheap_first(text):
+    """Locate the existing explicit order without treating a negation as a request."""
+    for match in _CHEAP_FIRST.finditer(text):
+        clause = re.split(r"[。；;，,！？!?]", text[:match.start()])[-1]
+        if not re.search(r"不|别|取消|之前|原来|以前|如果|假如|是否", clause):
+            return match
+    return None
+
+
 def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None,
                           contract: str = PROTOCOL) -> dict:
     """Adapt trusted wire identity once; never infer a contract from model fields."""
@@ -165,7 +177,17 @@ def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | No
             explicit_budget = explicit_total_budget(source["content"])
     if explicit_budget and query["budget_bounds"] != {k: v for k, v in explicit_budget.as_dict().items() if k != "kind"}:
         raise CatalogQueryError("budget_conflicts_with_explicit_source", fields=["budget", "budget.source_ids"])
-    if not explicit and query["budget_bounds"]:
+    # The semantic supplement can omit or mistranslate an explicit preference.
+    # Check the latest frozen customer instruction with the direct route's
+    # parser; retain the original model payload as evidence of that difference.
+    latest = next((item for item in reversed(sources) if item.get("sender") in ("customer", "client")), None)
+    if latest and explicit_cheap_first(budget_statement(latest["content"])["remainder"]):
+        query["sort"] = "price_asc"
+        sort_sources = [latest["id"]]
+        if latest["id"] not in query["source_ids"]:
+            query["source_ids"].append(latest["id"])
+        explicit = True
+    elif not explicit and query["budget_bounds"]:
         query["sort"] = "budget_distance"
     query.update(model_query_contract=contract, raw_model_query=deepcopy(raw),
                  sort_origin="customer_explicit" if explicit else "program_default",
@@ -285,7 +307,7 @@ def _prepare_catalog_need(evidence: dict) -> dict:
             continue
         parsed = budget_statement(text)
         remainder = parsed["remainder"]
-        explicit_sort = re.search(r"便宜的?先(?:给我看|看|推荐)?|价格从低到高|从低到高|低价优先", remainder)
+        explicit_sort = explicit_cheap_first(remainder)
         if explicit_sort:
             sort = {"value": "price_asc", "source_ids": [message["id"]]}
             remainder = remainder[:explicit_sort.start()] + " " * len(explicit_sort.group()) + remainder[explicit_sort.end():]
@@ -600,6 +622,17 @@ RECEIPT_INSTRUCTION = (
 )
 
 
+def _energy_distribution(values, unresolved=0):
+    """Aggregate before truncation. Unknown records cannot establish absence."""
+    counts = dict.fromkeys(ENERGY_TYPES, 0)
+    for value in values:
+        if value in counts:
+            counts[value] += 1
+        else:
+            unresolved += 1
+    return counts, unresolved
+
+
 def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import catalog_product_payload
     rows = inventory_snapshot(runtime)
@@ -653,6 +686,10 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
         if fits and not missing:
             payload["selection_role"] = "budget_match" if bounds else "query_match"
             matches.append(payload)
+    energy_counts, missing_energy = _energy_distribution(
+        ((p.get("public_details") or {}).get("energy_type") for p in matches), len(unknown))
+    stock_counts, stock_unknown = _energy_distribution(
+        ((r["data"].get("additional_details") or {}).get("energy_type") for r in rows))
     def rank(p):
         value = p.get("price")
         valid = type(value) in {int, float} and math.isfinite(value) and value > 0
@@ -674,6 +711,9 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
                "requirement_uncertain": query["requirement_state"] == "uncertain" or bool(blockers), "name_results": name_results,
                "evaluation_version": 1, "clarification_reasons": blockers,
                "known_conditions_evaluated": can_evaluate,
+               "stock_energy_counts": stock_counts, "stock_energy_unknown_rows": stock_unknown,
+               "known_energy_counts": energy_counts if can_evaluate else None,
+               "known_energy_unknown_rows": missing_energy if can_evaluate else None,
                "known_condition_match_count": len(matches) if can_evaluate else None,
                "known_condition_facts": [],
                "known_condition_scope": {"budget": deepcopy(query["budget"]), "filters": deepcopy(query["filters"]),
@@ -947,7 +987,17 @@ def clearance_kind(reply, evidence):
     return None
 
 
-def serialized_clearance_valid(result: dict) -> bool:
+def prepared_binding_matches(reply, plan, evidence):
+    """Identity check only: the consumer does not interpret the text again."""
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
+    proof = evidence.get("_catalog_clearance") or {}
+    return bool(isinstance(plan, dict) and clearance_kind(reply, evidence)
+                and proof.get("plan") == fingerprint(plan)
+                and proof.get("policy_map") == fingerprint(evidence.get("policy_reference_map"))
+                and reply.strip() == join_reply_segments(plan.get("reply_segments") or []).strip())
+
+
+def serialized_clearance_valid(result: dict, *, require_current=False) -> bool:
     """Recheck the existing approval across the Provider JSON boundary."""
     protocol = result.get("catalog_protocol") or {}
     if not protocol.get("preparation"):
@@ -960,7 +1010,19 @@ def serialized_clearance_valid(result: dict) -> bool:
     if not isinstance(proof, dict) or not isinstance(plan, dict) or not isinstance(snapshot, dict):
         return False
     checked_kind = proof.get("kind") in {"non_inventory", "vehicle_facts", "query_summary"}
-    if proof.get("version") == 2:
+    if "version" not in proof:
+        # The prior prepared contract consisted of exactly these six digests/
+        # fields. A damaged new proof must not be reinterpreted as an old one.
+        if require_current or set(proof) != {"kind", "reply", "protocol", "authority", "plan", "policy_map"} or result.get("reply_check_history"):
+            return False
+    elif type(proof["version"]) is not int or proof["version"] != 2:
+        return False
+    else:
+        history = result.get("reply_check_history") or []
+        if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
+            return False
+        if history[-1].get("stage") != "consume_decision" or history[-1].get("ok") is not True or history[-1].get("reply") != proof.get("reply"):
+            return False
         if not isinstance(proof.get("guard"), dict) or proof["guard"].get("allowed") is not True:
             return False
         if not isinstance(proof.get("content_result"), dict) or proof["content_result"].get("ok") is not True:
@@ -973,7 +1035,17 @@ def serialized_clearance_valid(result: dict) -> bool:
                             proof.get("source_refs") == standard_source_refs(mapping) and
                             proof.get("reason") in {"routine_reply_checked", "published_standard_answer"})
         elif proof.get("method") == "semantic":
-            checked_kind = checked_kind and proof.get("source_refs") == plan.get("policy_refs")
+            reviews = result.get("review_history") or []
+            if not reviews or not isinstance(reviews[-1], dict):
+                return False
+            reviewed = reviews[-1]
+            raw = reviewed.get("raw_result") or {}
+            request = reviewed.get("request") or {}
+            checked_kind = (checked_kind and raw.get("verdict") == "pass" and raw.get("status", "ok") == "ok"
+                            and raw.get("catalog_claim_kind") == proof.get("kind")
+                            and raw.get("policy_refs") == proof.get("source_refs") == plan.get("policy_refs")
+                            and reviewed.get("authority_sha256") == proof.get("authority")
+                            and request.get("draft_reply") == reply and request.get("policy_reference_map") == mapping)
         else:
             return False
     return bool(reply and checked_kind

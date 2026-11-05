@@ -259,7 +259,7 @@ def _known_count_scope(text: str, number: dict, receipt: dict) -> bool:
 
 def _inventory_absences(text: str):
     """Recognizable absence assertions with local polarity, not a semantic parser."""
-    pattern = re.compile(r"(?:没有|暂无|暂时没有|暂时没|未|没)(?:找到|匹配到|筛到|筛出)?(?:的)?(?:符合[^，,。；;！？!?]*?|合适的?|匹配的?|在售的?|新能源|纯电)?(?:车源|车辆|车款|车型|车子|车)")
+    pattern = re.compile(rf"(?:没有|暂无|暂时没有|暂时没|未|没)(?:找到|匹配到|筛到|筛出)?(?:的)?(?:符合[^，,。；;！？!?]*?|合适的?|匹配的?|在售的?|{_ENERGY_LABEL})?(?:车源|车辆|车款|车型|车子|车)")
     for clause in re.finditer(r"[^，,。；;！？!?]+[，,。；;！？!?]?", text):
         previous_end = 0
         for match in pattern.finditer(clause.group()):
@@ -353,22 +353,77 @@ def _display_counts(segments: list[str], products: list[dict], receipt: dict | N
     return result
 
 
+def _vehicle_year_assertion(text, number, entities):
+    """A year is not a stock fact until the sentence attributes it to a car."""
+    left = re.split(r"[，,。！？!?；;]", text[:number["start"]])[-1]
+    right = re.split(r"[，,。！？!?；;]", text[number["end"]:])[0]
+    start = number["start"] - len(left)
+    # Use the relation to the number, not the punctuation ending the sentence.
+    # A later question does not erase an earlier assertion about an actual car.
+    named = [e for e in entities if start <= e["start"] < number["start"]]
+    subject_end = named[-1]["end"] - start if named else None
+    subject = re.search(r"(?:这|那|该)(?:辆|台|款)?车(?:辆|型|源)?|(?:现车|在售车辆)", left)
+    if subject:
+        subject_end = max(subject_end or 0, subject.end())
+    if subject_end is not None:
+        relation = left[subject_end:].strip()
+        if re.fullmatch(r"(?:的|是|在|于|为|已|约|首次|实际|上牌|登记|注册|出厂|生产|时间|日期|年份|年款|车龄|有|：|:|\s)*", relation):
+            return True
+    # Explicit attribute/value assignment can stand alone in the same reply.
+    if re.search(r"(?:上牌|登记|出厂|生产)(?:年份|时间|日期)?(?:为|是|：|:)\s*$", left):
+        return True
+    # An identified vehicle following its registration date is still a claim.
+    return bool(re.match(r"(?:首次)?(?:上牌|登记|注册|出厂)(?:的)?", right) and
+                any(number["end"] <= e["start"] < number["end"] + len(right) for e in entities))
+
+
+# Energy scope uses the inventory's enum, including the broader nonfuel group.
+_ENERGY_SCOPE = {label.removeprefix("新能源"): {key} for key, label in ENERGY_TYPES.items()}
+_ENERGY_SCOPE["新能源"] = set(ENERGY_TYPES) - {"fuel"}
+_ENERGY_LABEL = "|".join(sorted(map(re.escape, {*_ENERGY_SCOPE, *ENERGY_TYPES.values()}), key=len, reverse=True))
+_PRESENCE = re.compile(
+    rf"有(?:在售)?(?P<kind>{_ENERGY_LABEL})?(?:现车|车源|车辆|车型|车)"
+    rf"|(?P<topic>{_ENERGY_LABEL})(?:车型?|车源)?[^，。；！？]{{0,7}}?(?:是有的|有现车|有车源)")
+
+
+def _energy_present(receipt, label, *, whole_stock=False):
+    """True/False only when the receipt proves it. Old/incomplete data can be unknown."""
+    kinds = _ENERGY_SCOPE.get(label.removeprefix("新能源") or "新能源", set())
+    scope = "stock" if whole_stock else "known"
+    counts = receipt.get(f"{scope}_energy_counts")
+    if not isinstance(counts, dict):
+        return None
+    if any(counts.get(k, 0) for k in kinds):
+        return True
+    if receipt.get(f"{scope}_energy_unknown_rows") == 0:
+        return False
+    return None
+
+
 def _inventory_assertion_errors(text, receipt):
     """Check an explicit existence or resolved-condition assertion at its stated scope."""
     from apps.wechat_ai_customer_service.workflows.catalog_query import receipt_state
     partial = receipt_state(receipt) != "complete"
     for clause in re.split(r"[。；;，,]", text):
-        if re.search(r"[？?]|是否|有没有|尚未|暂未|不能确认|待核实|需核实|还没", clause):
-            continue
-        if partial and re.search(r"(?:车|款|车型).{0,5}(?:都|均|已)?(?:符合|满足).{0,14}(?:年份|车龄|全部条件|所有条件)", clause):
+        qualified = re.search(r"(?:尚未|暂未|不能确认|待核实|需核实|还没|是否|有没有)[^。；！？]*$", clause)
+        if partial and not qualified and re.search(r"(?:车|款|车型).{0,5}(?:都|均|已)?(?:符合|满足).{0,14}(?:年份|车龄|全部条件|所有条件)", clause):
             yield "unverified_full_condition_match"
         # A positive inventory assertion is distinct from speaking about
         # missing records or asking about a customer's requirements.
-        claim = re.search(r"(?:有(?:在售|新能源|纯电|现){0,2}车(?:源|型)?|(?:新能源车?|纯电车?|在售车源).{0,7}(?:是有的|有现车|有车源))", clause)
-        if claim and not re.search(r"没|无|不|是否", clause[:claim.start()+1]):
-            count = receipt.get("known_condition_match_count") if partial else receipt.get("match_count")
-            if not receipt.get("scan_complete") or not isinstance(count,int) or count <= 0:
-                yield "inventory_presence_not_verified"
+        for claim in _PRESENCE.finditer(clause):
+            before, after = clause[:claim.start()], clause[claim.end():]
+            if (re.search(r"(?:没|无|不|是否|能否|不能确认|不能说|无法确认|不代表|不等于)$", before)
+                    or re.fullmatch(r"[吗么呢]?\s*[？?]", after)):
+                continue
+            label = claim["kind"] or claim["topic"]
+            if label:
+                if _energy_present(receipt, label, whole_stock="全店" in before) is False:
+                    yield "inventory_presence_scope_contradicted"
+            else:
+                count = receipt.get("known_condition_match_count") if partial else receipt.get("match_count")
+                if count == 0 and not receipt.get("unknown_field_count"):
+                    yield "inventory_presence_not_verified"
+
 
 
 def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation: dict | None = None) -> dict:
@@ -440,11 +495,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         entities = _reply_references(segment, _reply_entities(segment, products), prior_entities)
         numbers = factual_number_spans(segment, excluded=[(e["start"], e["end"]) for e in entities])
         # A customer preference question is not an assertion about a car's year.
-        preferences = list(re.finditer(
-            r"(?:您|你)(?:更)?(?:希望|想要|倾向于?|考虑)[^，,。！？!?；;]{0,48}?[？?]", segment))
-        numbers = [n for n in numbers if not (n["unit"] == "年" and any(
-            m.start() <= n["start"] < m.end() and not any(m.start() <= e["start"] < m.end() for e in entities)
-            for m in preferences))]
+        numbers = [n for n in numbers if n["unit"] != "年" or
+                   _vehicle_year_assertion(segment, n, entities) or policy_number(n, segment_index)]
         owners = _number_entity_owners(segment, entities, numbers)
         budget_spans = _customer_budget_spans(segment, entities, (receipt.get("query") or {}).get("budget") or {})
         if entities:
@@ -573,13 +625,28 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                                 "role_candidates": [amount_role(segment, number["start"]), "catalog_aggregate"],
                                 "query_id": receipt.get("query_id"),
                                 "rejection_reason": None if valid else "no_matching_authority_for_role_and_scope"})
-            if not valid and (number["unit"] is not None or local_entities):
+            local_text = re.split(r"[。！？!?；;]", segment[clause_start:])[0]
+            role = amount_role(segment, number["start"])
+            policy_statement = any(si == segment_index and lo <= number["start"] < hi
+                                   for si, lo, hi in (formal_validation or {}).get("policy_statements", []))
+            asserted_quantity = (local_entities or role or policy_statement or number["unit"] == "年" or
+                                 re.search(r"共|合计|符合|条件|查到|匹配|在售|库存|最低|最高|价[位格]|预算|区间|报价|服务费|定金|首付|月供", local_text))
+            if not valid and asserted_quantity:
                 errors.append("unverified_reply_numeric_fact")
         # Negative inventory statements still assert a result, even with no
         # digits. Unknown conditions or nonzero results cannot authorize them.
         errors.extend(_inventory_assertion_errors(segment, receipt))
-        if any(_inventory_absences(segment)) and (not aggregate_ready(receipt) or receipt.get("match_count") != 0):
-            errors.append("inventory_absence_not_verified")
+        for start, end in _inventory_absences(segment):
+            category = re.search(_ENERGY_LABEL, segment[start:end])
+            whole_stock = "全店" in re.split(r"[，,。；;！？!?]", segment[:start])[-1]
+            if category:
+                verified_absence = _energy_present(receipt, category.group(), whole_stock=whole_stock) is False
+            elif whole_stock:
+                verified_absence = receipt.get("scan_complete") and receipt.get("scanned_count") == 0
+            else:
+                verified_absence = aggregate_ready(receipt) and receipt.get("match_count") == 0
+            if not verified_absence:
+                errors.append("inventory_absence_not_verified")
         if (not entities and aggregate_ready(receipt) and receipt.get("match_count") == 0
                 and re.search(r"(?:没有|暂无|未找到|没找到)(?:符合[^。！？]*|合适的?|匹配的?|在售的?)?(?:车|车源)", segment)):
             add("catalog_match_count", 0, "catalog_query", receipt["query_id"])
