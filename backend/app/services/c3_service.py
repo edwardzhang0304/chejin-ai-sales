@@ -959,6 +959,48 @@ def bind_message_batch_continuation(
     }
 
 
+def _paused_read_reply_continuation(db: Session, worker: Worker, batch: MessageBatch,
+                                    binding: WechatSessionBinding, action: ReplyAction | None) -> bool:
+    """An original OCR reply may drain; a pause never grants a fresh batch.
+
+    The first physical-send permit must have been issued inside this registered
+    Flow, before its pause. All timestamps are server-owned; an older reply or a
+    new Flow for the same customer cannot borrow that permit.
+    """
+    from app.services.worker_service import worker_can_claim
+    flow = worker.inflight_flow_state or {}
+    if not (worker.run_status == "paused" and flow.get("status") == "draining"
+            and flow.get("flow_kind") == "c2_read" and flow.get("flow_id")
+            and flow["flow_id"] == binding.last_read_run_id
+            and flow.get("conversation_id") == batch.conversation_id
+            and action and action.current and action.segment_index > 1
+            and action.generation_no == batch.generation_no
+            and worker_can_claim(worker, allow_registered_draining_flow=True)[0]):
+        return False
+    first = db.scalar(select(ReplyAction).where(
+        ReplyAction.batch_id == batch.id, ReplyAction.generation_no == batch.generation_no,
+        ReplyAction.segment_index == 1, ReplyAction.deleted_at.is_(None)))
+    if not (first and first.status == "sent" and first.sending_claimed_at
+            and first.claimed_by_worker_id == worker.id):
+        return False
+    try:
+        registered = datetime.fromisoformat(flow["registered_at"])
+        paused = datetime.fromisoformat(flow["pause_requested_at"])
+        claimed = first.sending_claimed_at
+        claimed = claimed if claimed.tzinfo else claimed.replace(tzinfo=timezone.utc)
+        if not registered <= claimed <= paused:
+            return False
+    except (KeyError, ValueError, TypeError):
+        return False
+    try:
+        require_current_segment(db, action, worker)
+    except AppError:
+        return False
+    return bool(db.scalar(select(SentAck.id).where(
+        SentAck.reply_action_id == first.id, SentAck.worker_id == worker.id,
+        SentAck.send_result == "sent")))
+
+
 def message_batch_continuation_authorization(
     db: Session,
     *,
@@ -1037,7 +1079,8 @@ def message_batch_continuation_authorization(
         token_matches
         and revision_matches
         and worker.id == binding.worker_id
-        and worker.run_status == "running"
+        and (worker.run_status == "running"
+             or _paused_read_reply_continuation(db, worker, batch, binding, action))
         and binding.bind_status == "bound"
         and binding.listen_status in {"listening", "degraded"}
         and binding.allow_listening
@@ -4112,9 +4155,10 @@ def validate_chat_reply_task_claim(
     *,
     claim_source: str | None,
     conversation_id: str | None,
-) -> None:
+) -> bool:
+    """Validate the claim; return whether it belongs to the registered native reply."""
     if task.task_type != TaskType.chat_reply.value:
-        return
+        return False
     if not task.reply_action_id:
         raise AppError("REPLY_ACTION_NOT_FOUND", "chat_reply 任务缺少 reply_action_id", 409, {"suggested_action": "cancel_task"})
     action = db.get(ReplyAction, task.reply_action_id)
@@ -4129,7 +4173,8 @@ def validate_chat_reply_task_claim(
         origin=db.get(Task,flow.get('flow_id'))
         origin_action=db.get(ReplyAction,origin.reply_action_id) if origin else None
         native_claim=(flow.get('flow_kind')=='chat_reply' and flow.get('conversation_id')==action.conversation_id
-            and origin_action is not None and origin_action.batch_id==action.batch_id)
+            and origin_action is not None and origin_action.batch_id==action.batch_id
+            and origin_action.generation_no==action.generation_no)
     if (not native_claim and str(claim_source or "") != "c2_conversation_flow") or str(conversation_id or "") != action.conversation_id:
         raise AppError(
             "C2_REPLY_TASK_FLOW_OWNERSHIP_REQUIRED",
@@ -4150,6 +4195,7 @@ def validate_chat_reply_task_claim(
         raise AppError("REPLY_ACTION_EXPIRED", "回复动作已过期", 409, {"suggested_action": "do_not_send"})
     if task.worker_id and task.worker_id != worker.id:
         raise AppError("TASK_WORKER_MISMATCH", "该 chat_reply 任务已指定其他 Worker", 409, {"suggested_action": "do_not_send"})
+    return native_claim
 
 
 def claim_send(

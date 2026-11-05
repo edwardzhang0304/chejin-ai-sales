@@ -24,6 +24,7 @@ def environment(tmp_path, monkeypatch):
         return True
     runner.preserve_update_stop = preserve_stop
     runner.set_run_status = lambda value: setattr(runner.binding, 'run_status', value)
+    runner.sync_update_stop = lambda: runner.set_run_status(runner.binding.run_status)
     control = {'update_no_new_work': False, 'inflight_flow_id': None}
     durable = dict(ZERO_DURABLE)
     monkeypatch.setattr(runner_module, 'load_runtime_control', lambda: dict(control))

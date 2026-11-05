@@ -94,6 +94,10 @@ class FakeRunner:
             self.binding.run_status = status  # type: ignore[assignment]
         return True
 
+    def sync_update_stop(self):
+        if self.binding:
+            self.set_run_status(self.binding.run_status)
+
     def update_install_safety_snapshot(self):
         self.events.append("safety")
         return {

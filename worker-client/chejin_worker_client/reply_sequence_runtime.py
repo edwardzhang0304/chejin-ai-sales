@@ -1,7 +1,7 @@
 """Continue an existing reply group only from the normal Worker task loop.
 
-Crash recovery itself remains receipt-only. It leaves this original Flow open
-until the normal loop has a healthy, running client and settled durable facts.
+Crash recovery itself remains receipt-only. The normal loop needs a healthy,
+running client, or the exact original reply owned by an active update drain.
 """
 from .models import WechatReadTarget
 from .storage import load_c2_state, load_runtime_control, save_c2_state
@@ -181,7 +181,8 @@ def resume_reply_sequence(runner, binding):
         if binding.run_status == "faulted":
             _finish_settled_sequence(runner, binding, flow_id)
             return True
-        if binding.run_status != "running" or control.get("pause_requested") or control.get("update_no_new_work"):
+        if ((binding.run_status != "running" or control.get("pause_requested") or control.get("update_no_new_work"))
+                and not runner.update_flow_continuation_allowed(flow_id)):
             return True
         authorization = status.get("authorization") or {}
         if not authorization.get("allowed"):

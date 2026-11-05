@@ -1270,7 +1270,7 @@ class UpdateCoordinator:
             binding = self.binding_provider()
             if binding is not None:
                 paused_for_update = True
-                self.runner.set_run_status("faulted" if binding.run_status == "faulted" else "paused")
+                self.runner.sync_update_stop()
             self._adopt_cached_download(initial)
             if self._stop.is_set():
                 raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")

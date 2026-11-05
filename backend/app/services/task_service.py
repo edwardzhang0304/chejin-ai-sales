@@ -909,10 +909,11 @@ def claim_task(
         raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
     if not worker.enabled:
         raise AppError("WORKER_DISABLED_CANNOT_CLAIM", "已停用 Worker 不可领取任务", 400)
+    native_reply_continuation = False
     if task.task_type == TaskType.chat_reply.value:
         from app.services.c3_service import validate_chat_reply_task_claim
 
-        validate_chat_reply_task_claim(
+        native_reply_continuation = validate_chat_reply_task_claim(
             db,
             task,
             worker,
@@ -926,6 +927,8 @@ def claim_task(
             worker,
             allow_registered_draining_flow=(
                 allow_registered_draining_flow
+                or (native_reply_continuation and worker.run_status == "paused"
+                    and (worker.inflight_flow_state or {}).get("status") == "draining")
             ),
         )
         if not can_claim:

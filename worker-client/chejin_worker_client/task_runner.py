@@ -4053,6 +4053,9 @@ class TaskRunner:
         self._update_cycle_lock = threading.RLock()
         self._update_active_cycles = 0
         self._update_quiescing_request_id: str | None = None
+        self._update_original_flow_id: str | None = None
+        self._update_original_revision: int | None = None
+        self._update_stop_revision: int | None = None
         self.reply_send_ack_lock = threading.Lock()
         self.c2_outbox_lock = threading.RLock()
         self.heartbeat_interval_seconds = CONFIG.heartbeat_interval_seconds
@@ -4632,6 +4635,8 @@ class TaskRunner:
             )
             if not control.get("update_no_new_work"):
                 self._update_quiescing_request_id = None
+                self._update_original_flow_id = None
+                self._update_original_revision = self._update_stop_revision = None
             return control
 
     def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
@@ -4745,7 +4750,7 @@ class TaskRunner:
             return None
 
     @contextmanager
-    def update_background_cycle(self):
+    def update_background_cycle(self, *, settlement_only: bool = False):
         """Reserve a background iteration before update intent can close intake.
 
         This lock covers only registration, never network/WeChat work. An
@@ -4753,7 +4758,8 @@ class TaskRunner:
         waits for its counter as well as all original durable boundaries.
         """
         with self._update_cycle_lock:
-            allowed = not self.update_checks_suspended()
+            allowed = (not self.update_checks_suspended()
+                       or (settlement_only and self._update_settlement_pending()))
             if allowed:
                 self._update_active_cycles += 1
         try:
@@ -4768,6 +4774,42 @@ class TaskRunner:
         # startup health checks while the persisted no-new-business gate stays
         # closed until the authenticated update result is reconciled.
         return self._update_quiescing_request_id is not None
+
+    def _update_settlement_pending(self) -> bool:
+        """Only persisted work can keep a settlement consumer alive."""
+        if load_runtime_control().get('inflight_flow_id') or self._pending_flow_finish:
+            return True
+        if any(update_install_business_blockers().values()):
+            return True
+        services = self.hook_services
+        if services is not None:
+            from .storage import hook_update_business_blockers
+            prepared = services.connection.prepared
+            generation = prepared.registration.scope.process_generation if prepared else None
+            return any(hook_update_business_blockers(generation).values())
+        return False
+
+    def update_flow_continuation_allowed(self, flow_id: str | None) -> bool:
+        """Update may finish this original reply; it never grants a new Flow."""
+        return bool(self.update_checks_suspended() and flow_id
+                    and flow_id == self._update_original_flow_id
+                    and self._run_status_revision == self._update_stop_revision
+                    and load_runtime_control().get('update_no_new_work')
+                    and self.binding and self.binding.run_status == 'paused'
+                    and self._can_continue_inflight_flow(flow_id))
+
+    def update_read_retry_revision(self) -> int:
+        # Update's own pause must not reset/cancel the original reply's proven
+        # unsent-read budget. A subsequent operator/fault intent still fences it.
+        if (self._run_status_revision == self._update_stop_revision
+                and self.update_flow_continuation_allowed(self._update_original_flow_id)):
+            return self._update_original_revision
+        return self._run_status_revision
+
+    def sync_update_stop(self) -> None:
+        """Acknowledge the already-persisted stop, without creating a new intent."""
+        if self._pending_run_status_sync in {'paused', 'faulted'}:
+            self._sync_pending_run_status(force=True)
 
     def update_check_safety_snapshot(self) -> dict[str, Any]:
         # Request admission is independent of WeChat readiness/activity.
@@ -4810,8 +4852,14 @@ class TaskRunner:
             # A crash at any later boundary must restart stopped, even if no
             # update gate/result has been written yet. This performs no I/O to
             # WeChat or the backend; the usual status ACK runs asynchronously.
-            if not self.preserve_update_stop():
-                raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
+            with self._run_status_intent_lock:
+                original_revision = self._run_status_revision
+                original_flow_id = load_runtime_control().get('inflight_flow_id')
+                if not self.preserve_update_stop():
+                    raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
+                self._update_original_revision = original_revision
+                self._update_stop_revision = self._run_status_revision
+                self._update_original_flow_id = original_flow_id
             state = begin_request()
             set_update_new_work_gate(True, update_request_id=state['update_request_id'])
             self._update_quiescing_request_id = state['update_request_id']
@@ -7167,10 +7215,12 @@ class TaskRunner:
                     self._pending_run_status_sync = binding.run_status
                     return
                 self._backend_confirmed_run_status = str(profile.run_status or "") or None
-                self._apply_local_run_status(profile.run_status)
+                self._apply_local_run_status(profile.run_status, new_intent=False)
                 self._pending_run_status_sync = None
                 self.run_status_sync_error = None
                 self.on_profile(profile)
+                self._backend_inflight_flow_state = dict(profile.inflight_flow_state or {})
+                self._backend_pending_read_recovery = dict(getattr(profile, 'pending_read_recovery', {}) or {})
         except Exception as exc:
             if self._handle_binding_invalid(exc, binding):
                 return
@@ -7387,7 +7437,22 @@ class TaskRunner:
                 self.stop_event.wait(self.poll_interval_seconds)
 
     def tick_once(self) -> None:
-        with self.update_background_cycle() as admitted:
+        with self.update_background_cycle(settlement_only=self.hook_services is None) as admitted:
+            if self.update_checks_suspended():
+                if self._pending_run_status_sync in {"paused", "faulted"}:
+                    self._sync_pending_run_status()
+                if admitted and self.hook_services is None and self.binding:
+                    # OCR's existing outboxes and original sequence are also
+                    # consumers. Never enter the probe/pull/scan tick here.
+                    try:
+                        self._replay_reply_send_ack_outbox(self.binding)
+                        self._replay_c2_outbox(self.binding)
+                        self._reconcile_restart_inflight_flow(self.binding)
+                        from .reply_sequence_runtime import resume_reply_sequence
+                        resume_reply_sequence(self, self.binding)
+                    except Exception as exc:
+                        self._handle_restart_recovery_exception(self.binding, exc)
+                return
             if not admitted:
                 # Stop acknowledgement is a backend-only operation; it must
                 # not depend on a live/logged-in WeChat or perform recovery UI.
@@ -9570,11 +9635,13 @@ class TaskRunner:
         def cancelled() -> bool:
             active = self.binding
             runtime = load_runtime_control()
-            return bool(cancel_check() or not active or active.run_status != "running"
+            update_continuation = self.update_flow_continuation_allowed(runtime.get('inflight_flow_id'))
+            return bool(cancel_check() or not active
+                        or (not update_continuation and (active.run_status != "running"
+                            or runtime.get("pause_requested") or runtime.get("update_no_new_work")))
                         or self._run_status_revision != revision
                         or (active.worker_id, active.client_instance_id, active.bound_at) != binding_identity
                         or (target.conversation_id, target.remark_code, target.authorization_revision) != authorization
-                        or runtime.get("pause_requested") or runtime.get("update_no_new_work")
                         or self._fault_recovery_processing)
 
         def still_authorized() -> bool:
@@ -19038,7 +19105,8 @@ class TaskRunner:
             sequence_action = status.get("reply_action") or {}
             if (int(sequence_action.get("segment_index") or 1) > 1
                     and (binding.run_status != "running" or load_runtime_control().get("pause_requested")
-                         or load_runtime_control().get("update_no_new_work"))):
+                         or load_runtime_control().get("update_no_new_work"))
+                    and not self.update_flow_continuation_allowed(flow_id)):
                 return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_paused"}
             if not self._batch_authorization_allows_target(status, target):
                 return {

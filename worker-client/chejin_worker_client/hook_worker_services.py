@@ -94,6 +94,14 @@ class HookWorkerServices:
             on_persistence_failure()
         self.connection.on_persistence_failure = persistence_failed
 
+    def _configure_read_retry(self, runner) -> None:
+        gateway = self.connection.gateway
+        gateway.retry_intent = lambda: self._retry_instance + ':' + str(runner.update_read_retry_revision())
+        gateway.retry_allowed = lambda: (not runner.stop_event.is_set()
+            and not emergency_stop_requested()
+            and (not storage.load_runtime_control().get('update_no_new_work')
+                 or runner.update_flow_continuation_allowed(storage.load_runtime_control().get('inflight_flow_id'))))
+
     def tick(self, runner) -> None:
         """Connection/heartbeat only. Pause and fault never suspend raw persistence."""
         binding = runner.binding
@@ -109,10 +117,7 @@ class HookWorkerServices:
         if captured != self._credentials:
             raise ValueError("HOOK_RUNTIME_BINDING_CHANGED")
         gateway=self.connection.gateway
-        gateway.retry_intent=lambda: self._retry_instance+':'+str(runner._run_status_revision)
-        gateway.retry_allowed=lambda: (not runner.stop_event.is_set()
-            and not emergency_stop_requested()
-            and not storage.load_runtime_control().get('update_no_new_work'))
+        self._configure_read_retry(runner)
         if self._recheck_requested.is_set():
             self._recheck_requested.clear()
             if gateway.retry_allowed() and self._local_query_wait:
@@ -353,7 +358,7 @@ class HookWorkerServices:
             binding = runner.binding
             if binding is not None:
                 try:
-                    with runner.update_background_cycle() as admitted:
+                    with runner.update_background_cycle(settlement_only=True) as admitted:
                         if admitted:
                             self.dispatcher.tick(runner,self)
                 except HookRuntimeStopping:
