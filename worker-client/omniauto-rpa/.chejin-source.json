@@ -683,7 +683,7 @@
   ],
   "current_release": {
     "version": "0.10.31",
-    "source_commit": "c941dfd6ba17228a9733b1108efe3df73c447314",
+    "source_commit": "68cf55eec8122db27c61bc561e74560694a90dd0",
     "source_state": "gray_release_candidate",
     "published": false,
     "contract_revision": "0.10.31",
@@ -692,7 +692,7 @@
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.31 manual preserve-data candidate with five integrated branch heads."
+    "note": "0.10.31 five-branch reviewed candidate plus reviewed bounded friend discovery 68cf55ee; preserve-data manual installation."
   },
   "historical_integrations": [
     {
