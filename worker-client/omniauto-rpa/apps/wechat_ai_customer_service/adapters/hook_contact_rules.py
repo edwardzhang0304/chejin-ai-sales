@@ -92,3 +92,37 @@ def inspect_bound_contact(data: Any, shortcode: str, self_wxid: str, peer_wxid: 
     if candidate.matching_objects:
         return 'unconfirmed'
     return 'remark_changed'
+
+
+def contact_observation(data: Any, shortcode: str, self_wxid: str, peer_wxid: str) -> dict:
+    """Bounded target-only comparison evidence, using the decision's own parser.
+
+    No other contact names, remarks or message bodies are retained. Truncated
+    fields carry an explicit marker and a digest; a digest is not raw evidence.
+    """
+    from .hook_contract_rules import digest
+    import hashlib
+    result = {'expected_shortcode': shortcode, 'peer_wxid': peer_wxid,
+              'response_digest': digest(data), 'peer_objects': [], 'omitted_peer_objects': 0}
+    try:
+        result['state'] = inspect_bound_contact(data, shortcode, self_wxid, peer_wxid)
+        candidate = resolve_friend_shortcode(data, shortcode, self_wxid)
+        result['shortcode_matching_objects'] = candidate.matching_objects
+        result['matched_remark_fields'] = list(candidate.matched_remark_fields)
+        peers = [v for v in _contact_objects(data) if peer_wxid in _identities(v)]
+        result['peer_object_count'] = len(peers)
+        result['omitted_peer_objects'] = max(0, len(peers)-2)
+        for peer in peers[:2]:
+            fields = []
+            selected = [(k, v) for k, v in peer.items() if _key(k) in REMARK_KEYS | IDENTITY_KEYS]
+            for key, value in selected[:16]:
+                field = {'field': key[:64], 'type': type(value).__name__}
+                if isinstance(value, str):
+                    raw = value.encode('utf-8')
+                    field.update(value=value[:256], truncated=len(value)>256,
+                                 utf8_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                fields.append(field)
+            result['peer_objects'].append({'fields': fields, 'omitted_fields': max(0,len(selected)-16)})
+    except ValueError as exc:
+        result.update(state='unconfirmed', reason_code=str(exc))
+    return result

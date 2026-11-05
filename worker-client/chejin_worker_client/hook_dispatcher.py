@@ -544,7 +544,10 @@ class HookBusinessDispatcher:
                 and inventory['run_status']!='faulted' and runner.binding.run_status!='faulted'
                 and services.startup_window_ready_for(prepared) and time.monotonic()>=self._relationship_read_due):
             self._relationship_read_due=time.monotonic()+30
-            rt.review_relationships(inventory['relationship_bindings'])
+            pending=rt.review_relationships(inventory['relationship_bindings']) or {}
+            for binding in inventory['bindings']:
+                if binding['binding_id'] in pending:
+                    binding['relationship_confirmation_pending']=pending[binding['binding_id']]
         self._adopt_flow(runner,inventory)
         byid={b['binding_id']:b for b in inventory['bindings']}
         for metadata in inventory['retained_sends']:
@@ -700,6 +703,10 @@ class HookBusinessDispatcher:
                     action=data.get('reply_action')
                     if not action or action.get('status')!='queued':continue
                     emit_progress(runner,bid,'reply_ready','done')
+                    if binding.get('relationship_confirmation_pending'):
+                        # Do not claim a global Flow for a customer awaiting a
+                        # second read. Original receipts/history still reconcile.
+                        continue
                     flow=inventory['inflight_flow']
                     if rt.active_flow_id:
                         if flow.get('conversation_id')!=binding['conversation_id']:continue
@@ -720,7 +727,7 @@ class HookBusinessDispatcher:
                     # Do not reuse this local receipt for another batch either.
                     break
             except ApiError as exc:
-                if exc.status_code==409 and exc.code in {'HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED',
+                if exc.status_code==409 and exc.code in {'HOOK_CONTACT_REMARK_CONFIRMATION_PENDING','HOOK_AUTHORIZATION_RETIRED','HOOK_CONTACT_REMARK_CHANGED',
                         'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:
                     # Inventory can race an explicit operator retirement. Only
                     # this customer's new work stops; original sends stay in

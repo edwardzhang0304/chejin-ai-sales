@@ -108,12 +108,13 @@ def inventory(db,authenticated,instance,payload):
     return {'retained_flow_terminal':retained_flow_terminal,'schema_version':'hook-native-work-v1',**payload.model_dump(),'run_status':w.run_status,
         'inflight_flow':flow,'inflight_task':current_task,'inflight_unpermitted_tasks':unpermitted,
         'inflight_batch_id':(db.get(ReplyAction,current.reply_action_id).batch_id if current and current.reply_action_id and db.get(ReplyAction,current.reply_action_id) else None),'bindings':bindings,'invitations':invitations,
-        'relationship_query_version':1,'relationship_bindings':[{k:b[k] for k in ('binding_id','binding_revision','peer_wxid','remark_code')} for b in bindings],
+        'relationship_query_version':1,'relationship_bindings':[{k:b[k] for k in ('binding_id','binding_revision','peer_wxid','remark_code')} for b in bindings if b.get('relationship_confirmation_pending')],
         'retired_evidence':retired_evidence,'retained_sends':retained,'can_send':False,'observation_query_version':1}
 
 
 def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
     """Enrich only already-authorized bindings; never grant generation/send."""
+    from app.services.hook_relationship_service import initial_check_pending
     result=[]
     for item in bindings:
         binding=db.get(WechatSessionBinding,item.get('binding_id'))
@@ -141,7 +142,8 @@ def with_open_handoffs(db,worker_id,self_wxid,account_epoch,bindings):
                       db.scalars(select(MessageEvent).where(MessageEvent.binding_id==binding.id,
                           MessageEvent.id.in_(e.trigger_message_event_ids or []),MessageEvent.sender_role=='customer'))
                       if (m.raw_payload or {}).get('native_msg_id')]} for e in events]
-        result.append({**item,'open_handoffs':records})
+        result.append({**item,'open_handoffs':records,
+                       'relationship_confirmation_pending':initial_check_pending(binding)})
     return result
 
 

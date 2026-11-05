@@ -738,7 +738,7 @@ class Collector:
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             if prefix == "receipts" and directory == self.root/"transactions"/"hook" and entry.name in {
-                                "sends", "send-receipts", "history-receipts", "history-captures",
+                                "sends", "send-receipts", "history-receipts", "history-captures", "relationship-reviews",
                             }:
                                 continue
                             if folder == artifacts(self.root) and entry.name in {
@@ -845,6 +845,8 @@ class Collector:
                 self.database(archive, name="worker_telemetry.sqlite3", tables=(
                     "telemetry_stage_events", "telemetry_process_links",
                     "telemetry_stage_attempts", "telemetry_authority_snapshots"))
+                self.tree(self.root/"transactions"/"hook"/"relationship-reviews",
+                          "receipts/hook/relationship-reviews", archive, allowed_root=self.root)
                 self.priority_recovery(archive)
                 self.priority_incidents(archive)
                 self.file(self.root/"storage-maintenance.json", "logs/storage-maintenance.json",

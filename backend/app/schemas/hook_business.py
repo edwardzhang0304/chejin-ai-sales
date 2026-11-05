@@ -151,6 +151,7 @@ class HookRecoveryRequest(HookAccountAction):
 
 
 class HookRelationshipObservation(HookAccountAction):
+    confirmation_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     binding_id: str = Field(min_length=36,max_length=36)
     binding_revision: int = Field(ge=1)
     friend_list: dict | list

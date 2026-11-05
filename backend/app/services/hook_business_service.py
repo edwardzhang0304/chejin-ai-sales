@@ -177,6 +177,7 @@ def bind_friend(db, authenticated, instance, payload):
             bind_status='bound', listen_status='listening', allow_listening=True,
             native_context={'account_epoch': w.hook_account_epoch, 'source_task_id': task.id,
                 'invite_evidence_id': proof_row.id, 'business_enabled': True,
+                'relationship_initial_check': 'pending',
                 'history_since_create_time': str(int(boundary.timestamp())) if boundary else '0',
                 **({'native_boundary_review_reason': review_reason} if review_reason else {}),
                 'history_ready': False,

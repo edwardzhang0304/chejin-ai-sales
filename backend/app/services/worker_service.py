@@ -493,6 +493,9 @@ def start_inflight_flow(
                 )
             return current
         raise AppError("WORKER_INFLIGHT_FLOW_CONFLICT", "Worker 已有其他在途流程", 409)
+    if binding is not None and payload.flow_kind == "chat_reply" and binding.native_self_wxid:
+        from app.services.hook_relationship_service import ensure_send_authorization
+        ensure_send_authorization(binding)
     state = {
         "status": "active",
         "flow_id": payload.flow_id,

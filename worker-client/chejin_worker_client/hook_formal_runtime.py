@@ -184,10 +184,19 @@ class HookFormalRuntime:
             try:
                 acknowledged=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/inflight-flow/start',state)
             except ApiError as exc:
-                if exc.status_code==409 and exc.code=='WORKER_NEW_FLOW_NOT_ALLOWED':
-                    _save(self.private_root/'flow-denials'/f"{task['id']}.json",{'flow_id':task['id'],'error_code':exc.code,
-                        'server_rejected':True,'physical_action_attempted':False})
+                if exc.status_code==409 and exc.code in {'WORKER_NEW_FLOW_NOT_ALLOWED','HOOK_CONTACT_REMARK_CONFIRMATION_PENDING'}:
+                    denial_path=self.private_root/'flow-denials'/f"{task['id']}.json"
+                    denial={'flow_id':task['id'],'error_code':exc.code,
+                        'server_rejected':True,'physical_action_attempted':False}
+                    try:
+                        _save(denial_path,denial)
+                    except FileExistsError:
+                        # Only this definite rejection receipt is replayable.
+                        # Do not replace a conflicting/partial original record.
+                        if rules.loads(denial_path.read_bytes())!=denial:
+                            raise ValueError('HOOK_FLOW_DENIAL_CONFLICT') from None
                     storage.finish_runtime_flow(task['id'])
+                    if exc.code=='HOOK_CONTACT_REMARK_CONFIRMATION_PENDING':raise
                     raise ValueError('HOOK_RUNTIME_NOT_RUNNING') from None
                 raise
             if acknowledged.get('flow_id')!=task['id'] or acknowledged.get('status') not in {'active','draining'}:
@@ -300,25 +309,72 @@ class HookFormalRuntime:
         return result
 
     def review_relationships(self, bindings):
-        from .hook_gateway import HookLocalError
-        try:
-            friends=self.gateway.friend_list(self.process,self.scope).payload
-        except HookLocalError as exc:
-            if exc.code not in {'HOOK_LOCAL_TRANSPORT_FAILED','HOOK_LOCAL_RESPONSE_INVALID',
-                                'HOOK_HTTP_RESPONSE_REJECTED','HOOK_RESPONSE_TOO_LARGE'}:
-                raise
-            storage.append_log('INFO','hook_relationship_review_unconfirmed',
-                '联系人关系暂未核实，不据此判断删除或恢复托管。',metadata={'reason_code':exc.code},include_exception_text=False)
-            return
-        for binding in bindings:
+        from .hook_relationship_evidence import save_review
+        from .shared_rules import hook_contact_rules
+        from uuid import uuid4
+        transient = {'HOOK_LOCAL_TRANSPORT_FAILED','HOOK_LOCAL_RESPONSE_INVALID',
+                     'HOOK_HTTP_RESPONSE_REJECTED','HOOK_RESPONSE_TOO_LARGE'}
+        def read():
+            attempt = {'attempt_id':uuid4().hex,'observed_at':utc_now_iso(),'stage':'read'}
             try:
-                self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/wechat/native-relationships/observe',
-                    {**self.account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
-                     'friend_list':friends,'raw_evidence_digest':rules.digest(friends)})
+                return self.gateway.friend_list(self.process,self.scope).payload, attempt, None
+            except HookLocalError as exc:
+                attempt.update(read_failed=True,reason_code=exc.code)
+                return None, attempt, exc
+        friends, first, failure = read()
+        if failure:
+            for binding in bindings:
+                save_review(self.private_root,self.account,binding,[first])
+            if failure.code not in transient:raise failure
+            return
+        pending_by_binding = {}
+        for binding in bindings:
+            attempts = []
+            token = None
+            result = None
+            current, attempt = friends, dict(first)
+            try:
+                for index in range(2):
+                    attempts.append(attempt)
+                    attempt['stage']='compare'
+                    compared = hook_contact_rules.contact_observation(current,binding['remark_code'],
+                        self.account['self_wxid'],binding['peer_wxid'])
+                    attempt['comparison']=compared
+                    capture = index > 0 or compared['state'] != 'matched'
+                    if capture:save_review(self.private_root,self.account,binding,attempts)
+                    request = {**self.account,'binding_id':binding['binding_id'],
+                        'binding_revision':binding['binding_revision'],'friend_list':current,
+                        'raw_evidence_digest':rules.digest(current)}
+                    if token:request['confirmation_token']=token
+                    attempt['stage']='post'
+                    response = self.client.call(self.credentials,'POST',
+                        f'/workers/{self.credentials.worker_id}/wechat/native-relationships/observe',request)
+                    result = {k:v for k,v in response.items() if k != 'confirmation_token'}
+                    attempt['stage']='complete'
+                    pending_by_binding[binding['binding_id']] = bool(
+                        response.get('initial_check_pending',response.get('recheck_required')))
+                    if capture or response.get('recheck_required') or response.get('comparison_evidence'):
+                        save_review(self.private_root,self.account,binding,attempts,result)
+                    if index or not response.get('recheck_required'):break
+                    token = response['confirmation_token']
+                    current, attempt, failure = read()
+                    if failure:
+                        attempts.append(attempt)
+                        save_review(self.private_root,self.account,binding,attempts,result)
+                        if failure.code not in transient:raise failure
+                        break
             except ApiError as exc:
-                if exc.status_code!=409 or exc.code not in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE'}:raise
-                # The operator may retire this exact inventory entry concurrently.
-                continue
+                attempts[-1].update(stage='post',reason_code=exc.code,
+                                    api_error={'code':exc.code,'status_code':exc.status_code})
+                save_review(self.private_root,self.account,binding,attempts,result)
+                if exc.status_code!=409 or exc.code not in {'HOOK_BINDING_PAUSED','HOOK_BINDING_REVISION_STALE',
+                        'HOOK_RELATIONSHIP_CONFIRMATION_STALE'}:raise
+            except (ValueError, TypeError) as exc:
+                # Invalid comparison data is not a confirmed remark change.
+                attempts[-1].update(reason_code='HOOK_CONTACT_COMPARISON_FAILED',error_type=type(exc).__name__)
+                save_review(self.private_root,self.account,binding,attempts,result)
+                raise
+        return pending_by_binding
 
     def delivery(self,binding):
         return HookDeliveryScope(self.credentials.worker_id,self.credentials.client_instance_id,self.scope.self_wxid,
