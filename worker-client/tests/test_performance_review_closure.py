@@ -46,7 +46,7 @@ def desktop(root, monkeypatch, **limits):
     original = diagnostic_ui.export_bundle
     with monkeypatch.context() as patch:
         patch.setattr(
-            diagnostic_ui, "export_bundle", lambda *args: original(*args, **limits)
+            diagnostic_ui, "export_bundle", lambda *args, **kwargs: original(*args, **kwargs, **limits)
         )
         job = diagnostic_ui.ExportJob(root)
         result, errors = [], []

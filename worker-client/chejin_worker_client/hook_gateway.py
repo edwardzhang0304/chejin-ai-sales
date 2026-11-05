@@ -14,7 +14,7 @@ from http.server import HTTPServer
 from threading import Thread,local
 from typing import Callable
 
-from . import hook_transport, hook_read_retry
+from . import hook_transport, hook_read_retry, hook_memory
 import uuid
 
 from . import ui_lock
@@ -167,12 +167,15 @@ class HookGateway:
                     raise hook_read_retry.ReadRetryWait('HOOK_READ_RETRY_WAIT')
             old_generation=getattr(self._call_context,'generation',None)
             old_step=getattr(self._call_context,'step',None)
+            old_process=getattr(self._call_context,'process',None)
+            self._call_context.process=process
             self._call_context.step=step
             self._call_context.generation=process.generation
             try:yield lease
             finally:
                 self._call_context.generation=old_generation
                 self._call_context.step=old_step
+                self._call_context.process=old_process
             lease.raise_if_lost()
             self._same_process(process)
         finally:
@@ -191,10 +194,16 @@ class HookGateway:
             # leaves calling; an unknown HTTP outcome leaves uncertain. Neither
             # can expire or authorize a later action in this process generation.
             reserve(process.generation, call_id, 'history_capture')
-            reader.http_session = hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
+            reader.http_session = None
             reader.call_id=call_id
             self._call_context.history_reader = reader
             try:
+                try:
+                    reader.http_session = hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
+                except BaseException as exc:
+                    hook_memory.record_gap('history_capture', exc, generation=process.generation,
+                                           action_id=call_id, operation='hook_history_capture')
+                    raise
                 yield reader
                 reader.check_budget()
                 if reader.failed:
@@ -202,8 +211,10 @@ class HookGateway:
             finally:
                 reader.closed = True
                 self._call_context.history_reader = None
-                reader.http_session.close()
-                finish(process.generation, call_id, not reader.uncertain)
+                try:
+                    if reader.http_session is not None:reader.http_session.close()
+                finally:
+                    finish(process.generation, call_id, not reader.uncertain)
 
     def _response(self,route,payload,*,uncertain_on_failure=False):
         reader = getattr(self._call_context, 'history_reader', None)
@@ -220,7 +231,8 @@ class HookGateway:
                 return self._response_http(route,payload,uncertain_on_failure=uncertain_on_failure)
             except BaseException as exc:
                 reader.failed = True
-                reader.uncertain = not isinstance(exc, HookLocalError) or self._unfinished(exc)
+                reader.uncertain = (not getattr(exc, '_hook_request_not_attempted', False)
+                    and (not isinstance(exc, HookLocalError) or self._unfinished(exc)))
                 if isinstance(exc,HookLocalError):
                     try:
                         self._read_failure(route,payload,exc)
@@ -238,35 +250,41 @@ class HookGateway:
         from .hook_active_calls import reserve,finish
         call_id=str(uuid.uuid4())
         reserve(generation,call_id,route)
+        old_action_id = getattr(self._call_context, 'action_id', None)
         self._call_context.action_id=call_id
         try:
-            result=self._response_http(route,payload,uncertain_on_failure=uncertain_on_failure)
-        except HookLocalError as exc:
-            # Persist the retry budget before releasing the call barrier. A
-            # crash or failed journal commit can only retain isolation, never
-            # create an uncounted retry on the next Worker start.
             try:
-                self._read_failure(route,payload,exc)
-            except hook_read_retry.ReadRetryWait:
-                finish(generation,call_id,True)
+                result=self._response_http(route,payload,uncertain_on_failure=uncertain_on_failure)
+            except HookLocalError as exc:
+                # Persist the retry budget before releasing the call barrier. A
+                # crash or failed journal commit can only retain isolation, never
+                # create an uncounted retry on the next Worker start.
+                try:
+                    self._read_failure(route,payload,exc)
+                except hook_read_retry.ReadRetryWait:
+                    finish(generation,call_id,True)
+                    raise
+                except BaseException:
+                    finish(generation,call_id,False)
+                    raise
+                finish(generation,call_id,not self._unfinished(exc))
                 raise
-            except BaseException:
-                finish(generation,call_id,False)
+            except BaseException as exc:
+                finish(generation,call_id,bool(getattr(exc, '_hook_request_not_attempted', False)))
                 raise
-            finish(generation,call_id,not self._unfinished(exc))
-            raise
-        except BaseException:
-            finish(generation,call_id,False)
-            raise
-        finish(generation,call_id,True)
-        return result
+            finish(generation,call_id,True)
+            return result
+        finally:
+            self._call_context.action_id = old_action_id
 
     @staticmethod
     def _unfinished(error):
+        if getattr(error, '_hook_request_not_attempted', False):return False
         return error.outcome_unknown or getattr(error,'delivery',None)=='unknown' or (error.code == 'HOOK_LOCAL_TRANSPORT_FAILED'
             and getattr(error,'delivery',None) != 'not_sent')
 
     def _read_failure(self,route,payload,error):
+        if getattr(error, '_hook_request_not_attempted', False):return
         if (getattr(error,'delivery',None)=='not_sent'
                 and getattr(self._call_context,'step',None) in hook_read_retry.READ_STEPS):
             reader=getattr(self._call_context,'history_reader',None)
@@ -277,36 +295,68 @@ class HookGateway:
                 transport_event_id=error.transport_event_id)
 
     def _response_http(self, route: str, payload: dict, *, uncertain_on_failure: bool = False) -> HookLocalResponse:
-        if route not in {"IsLoginStatus", "ConfigureMsgReciveFullURL", "GetDBHandleAndPath", "QueryDB", "SendTextMsg", "GetFriendAndChatRoomList", "Voice2Text"}:
+        if route not in {"IsLoginStatus", "ConfigureMsgReciveFullURL", "GetDBHandleAndPath", "QueryDB", "SendTextMsg", "GetFriendAndChatRoomList", "Voice2Text", *hook_memory.DIAGNOSTIC_ROUTES}:
             raise HookLocalError("HOOK_ROUTE_NOT_ALLOWED")
+        if route in hook_memory.DIAGNOSTIC_ROUTES and (
+                getattr(self._call_context, 'step', None) != 'hook_memory_probe'
+                or getattr(self._call_context, 'generation', None) is None or payload != {}):
+            raise HookLocalError("HOOK_MEMORY_PROBE_NOT_AUTHORIZED")
         reader = getattr(self._call_context,'history_reader',None)
-        conn = reader.http_session if reader else hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
-        generation = getattr(self._call_context,'generation',None)
-        action_id = reader.call_id if reader else getattr(self._call_context,'action_id',None)
-        request_evidence={'request_sha256':hook_read_retry.fingerprint(route,payload),
-                          'operation':getattr(self._call_context,'step',None)}
+        conn = None
+        request_evidence = {}
         try:
+            try:
+                conn = reader.http_session if reader else hook_transport.connection(self.deployment.hook_api_port,self.timeout_seconds)
+                generation = getattr(self._call_context,'generation',None)
+                action_id = reader.call_id if reader else getattr(self._call_context,'action_id',None)
+                process = getattr(self._call_context, 'process', None)
+                memory_before = hook_memory.sample_pair(process)
+                request_evidence={'request_sha256':hook_read_retry.fingerprint(route,payload),
+                                  'operation':getattr(self._call_context,'step',None)}
+                event_id = hook_read_retry.record_transport(generation, action_id, route, {
+                    **request_evidence, 'phase': 'in_flight', 'delivery': 'unknown',
+                    'memory': {'schema': 1, 'before': memory_before, 'after': None,
+                               'delta_bytes': None, 'attribution': 'process_net_change_not_dll_allocation',
+                               'peak_measured': False, 'delayed_release_measured': False}})
+            except BaseException as exc:
+                # No transport invocation occurred. Keep the original exception
+                # and record a gap independently; never invent a DLL unknown.
+                exc._hook_request_not_attempted = True
+                hook_memory.record_gap(route, exc,
+                    generation=getattr(self._call_context, 'generation', None),
+                    action_id=reader.call_id if reader else getattr(self._call_context, 'action_id', None),
+                    operation=getattr(self._call_context, 'step', None),
+                    request_sha256=request_evidence.get('request_sha256'))
+                raise
             raw,evidence=hook_transport.post(conn,route,payload,self.max_response_bytes)
-            evidence.update(request_evidence)
-            hook_read_retry.record_transport(generation,action_id,route,evidence)
+            evidence.update(request_evidence, phase='finished')
+            evidence['memory'] = hook_memory.comparison(memory_before, hook_memory.sample_pair(process))
+            if route in hook_memory.DIAGNOSTIC_ROUTES:
+                evidence['dll_diagnostic'] = hook_memory.provider_summary(route, raw)
+            hook_read_retry.complete_transport(event_id, evidence)
             result=HookLocalResponse(raw)
             _=result.payload
             if route!='QueryDB' or getattr(reader,'retry_subject',None) is None:
                 hook_read_retry.succeeded(generation,route,payload)
             return result
         except hook_transport.TransportFailure as exc:
-            exc.evidence.update(request_evidence)
-            event_id=hook_read_retry.record_transport(generation,action_id,route,exc.evidence)
+            exc.evidence.update(request_evidence, phase='finished')
+            exc.evidence['memory'] = hook_memory.comparison(memory_before, hook_memory.sample_pair(process))
+            if route in hook_memory.DIAGNOSTIC_ROUTES:
+                exc.evidence['dll_diagnostic'] = {'status': 'response_unavailable',
+                    'allocation_bytes_known': False}
+            hook_read_retry.complete_transport(event_id, exc.evidence)
             error=HookLocalError(exc.code,outcome_unknown=uncertain_on_failure and exc.evidence['delivery']!='not_sent')
             error.operation=route
             error.delivery=exc.evidence['delivery']
             error.transport_event_id=event_id
             error.transport_kind=exc.evidence.get('transport_kind')
             raise error from None
-        except (ValueError,RecursionError):
+        except (ValueError,RecursionError) as exc:
+            if getattr(exc, '_hook_request_not_attempted', False):raise
             raise HookLocalError('HOOK_LOCAL_RESPONSE_INVALID',outcome_unknown=uncertain_on_failure) from None
         finally:
-            if reader is None:conn.close()
+            if reader is None and conn is not None:conn.close()
 
     def _post(self, route: str, payload: dict, *, uncertain_on_failure: bool = False) -> dict:
         return self._response(route, payload, uncertain_on_failure=uncertain_on_failure).payload
@@ -334,6 +384,18 @@ class HookGateway:
     def login_status(self, process: HookProcessSnapshot) -> HookLoginStatus:
         with self._locked(process, "hook_login_check"):
             return self._login(process)
+
+    def memory_diagnostic(self, process, route, *, operator_requested=False):
+        """Explicit engineering probe only; never invoked by polling or export.
+
+        Use the same identity, lease and durable unknown-call barrier as other
+        DLL calls. A timeout must not authorize a second overlapping probe.
+        """
+        if route not in hook_memory.DIAGNOSTIC_ROUTES or operator_requested is not True:
+            raise HookLocalError("HOOK_MEMORY_PROBE_NOT_AUTHORIZED")
+        with self._locked(process, "hook_memory_probe"):
+            response = self._response(route, {}, uncertain_on_failure=True)
+            return hook_memory.provider_summary(route, response.raw_body)
 
     def register_callback(self, process: HookProcessSnapshot, scope: HookReceiveScope,
                           receiver: HTTPServer, receiver_thread: Thread) -> HookCallbackRegistration:

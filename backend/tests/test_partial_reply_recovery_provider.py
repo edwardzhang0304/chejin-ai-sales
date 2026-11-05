@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 
 import pytest
 
@@ -18,7 +19,7 @@ from app.services.reply_sequence_policy import sequence_policy
 
 
 @contextmanager
-def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False, catalog_claim_kind=None):
+def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdict="pass", malformed_review=False, review_envelope_error=None, review_envelope_after=0, require_welcome_context=False, catalog_claim_kind=None, exchange_observer=None, answer_factory=None):
     plan = {"can_answer": True, "answer_mode": "collect_customer_info",
         "understanding": {"user_intent": "合成非库存对话"}, "reply_strategy": {"style": "concise_human"},
         "evidence_used": {"common_sense_topics": ["购车注意事项"]}, "facts_claimed": [], "reply_segments": list(answer) if isinstance(answer, (list, tuple)) else [answer],
@@ -28,6 +29,7 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *_args): pass
         def do_POST(self):
+            started=time.monotonic()
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
             result = ({"verdict": review_verdict, "confidence": .99,
@@ -40,6 +42,8 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
                 # assertion and deliberately malformed response unchanged.
                 result.update(catalog_claim_kind=catalog_claim_kind or "non_inventory",
                               claim_kind="non_factual", policy_refs={})
+            elif answer_factory is not None:
+                result["reply_segments"] = list(answer_factory(payload))
             if require_welcome_context:
                 user = next(m["content"] for m in payload["messages"] if m["role"] == "user")
                 request, _ = json.JSONDecoder().raw_decode(user.lstrip())
@@ -71,6 +75,8 @@ def controlled_recovery_provider(monkeypatch, answer, requests, *, review_verdic
                     body = b'{"choices":'
             self.send_response(200); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            if exchange_observer is not None:
+                exchange_observer({'started':started,'ended':time.monotonic(),'request':payload,'response':json.loads(body)})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()

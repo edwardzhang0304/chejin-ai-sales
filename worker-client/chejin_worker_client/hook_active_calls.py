@@ -2,7 +2,7 @@
 from . import storage
 from .models import utc_now_iso
 from .hook_process import HookProcessError
-CALL_KINDS=frozenset({'history_capture','send_text','IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text'})
+CALL_KINDS=frozenset({'history_capture','send_text','IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text','DiySceneStats','SwapMemory'})
 FIELDS=('process_generation','action_id','kind','state','attempted_at','completed_at')
 
 

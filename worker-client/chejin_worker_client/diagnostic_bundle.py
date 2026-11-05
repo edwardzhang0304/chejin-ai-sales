@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -103,7 +104,8 @@ def _content_safe(value, *, ocr=False):
 
 
 class Collector:
-    def __init__(self, root, destination, progress=None, *, max_bytes=MAX_BYTES, max_seconds=MAX_SECONDS):
+    def __init__(self, root, destination, progress=None, *, max_bytes=MAX_BYTES, max_seconds=MAX_SECONDS, capture_request=None):
+        self.capture_request = capture_request
         self.root = Path(root).resolve()
         self.destination = Path(destination)
         self.progress = progress or (lambda _value: None)
@@ -149,6 +151,26 @@ class Collector:
     def evidence_issues(self, value, source):
         if not isinstance(value, dict):
             return
+        if value.get('evidence_kind') == 'memory_capture_request' and value.get('status') != 'finished':
+            state = value.get('status')
+            self.record(source, 'read_failed' if state == 'failed' else 'incomplete' if state in ('queued', 'accepted', 'running', 'timeout') else 'missing',
+                        reason=self.clean(value.get('reason')), capture_status=self.clean(state),
+                        request_id=self.clean(value.get('request_id')), capture_id=self.clean(value.get('capture_id')),
+                        capture_age_seconds=value.get('capture_age_seconds'))
+        if value.get('status') == 'pre_call_evidence_failed':
+            self.record(source, 'read_failed', reason='hook_pre_call_evidence_failed')
+        if value.get('evidence_kind') == 'python_allocations':
+            state = value.get('status')
+            identity = self.clean({k: value.get(k) for k in ('capture_id', 'pid', 'started_wall', 'enabled')})
+            if state != 'finished':
+                self.record(source, 'missing' if state == 'disabled' else ('read_failed' if state == 'capture_failed' else 'incomplete'),
+                            reason='python_profile_disabled' if state == 'disabled' else 'python_profile_not_completed',
+                            capture_status=self.clean(state), capture_identity=identity,
+                            capture_reason=self.clean(value.get('reason', value.get('capture_failed'))))
+            samples = value.get('samples')
+            if value.get('omitted_samples') or (isinstance(samples, list) and any(
+                    isinstance(item, dict) and item.get('omitted_sites') for item in samples)):
+                self.record(source, 'omitted', reason='python_profile_detail_budget')
         if value.get('event') == 'evidence_capture_failed':
             self.record(source, 'read_failed', reason='source_evidence_capture_failed',
                         context=self.clean(value.get('context', {})))
@@ -808,6 +830,17 @@ class Collector:
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
                 self.emit(15, "读取最新状态")
+                from .memory_evidence_coverage import coverage
+                self.add(archive, "memory/coverage.json", json.dumps(coverage()).encode(), "generated-memory-coverage")
+                if self.capture_request is not None:
+                    self.add(archive, 'memory/request.json', _json(self.clean(self.capture_request)), 'generated-memory-request')
+                    self.evidence_issues(self.capture_request, 'memory/request.json')
+                    report = self.capture_request.get('report_file')
+                    if isinstance(report, str) and re.fullmatch(r'[0-9a-f]{32}\.json', report):
+                        self.file(artifacts(self.root)/'runtime/python-memory'/report,
+                                  'logs/runtime/python-memory/'+report, archive, allowed_root=self.root)
+                    for name in ('python-memory-status.json', 'python-memory-gap.json', 'memory-capture-gap.json'):
+                        self.file(artifacts(self.root)/'runtime'/name, 'logs/runtime/'+name, archive, allowed_root=self.root)
                 self.database(archive)
                 self.database(archive, name="worker_telemetry.sqlite3", tables=(
                     "telemetry_stage_events", "telemetry_process_links",
@@ -819,6 +852,8 @@ class Collector:
                 # A failed task diagnostic may exist only in this bounded
                 # fallback log. Keep it with current proofs before old images.
                 self.tree(artifacts(self.root)/"runtime", "logs/runtime", archive)
+                if not (artifacts(self.root)/"runtime"/"python-memory-status.json").exists():
+                    self.record("python_allocations", "missing", reason="not_enabled_or_no_capture")
                 self.tree(artifacts(self.root)/"tasks", "tasks", archive, task_priority=True)
                 updates_root = update_root(self.root).absolute()
                 # Current recovery proofs first; legacy incident volume cannot starve them.
@@ -846,7 +881,11 @@ class Collector:
                         collect_performance(self, archive)
                         from .windows_exit_evidence import collect as collect_windows_events
                         collect_windows_events(self, archive)
-                issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}]
+                from .memory_evidence_coverage import current_collection
+                self.add(archive, 'memory/collection.json', _json(self.clean(current_collection(self.capture_request, self.entries))), 'generated-memory-collection')
+                issues = [e for e in self.entries if e["status"] in {"read_failed", "omitted"}
+                          or (e.get("source") == "memory/request.json"
+                              and e["status"] in {"missing", "incomplete"})]
                 manifest = {"schema_version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
                             "build": build_identity(),
                             "log_last_at": self.latest_logs[0].get("created_at") if self.latest_logs else None,
