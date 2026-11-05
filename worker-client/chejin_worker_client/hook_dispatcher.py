@@ -656,6 +656,8 @@ class HookBusinessDispatcher:
             if not more or inventory['run_status']=='faulted':
                 rt.finish(current['id'],rt.active_flow_id,current['lease_fencing_token'],inventory['inflight_flow'].get('conversation_id'))
                 runner.api.inflight_flow_id=None;publish_current_task(runner,None);return
+        if storage.load_runtime_control().get('update_no_new_work'):
+            return  # Preserve unfinished flows/receipts; no fresh reads during update.
         for binding in inventory.get('retired_evidence',[]):
             rt.drain_pending(binding)
         if self._recover_voice_attempts([*inventory['bindings'],*inventory.get('retired_evidence',[])]):return
@@ -687,6 +689,8 @@ class HookBusinessDispatcher:
         all_history_ready=bool(bindings)
         pending_work=bool(inventory['invitations'] or inventory['retained_sends'] or rt.active_flow_id)
         for binding in bindings:
+            if storage.load_runtime_control().get('update_no_new_work'):
+                return
             self.diagnostic_context={'conversation_id':binding['conversation_id'],
                 'hook_account_scope_sha256':hashlib.sha256((rt.scope.self_wxid+rt.scope.account_epoch).encode()).hexdigest(),
                 'hook_process_generation':rt.scope.process_generation,'hook_operation':'native_customer_sync'}
@@ -702,7 +706,11 @@ class HookBusinessDispatcher:
                     synced=self._read_history(binding,barrier=barrier)
                 if not self.history_storage_ready():
                     raise ValueError('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED')
+                if storage.load_runtime_control().get('update_no_new_work'):
+                    return  # The completed history receipt is already durable.
                 for job in binding.get('voice_jobs',[]):
+                    if storage.load_runtime_control().get('update_no_new_work'):
+                        return
                     context=f"{binding['binding_id']}:{job['native_msg_id']}"
                     if hasattr(rt,'register_binding_progress'):
                         rt.register_binding_progress(binding,context,aliases=[job['native_msg_id']])
@@ -758,6 +766,8 @@ class HookBusinessDispatcher:
                     if synced['message_batch'].get('next_step')=='generate':self._mark_batch_presented(bid)
                 # Keep polling all customers while any model is generating.
                 for bid in batches:
+                    if storage.load_runtime_control().get('update_no_new_work'):
+                        return
                     data = read_batch_view(
                         self.client, rt.credentials, runner, bid,
                         observation_query_version=self._observation_query_version,

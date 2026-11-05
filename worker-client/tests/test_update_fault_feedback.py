@@ -70,7 +70,8 @@ def test_failed_login_does_not_lose_existing_death_proof(lab,backend_peer,enviro
         assert runner.binding.run_status=='faulted' and not control['update_no_new_work']
         # Send acknowledgements and pending writes still block despite proof.
         durable['pending_sent_ack']=1
-        assert not create().check_admission()['allowed']
+        assert create().check_admission()['allowed']
+        assert runner.update_install_safety_snapshot()['business_reason_code'] == 'UPDATE_WAITING_DURABLE_SETTLEMENT'
         assert [r for r in rows() if r['process_generation']=='old']==before
     finally:manager.close()
 
@@ -80,30 +81,30 @@ def test_rejection_visible_and_old_update_receipt_preserved(environment,monkeypa
     c=create();published=[];c.on_state=published.append
     c.store.save({'state':'succeeded','target_version':'0.10.28','result_code':'UPDATE_SUCCEEDED'})
     before=c.store.load()
-    durable['pending_sent_ack']=1
+    control['update_no_new_work']=True
     assert not c.check_for_updates()
     assert published[-1]['check_allowed'] is False
-    assert '发送结果' in published[-1]['status_text']
+    assert '已有更新' in published[-1]['status_text']
     assert c.store.load()==before and not c.api.calls
-    assert '发送结果' in c.controls_state(published[-1])['status_text']
+    assert '已有更新' in c.controls_state(published[-1])['status_text']
     view=c.controls_state(before, c.check_admission(before))
-    assert not view['check_allowed'] and '发送结果' in view['status_text']
-    durable['pending_sent_ack']=0
+    assert not view['check_allowed'] and '已有更新' in view['status_text']
+    control['update_no_new_work']=False
     view=c.controls_state(before, c.check_admission(before))
     assert view['check_allowed'] and view['status_text']==''
     assert c.store.load()==before
 
 
 def test_atomic_admission_race_publishes_reason(environment):
-    runner,_,_,create=environment
+    runner,control,_,create=environment
     c=create();published=[];c.on_state=published.append
     original=runner.begin_update_check
     def race(begin):
-        runner.current_task=SimpleNamespace(id='synthetic-task')
+        control['update_no_new_work']=True
         return original(begin)
     runner.begin_update_check=race
     assert not c.check_for_updates()
-    assert published[-1]['check_reason_code']=='UPDATE_WAITING_ACTIVE_FLOW'
+    assert published[-1]['check_reason_code']=='UPDATE_ALREADY_IN_PROGRESS'
     assert not c.api.calls and c.store.load()['state']=='idle'
 
 
@@ -123,7 +124,7 @@ def test_real_web_model_projects_shared_admission(environment):
     from contextlib import ExitStack
     from unittest.mock import patch
     from test_web_ui_binding_behavior import _headless_web_ui_module, WebUiBindingBehaviorTest
-    runner,_,durable,create=environment
+    runner,control,durable,create=environment
     c=create()
     with _headless_web_ui_module() as module, ExitStack() as stack:
         stack.enter_context(patch.object(module,'_log_rows',return_value=[]))
@@ -131,12 +132,12 @@ def test_real_web_model_projects_shared_admission(environment):
         stack.enter_context(patch.object(module,'lock_summary',return_value={}))
         window=WebUiBindingBehaviorTest()._window(module,runner.binding)
         window.active_page='settings';window.update_coordinator=c;window.update_state=c.state()
-        durable['pending_sent_ack']=1
+        control['update_no_new_work']=True
         window._update_preview=SimpleNamespace(admission=c.check_admission(window.update_state))
         model=window._model()
         assert not model['update']['check_allowed']
-        assert '发送结果' in model['update']['status_text']
-        durable['pending_sent_ack']=0
+        assert '已有更新' in model['update']['status_text']
+        control['update_no_new_work']=False
         window._update_preview.admission=c.check_admission(window.update_state)
         # Rendering the completed cache must not query the shared producer again.
         c.check_admission=lambda *_: (_ for _ in ()).throw(AssertionError('UI scanned storage'))

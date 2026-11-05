@@ -100,7 +100,8 @@ class HookWorkerServices:
         if binding is None or runner.stop_event.is_set():
             return
         runner._sync_pending_run_status()
-        if runner.stop_event.is_set() or emergency_stop_requested():
+        if (runner.stop_event.is_set() or emergency_stop_requested()
+                or runner.update_checks_suspended()):
             return  # Existing approved receiver still persists independently.
         with runner._run_status_intent_lock:
             revision = runner._run_status_revision
@@ -162,8 +163,8 @@ class HookWorkerServices:
                 code = "HOOK_CONNECTION_CHECK_FAILED"
             self._fault(runner, code, local_error=exc, startup_phase="environment")
             return
-        if runner.stop_event.is_set():
-            return  # Another loop may have received revocation during this heartbeat.
+        if runner.stop_event.is_set() or runner.update_checks_suspended():
+            return  # An update/revocation may have arrived during this heartbeat.
         runner.last_rpa_component_status = "ready"
         runner.last_wechat_status = "logged_in" if prepared else "logged_out"
         if prepared is None:
@@ -338,7 +339,8 @@ class HookWorkerServices:
             prepared = self.connection.prepared
             if prepared is not None:
                 for _ in range(self.projection_batch_size):
-                    if stop.is_set() or self.projection.project_next(prepared.registration.scope) is None:
+                    if (stop.is_set() or storage.load_runtime_control().get("update_no_new_work")
+                            or self.projection.project_next(prepared.registration.scope) is None):
                         break
             emit('loop', name='intake', waiting='interval')
             stop.wait(self.intake_interval_seconds)
@@ -351,7 +353,9 @@ class HookWorkerServices:
             binding = runner.binding
             if binding is not None:
                 try:
-                    self.dispatcher.tick(runner,self)
+                    with runner.update_background_cycle() as admitted:
+                        if admitted:
+                            self.dispatcher.tick(runner,self)
                 except HookRuntimeStopping:
                     # Only the explicit normal-stop signal takes this path.
                     # SQLite, lease and unknown-send failures still use existing gates.

@@ -41,6 +41,7 @@ from .update_data_access import process_identity, authenticate
 
 UPDATER_CREATE_TIME_TOLERANCE_SECONDS = 0.01
 UPDATER_READY_TIMEOUT_SECONDS = 120.0
+UPDATE_DRAIN_TIMEOUT_SECONDS = 120.0
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
@@ -493,7 +494,7 @@ class UpdateCoordinator:
         return saved
 
     def check_admission(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
-        """UI hint only; begin_update_check repeats it atomically at admission."""
+        """Request availability only; installation keeps its separate safety boundary."""
         if not self.formal_package:
             return {'allowed': False, 'reason_code': 'UPDATE_FORMAL_PACKAGE_REQUIRED',
                     'reason_text': '检查更新仅支持正式 EXE 交付包'}
@@ -537,6 +538,7 @@ class UpdateCoordinator:
                         pre_update_run_status=pre_status,
                         client_instance_id=binding.client_instance_id if binding else self._unbound_instance_id(),
                     )
+                    state = self.store.save({**state, "keep_stopped_after_update": True})
                     return state
                 admission, state = self.runner.begin_update_check(begin_request)
                 if state is None:
@@ -993,7 +995,9 @@ class UpdateCoordinator:
         if merged.get("data_integrity_failed") is True:
             self._save({**merged, "result_reconciled": True})
             return
-        if late_result or str(plan.get("pre_update_run_status") or "") != "running":
+        if (late_result or plan.get("keep_stopped_after_update")
+                or state.get("keep_stopped_after_update")
+                or str(plan.get("pre_update_run_status") or "") != "running"):
             self._save({**merged, "result_reconciled": True})
             return
         while not self._stop.is_set():
@@ -1260,6 +1264,12 @@ class UpdateCoordinator:
         request_id = str(initial.get("update_request_id") or "")
         paused_for_update = False
         try:
+            # Checking itself enters update mode, even if WeChat is absent or
+            # the release server subsequently reports no new version.
+            binding = self.binding_provider()
+            if binding is not None:
+                paused_for_update = True
+                self.runner.set_run_status("faulted" if binding.run_status == "faulted" else "paused")
             self._adopt_cached_download(initial)
             if self._stop.is_set():
                 raise ClientUpdateError("UPDATE_CANCELLED", "更新检查已取消")
@@ -1281,11 +1291,6 @@ class UpdateCoordinator:
                     }
                 )
                 return
-
-            binding = self.binding_provider()
-            if binding and binding.run_status == "running":
-                paused_for_update = True
-                self.runner.set_run_status("paused")
 
             downloading = self._save(
                 {
@@ -1352,6 +1357,7 @@ class UpdateCoordinator:
                     "state": "waiting_for_safe_boundary",
                 }
             )
+            drain_deadline = time.monotonic() + UPDATE_DRAIN_TIMEOUT_SECONDS
             while not self._stop.is_set():
                 binding = self.binding_provider()
                 if binding and binding.run_status == "faulted":
@@ -1376,6 +1382,12 @@ class UpdateCoordinator:
                             "waiting_reason_text": reason_text,
                             "waiting_safety_snapshot": boundary,
                         }
+                    )
+                if time.monotonic() >= drain_deadline:
+                    raise ClientUpdateError(
+                        "UPDATE_SAFE_STOP_TIMEOUT",
+                        f"暂不能安全安装：{reason_text or '原操作尚未安全结束'}。原程序和记录保留，保持停止接单。",
+                        data={"waiting_reason_code": reason_code, "waiting_safety_snapshot": boundary},
                     )
                 self.sleep(0.25)
             raise ClientUpdateError("UPDATE_CANCELLED", "客户端退出前未开始安装")
@@ -1434,6 +1446,8 @@ class UpdateCoordinator:
             return False
 
     def _restore_pre_update_state(self, initial: dict[str, Any]) -> None:
+        if initial.get("keep_stopped_after_update"):
+            return
         binding = self.binding_provider()
         if (
             str(initial.get("pre_update_run_status") or "") == "running"
@@ -1493,6 +1507,7 @@ class UpdateCoordinator:
             "data_baseline_path": str(control_root / "protected-data-baseline.json"),
             "safe_boundary": boundary,
             "pre_update_run_status": state.get("pre_update_run_status"),
+            "keep_stopped_after_update": bool(state.get("keep_stopped_after_update")),
             "operator_pause_after_request": self._operator_pause_after_request,
             "fault_after_request": self._fault_after_request,
         }

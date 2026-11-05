@@ -63,40 +63,31 @@ def test_failed_preview_stays_disabled_and_render_never_checks(app):
     p.stop()
 
 
-def test_actual_storage_scan_runs_outside_qt_and_model_uses_cache(app,tmp_path,monkeypatch):
-    import json
+def test_preview_does_not_scan_business_evidence_or_wait_for_wechat(app,tmp_path,monkeypatch):
     from chejin_worker_client import storage,task_runner as runner_module
     from chejin_worker_client.update_coordinator import UpdateCoordinator
     from chejin_worker_client.client_update import UpdateStateStore
     from test_update_safety_boundary import _runner
     from test_update_coordinator import FakeApi,_release
-    monkeypatch.setattr(storage,'APP_DIR',tmp_path);monkeypatch.setattr(storage,'DB_FILE',tmp_path/'worker.sqlite3')
-    runner=_runner();runner.hook_services=SimpleNamespace(connection=SimpleNamespace(update_safety_snapshot=lambda:{'checking':False,'process_generation':None}))
-    monkeypatch.setattr(runner_module,'lock_summary',lambda:{'locked':False})
-    c=UpdateCoordinator(FakeApi(_release(available=False)),runner,binding_provider=lambda:runner.binding,on_state=lambda _:None,request_normal_exit=lambda:None,state_store=UpdateStateStore(tmp_path/'update'),formal_package=True)
-    with storage.db_connection() as db:
-        payload=json.dumps({'synthetic_history':'x'*32768})
-        db.executemany("INSERT INTO c2_ingest_outbox(outbox_id,conversation_id,authorization_revision,read_run_id,payload_json,status,created_at,updated_at,operation) VALUES (?,?,?,?,?,'confirmed','2026-11-04','2026-11-04','ingest')",[(str(i),'synthetic','r',str(i),payload) for i in range(1000)])
-        db.commit()
-    original=runner_module.update_install_business_blockers;threads=[]
-    def delayed_storage():
-        threads.append(threading.get_ident());time.sleep(.25);return original()
-    monkeypatch.setattr(runner_module,'update_install_business_blockers',delayed_storage)
-    p=UpdateControlsPreview(c.check_admission);p.set_context(True,c.state())
-    pulses=[];timer=QTimer();timer.setInterval(10);timer.timeout.connect(lambda:pulses.append(time.monotonic()));timer.start()
-    for _ in range(20):
-        p.refresh()
-        assert not c.controls_state(c.state(),p.admission)['check_allowed']
-        spin(.005)
+    monkeypatch.setattr(storage,'APP_DIR',tmp_path)
+    monkeypatch.setattr(storage,'DB_FILE',tmp_path/'worker.sqlite3')
+    runner=_runner()
+    def forbidden():
+        raise AssertionError('Request preview must not wait for business/WeChat inspection')
+    runner.hook_services=SimpleNamespace(connection=SimpleNamespace(update_safety_snapshot=forbidden))
+    monkeypatch.setattr(runner_module,'update_install_business_blockers',forbidden)
+    monkeypatch.setattr(runner_module,'lock_summary',forbidden)
+    c=UpdateCoordinator(FakeApi(_release(available=False)),runner,binding_provider=lambda:runner.binding,
+        on_state=lambda _:None,request_normal_exit=lambda:None,
+        state_store=UpdateStateStore(tmp_path/'update'),formal_package=True)
+    p=UpdateControlsPreview(c.check_admission)
+    p.set_context(True,c.state());p.refresh()
     until(lambda:p.admission is not None)
     assert p.admission['allowed'],p.admission
-    assert len(threads)==1 and threads[0]!=threading.get_ident()
-    assert len(pulses)>=15 and max(b-a for a,b in zip(pulses,pulses[1:]))<.20
-    for _ in range(20):assert c.controls_state(c.state(),p.admission)['check_allowed']
-    assert len(threads)==1
-    # An allowed old preview can never override an ongoing update.
+    for _ in range(20):
+        assert c.controls_state(c.state(),p.admission)['check_allowed']
     assert not c.controls_state({'state':'downloading'},p.admission)['check_allowed']
-    timer.stop();p.stop()
+    p.stop()
 
 
 def test_web_page_update_clock_and_exit_wire_context(app):
