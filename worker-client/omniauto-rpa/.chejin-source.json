@@ -682,17 +682,17 @@
     "chejin_same_review_policy_refs_and_serialized_clearance"
   ],
   "current_release": {
-    "version": "0.10.32",
-    "source_commit": "745c58465c9e200fc92ddcd8f9d7f5cfe4350495",
+    "version": "0.10.33",
+    "source_commit": "26d6285ea93ca699aec46c7e6098d0ae223eef0b",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.32",
-    "contract_sha256": "0cc8aebe9e00d0989122e5c048db2d8590db33e2310d76038619f93b0a85e0ca",
+    "contract_revision": "0.10.33",
+    "contract_sha256": "65021fdc399e530397836435f16471b08c122f206ee788856d659154ae3cf4e9",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "Reviewed semantic fact routing and customer-scoped file isolation; preserve-data manual installation."
+    "note": "Reviewed AI input cleaning, sixty-second review limit and HTTP failure evidence; original 0.10.32 settings-button upgrade."
   },
   "historical_integrations": [
     {
