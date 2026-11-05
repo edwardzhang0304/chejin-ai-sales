@@ -866,3 +866,20 @@ def test_known_inventory_count_and_shared_unit_range(first,allowed):
     plan={'answer_mode':'ask_clarifying_question','reply_segments':[first,'年份还需核实，您希望哪年以后？']}
     result=validate_reply_public_facts(plan,pack)
     assert result['ok'] is allowed,result
+
+
+@pytest.mark.parametrize('question,expected_questions,allowed', [
+    ('您是买一台自用吗？',1,True),
+    ('家里已经有一台车了吗？',1,True),
+    ('您准备买一台还是两台？',2,True),
+    ('您可以选一台自用。',1,True),
+    ('8万以内还有5台，您是买一台自用吗？',1,False),
+    ('8万以内还有5台您准备买一台还是两台？',2,False),
+    ('您是买一台自用吗？8万以内还有5台。',1,False),
+])
+def test_customers_purchase_quantity_is_separate_from_stock_assertions(question,expected_questions,allowed):
+    pack,_,_,_=prepared('8万以内有什么车？')
+    text='合成车6报价7.2万，合成车5报价6.8万。'+question
+    result=validate_reply_public_facts({'answer_mode':'recommend_from_catalog','reply_segments':[text]},pack)
+    assert sum(o.get('role')=='customer_quantity_prompt' for o in result['occurrences'])==expected_questions
+    assert result['ok'] is allowed,result

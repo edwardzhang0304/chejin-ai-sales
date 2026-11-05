@@ -466,6 +466,25 @@ _PREVIOUS_EXCLUDED = re.compile(
     r"(?:放(?:在)?一边|不(?:看|算|考虑)|排除|不计入|跳过)")
 
 
+def _customer_quantity_prompt(text, number):
+    """A number governed by a customer's purchase/use verb is not a stock total."""
+    if number["unit"] != "台":
+        return False
+    prefix = re.split(r"[，,。；;！？!?]", text[:number["start"]])[-1]
+    tail = re.match(r"[^，,。；;！？!?]*[，,。；;！？!?]?", text[number["end"]:])[0]
+    # Bind the subject and verb directly to this quantity. Include the
+    # first arm of a coordinated choice when checking its second quantity.
+    action = re.search(
+        r"(?P<subject>您|你|家里|家中)(?:家里|家中)?(?P<modal>是|已经|目前|现在|准备|打算|计划|想要|想|"
+        r"希望|需要|更想|可以|不妨|要不要|是否|是不是|通常|平时)*"
+        r"(?:购买|添置|选购|选|买|开|用|留|有|要|看)"
+        r"(?:[0-9零〇一二两三四五六七八九十百]+(?:台|辆|款)(?:车)?(?:还是|或(?:者)?))?\s*$", prefix)
+    if not action:
+        return False
+    return bool(re.search(r"[？?]|吗|呢|还是|或者", tail) or
+                re.search(r"是否|要不要|是不是|可以|不妨|还是|或者", action.group()))
+
+
 def _stated_inventory_scope(subject, receipt, *, whole_stock=False):
     """Resolve qualifiers against the executed scope before looking at a number."""
     from apps.wechat_ai_customer_service.workflows.catalog_budget import budget_statement
@@ -726,6 +745,14 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         # A customer preference question is not an assertion about a car's year.
         numbers = [n for n in numbers if n["unit"] != "年" or
                    _vehicle_year_assertion(segment, n, entities) or policy_number(n, segment_index)]
+        inventory_numbers = []
+        for n in numbers:
+            if _customer_quantity_prompt(segment, n):
+                occurrences.append({"segment_index":segment_index, **n, "role":"customer_quantity_prompt",
+                                    "verified":True})
+            else:
+                inventory_numbers.append(n)
+        numbers = inventory_numbers
         owners = _number_entity_owners(segment, entities, numbers)
         budget_spans = _customer_budget_spans(segment, entities, (receipt.get("query") or {}).get("budget") or {})
         if entities:
@@ -869,9 +896,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             # Counted vehicles need an owner even when the wording uses an
             # unfamiliar stock predicate. A question about a customer's choice
             # has no asserted inventory total.
-            preference = re.search(r"(?:您|你)(?:想|希望|打算|要|偏好)|(?:想看|想买|需要).{0,6}(?:吗|呢|？)", local_text)
-            unowned_count = number["unit"] == "台" and not preference
-            asserted_quantity = (local_entities or role or policy_statement or unowned_count or number["unit"] == "年" or
+            asserted_quantity = (local_entities or role or policy_statement or number["unit"] in {"台", "年"} or
                                  re.search(r"共|合计|符合|条件|查到|匹配|在售|库存|最低|最高|价[位格]|预算|区间|报价|服务费|定金|首付|月供", local_text))
             if not valid and asserted_quantity:
                 errors.append("unverified_reply_numeric_fact")
