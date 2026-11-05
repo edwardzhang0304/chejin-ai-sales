@@ -102,13 +102,14 @@ class Coordinator:
                     # No malformed request or diagnostic write is a business fault.
                     self._gap(protocol.failure_reason(exc), path.stem)
 
-    def _gap(self, reason, request_id=None):
+    def _gap(self, reason, request_id=None, security_facts=None):
         try:
             from .python_memory_profile import _write_record
             _write_record(self.channel.root / 'artifacts/runtime/memory-capture-gap.json', {'schema': 1, 'evidence_kind': 'memory_capture_request',
                 'status': 'failed', 'reason': reason, 'request_id': request_id, 'target': self.target,
                 'capture_id': self.profile.identity['capture_id'] if self.profile else None,
-                'at': time.time(), 'retention': 'latest_failure_only'})
+                'at': time.time(), 'retention': 'latest_failure_only',
+                **({'security_facts': security_facts} if security_facts else {})})
         except Exception:pass
 
     def _run(self):
@@ -116,7 +117,8 @@ class Coordinator:
             try:self.tick()
             except RuntimeError as exc:
                 if str(exc) != 'UPDATE_DATA_DIRECTORY_BUSY':self._gap(type(exc).__name__)
-            except Exception as exc:self._gap(type(exc).__name__)
+            except Exception as exc:
+                self._gap(protocol.failure_reason(exc), security_facts=getattr(exc, 'security_facts', None))
             self.stop.wait(protocol.POLL_SECONDS)
 
     def close(self):
@@ -131,7 +133,7 @@ def install(root, performance=None, engineering_seconds=0):
     coordinator = Coordinator(root, performance)
     try:return coordinator.start(engineering_seconds)
     except Exception as exc:
-        coordinator._gap(type(exc).__name__)
+        coordinator._gap(protocol.failure_reason(exc), security_facts=getattr(exc, 'security_facts', None))
         coordinator.close()
         return None
 
@@ -194,6 +196,8 @@ def request_capture(root, progress=None):
         record.update(status='not_running', reason='capture_endpoint_missing')
     except Exception as exc:
         record.update(status='failed', reason=protocol.failure_reason(exc))
+        if isinstance(exc, protocol.ChannelSecurityError):
+            record['security_facts'] = exc.security_facts
     finally:
         record['request_wait_seconds'] = max(0, time.monotonic() - start)
         record['observed_wall'] = time.time()

@@ -1,5 +1,6 @@
 """Same-user bounded file channel. No TCP, business lock, payload or commands."""
 import hashlib
+from itertools import islice
 import json
 import math
 import os
@@ -61,18 +62,59 @@ def safe(path, root):
     return path
 
 
+class ChannelSecurityError(ValueError):
+    def __init__(self, reason, facts):
+        super().__init__(reason)
+        self.security_facts = facts
+
+
+def _empty_bootstrap(folder):
+    """Only an interrupted, empty diagnostic namespace can be reinitialized."""
+    entries = list(islice(folder.iterdir(), 2))
+    if not entries:
+        return True
+    if folder.name != 'memory-capture' or len(entries) != 1 or entries[0].name != 'requests':
+        return False
+    info = entries[0].lstat()
+    return (stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and not getattr(info, 'st_file_attributes', 0) & 0x400
+            and next(entries[0].iterdir(), None) is None)
+
+
 def windows_security(folder, *, create=False, initialize=False):
     import win32api, win32con, win32security
     token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
     try:
         sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        default_owner = win32security.GetTokenInformation(token, win32security.TokenOwner)
     finally:
         token.Close()
     system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
     descriptor = win32security.GetNamedSecurityInfo(str(folder), win32security.SE_FILE_OBJECT,
         win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION)
-    if not create and descriptor.GetSecurityDescriptorOwner() != sid:
-        raise ValueError('channel_owner_mismatch')
+    owner = descriptor.GetSecurityDescriptorOwner()
+    acl = descriptor.GetSecurityDescriptorDacl()
+    private_acl, user_access = acl is not None, False
+    if acl is not None:
+        for index in range(acl.GetAceCount()):
+            ace = acl.GetAce(index)
+            if ace[0][0] != win32security.ACCESS_ALLOWED_ACE_TYPE or ace[-1] not in (sid, system):
+                private_acl = False
+            if (ace[-1] == sid and ace[0][0] == win32security.ACCESS_ALLOWED_ACE_TYPE
+                    and not ace[0][1] & win32con.INHERIT_ONLY_ACE
+                    and ace[1] & win32con.FILE_ALL_ACCESS == win32con.FILE_ALL_ACCESS):
+                user_access = True
+    facts = {'phase': 'initialize' if initialize else 'validate',
+             'owner_matches_user': owner == sid, 'owner_matches_default': owner == default_owner,
+             'private_acl': private_acl, 'user_full_access': user_access}
+    if not create and owner != sid:
+        # Windows can assign the token's default owner (e.g. Administrators)
+        # to a new directory. Recover only this diagnostic namespace at Worker
+        # startup, never from the read-only requester or for a foreign owner.
+        recoverable = (initialize and owner == default_owner
+                       and ((private_acl and user_access) or _empty_bootstrap(Path(folder))))
+        if not recoverable:
+            raise ChannelSecurityError('channel_owner_mismatch', facts)
     if initialize:
         acl = win32security.ACL()
         for principal in (sid, system):
@@ -82,14 +124,11 @@ def windows_security(folder, *, create=False, initialize=False):
         win32security.SetNamedSecurityInfo(str(folder), win32security.SE_FILE_OBJECT,
             win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
             | win32security.PROTECTED_DACL_SECURITY_INFORMATION, sid, None, acl, None)
+        # Do not publish an endpoint unless normalization actually took effect.
+        windows_security(folder)
     else:
-        acl = descriptor.GetSecurityDescriptorDacl()
-        if acl is None:
-            raise ValueError('channel_permissions_invalid')
-        for index in range(acl.GetAceCount()):
-            ace = acl.GetAce(index)
-            if ace[0][0] != win32security.ACCESS_ALLOWED_ACE_TYPE or ace[-1] not in (sid, system):
-                raise ValueError('channel_permissions_invalid')
+        if not private_acl or not user_access:
+            raise ChannelSecurityError('channel_permissions_invalid', facts)
 
 
 def restrict(folder, *, created=False):
