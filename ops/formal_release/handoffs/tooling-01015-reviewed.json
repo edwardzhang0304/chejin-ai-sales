@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "repository": "edwardzhang0304/chejin-ai-sales",
-  "reviewed_commit": "6c67dc27ac5ce5dc80e994876e752a92a460c76c",
+  "reviewed_commit": "722a060b9285d3b41a34d54b7999d8c1151441ad",
   "scope_file": "ops/formal_release/handoffs/tooling-01015-scope.json",
   "reviewed_inputs": {
     ".github/actions/worker-release-checks/action.yml": "100644 blob d52d02ca82a127917695e0d80c5ab1f6697b7d62",
@@ -39,7 +39,7 @@
     "ops/formal_release/handoffs/hook-reviewed-2620508.json": "100644 blob 68fc09bbf552eb6861b56e9725733fda8f3251ce",
     "ops/formal_release/handoffs/hook-reviewed-2fbf52a.json": "100644 blob 7ced64e5bb8eaf1a154ab286d974783ae8265bf1",
     "ops/formal_release/handoffs/hook-reviewed-a1de7f3.json": "100644 blob b6428d18ddb3e2e66cce756cc3a9a2f4785de4d0",
-    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob 31a9927ebac2d204b3da072bcfe1af2340a6c4b0",
+    "ops/formal_release/handoffs/hook-reviewed-bbe404a.json": "100644 blob c4b38b779175d427c7673dcdbe69caaa521cc1e4",
     "ops/formal_release/handoffs/hook-reviewed-d44bae9.json": "100644 blob 0f7783557446559e5adabf0b4e91d518487047bf",
     "ops/formal_release/handoffs/hook-reviewed-d44f8e5.json": "100644 blob 2a7252bd9bd7ec188cd022f10ad79fbd7afa2f80",
     "ops/formal_release/handoffs/hook-reviewed-d7f7ad4.json": "100644 blob 28dfa3e652c9ccde2ef88fdcb8d08d7346569c70",
