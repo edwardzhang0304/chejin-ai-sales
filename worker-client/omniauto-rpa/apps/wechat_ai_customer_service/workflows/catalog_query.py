@@ -1260,7 +1260,7 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         query = normalize_model_query(first["catalog_query"], message_sources(evidence),
                                       contract=model_contract(evidence.get("catalog_protocol") or {}),
                                       known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"),
-                                      current_ids=brain_input["current_message"]["message_ids"])
+                                      current_ids=(brain_input.get("current_message") or {}).get("message_ids"))
         audit["validation_seconds"] = time.monotonic() - started
         phase = "inventory_query"
         runtime = runtime_factory()
