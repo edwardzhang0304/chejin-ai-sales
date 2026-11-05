@@ -1147,12 +1147,6 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
         errors.append("catalog_claim_classification_required")
     if kind in {"vehicle_facts", "query_summary"} and not receipt.get("scan_complete"):
         errors.append("current_inventory_not_queried")
-    preparation = (evidence.get("catalog_protocol") or {}).get("preparation") or {}
-    if kind == "query_summary" and (preparation.get("requires_recommendation")
-            or preparation.get("answer_goal") == "uncertain"):
-        # A reviewer-declared count-only answer cannot satisfy a known
-        # recommendation request or resolve an unconfirmed answer goal.
-        errors.append("catalog_summary_does_not_satisfy_answer_goal")
     if kind == "query_summary" and not prepared:
         aggregates = [f for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", [])) if f.get("fact_type") in AGGREGATES]
         if not aggregates or any(not aggregate_fact_ready(receipt, AGGREGATES[f["fact_type"]]) for f in aggregates):
@@ -1167,7 +1161,10 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
             plan["policy_refs"] = {sid: list(dict.fromkeys(keys)) for sid, keys in raw_review["policy_refs"].items()}
             derive_reviewed_fact_fields(plan, validated)
             from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_brain_plan
-            final_validation = validate_brain_plan(plan, require_fact_claims=True)
+            # The reviewed body is bound to the complete frozen authority.
+            # Do not fabricate numeric ownership or require the author to fill
+            # declarations the program could not mechanically derive.
+            final_validation = validate_brain_plan(plan, require_fact_claims=False)
             if not final_validation["ok"]:
                 return {**review, "ok": False, "verdict": "repair", "enforced": True,
                         "errors": final_validation["errors"], "soft_pass_low_risk": False}

@@ -210,6 +210,17 @@ def accept_coverage(db,authenticated,instance,payload):
         key=message_key(payload.self_wxid,binding.native_peer_wxid,row['MsgSvrID'])
         event=db.scalar(select(MessageEvent).where(MessageEvent.conversation_id==binding.conversation_id,
             MessageEvent.dedupe_key==key))
+        prior_app = ((event.raw_payload or {}).get('native_app_message') or
+            ({'kind':'quote','subtype':'57'} if (event.raw_payload or {}).get('native_quote') else {})) if event else {}
+        missing_known_app = bool(event and row['Type']=='49' and app.get('kind')=='unconfirmed'
+            and prior_app.get('kind') in {'quote','file','unsupported'})
+        if missing_known_app:
+            # Preserve the last proved fact; the new receipt remains incomplete
+            # and cannot grant fresh history/send permission. Direction is still
+            # checked below; this is not a general identity-error exception.
+            kind,content=event.message_type,event.content
+        elif prior_app.get('kind') in {'quote','file','unsupported'} and app and prior_app.get('subtype')!=app.get('subtype'):
+            raise AppError('HOOK_MESSAGE_ID_CONFLICT','历史与已有原生消息事实不一致',409)
         completing_app = bool(event and event.sender_role == role and event.message_type == 'app_message'
             and (event.raw_payload or {}).get('native_app_message', {}).get('kind') == 'unconfirmed'
             and app.get('kind') in {'quote','file','unsupported'})
@@ -234,8 +245,16 @@ def accept_coverage(db,authenticated,instance,payload):
             'ordering_fields':{k:row[k] for k in ('localId','CreateTime','Sequence','MsgServerSeq','MsgSequence')},
             'database':row['database'],'database_generation':row['database_generation']})
         if row['MsgSvrID'] in checked['quote_links']:raw['native_quote']=checked['quote_links'][row['MsgSvrID']]
-        if app:raw['native_app_message']=app
-        if kind!='text':raw['native_media_xml']=row['StrContent']
+        if app:
+            raw['native_app_observation']={**app,'history_receipt_id':receipt.id}
+            if missing_known_app:
+                raw.setdefault('native_app_message',prior_app)
+                previous_receipt=(event.evidence or {}).get('native_history_receipt_id')
+                if previous_receipt:raw.setdefault('native_app_fact_receipt_id',previous_receipt)
+            if not missing_known_app:
+                raw['native_app_message']=app
+                if app['kind']!='unconfirmed':raw['native_app_fact_receipt_id']=receipt.id
+        if kind!='text' and not missing_known_app:raw['native_media_xml']=row['StrContent']
         event.raw_payload=raw
         from app.services.hook_business_time import stamp_receipt, received_at
         previous_received = received_at(event)

@@ -72,6 +72,8 @@ def configure(monkeypatch,state,case,mutation,prices_override=None):
             assert request['authority_evidence_summary']==state['authority_blocks'][-1]
             if mutation=='timeout':return {'ok':False,'status':0,'error_kind':'transport','error':'synthetic_timeout','wall_timeout':True}
             value=pipeline.joined.review('vehicle_facts')
+            if mutation=='degraded':
+                value.update(verdict='repair',semantic_errors=['没有回答客户的查车请求，重复追问偏好'])
         else:
             # A direct case has a real query receipt before its FIRST model call.
             receipt=state['receipt']
@@ -138,8 +140,8 @@ def test_incorrect_text_or_unavailable_review_never_creates_send_action(monkeypa
             assert not state['reviews']  # Explicit false price remains a hard gate.
         else:
             # Whether a natural answer satisfies the request is semantic.
-            # Its declared vehicle-facts classification still cannot fabricate
-            # a complete recommendation; the no-action assertions above stay.
+            # The review rejects this unanswered request; the original
+            # no-action assertions above stay, without requiring a source form.
             assert state['reviews']
 
 
@@ -326,6 +328,11 @@ def test_answer_goal_survives_semantic_query_and_complete_consumers(monkeypatch,
         state['wire'].append(kw)
         if kw['model']=='synthetic-reviewer':
             value=pipeline.joined.review('query_summary' if answer=='summary' else 'vehicle_facts')
+            if not allowed:
+                request=json.loads(kw['messages'][1]['content'])['review_request']
+                preparation=request['catalog_protocol']['preparation']
+                if preparation.get('answer_goal')=='uncertain':
+                    value.update(verdict='repair',semantic_errors=['未澄清也未回应当前需求'])
         elif not state.get('receipt'):
             mid=state['invocations'][-1]['batch'][-1]['id']
             q=pipeline.joined.query(source_ids=[mid]);q.pop('version',None);q.pop('sort',None)

@@ -138,7 +138,8 @@ def handoff_unconfirmed_app_messages(db, binding, rows, ctx):
     from app.services.hook_history_review import needs_review
     applied = set(ctx.get('media_handoff_applied_ids', []))
     affected = [m for m in rows if not needs_review(m)
-                and (m.raw_payload or {}).get('native_app_message', {}).get('kind') == 'unconfirmed']
+                and ((m.raw_payload or {}).get('native_app_observation')
+                     or (m.raw_payload or {}).get('native_app_message', {})).get('kind') == 'unconfirmed']
     for message in affected:
         if message.id not in applied:
             if handoff_native_media(db, binding, message, 'HOOK_APP_CONTENT_UNCONFIRMED'):

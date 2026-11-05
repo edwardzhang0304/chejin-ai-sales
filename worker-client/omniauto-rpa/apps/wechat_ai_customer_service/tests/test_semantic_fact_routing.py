@@ -90,3 +90,21 @@ def test_non_assertions_do_not_become_program_price_conflicts(text):
     pack,_,p,_=case(text)
     assert brain.validate_plan_against_evidence(p,pack)['ok']
     assert cq.prepared_review_route(pack,p)['needs_semantic_review']
+
+
+def test_unknown_answer_goal_and_empty_derived_claims_do_not_veto_semantic_pass():
+    pack,_,p,_=case('具体年份还需要核实，您希望哪一年之后的车？')
+    pack['catalog_protocol']['preparation'].update(answer_goal='uncertain',requires_recommendation=None)
+    p.update(answer_mode='ask_clarifying_question',self_check={'fact_source':'product_master'})
+    raw=review('query_summary')
+    result=cq.record_semantic_clearance(pack,p,raw,reviewer.normalize_quality_review_result(raw))
+    assert result['ok'],result
+    assert p['facts_claimed']==[]  # Unknown numeric ownership must not be invented.
+    assert pack['_catalog_clearance']['method']=='semantic'
+
+
+def test_explicit_recommendation_count_only_reply_still_fails_even_with_pass():
+    pack,_,p,_=case('符合条件的车有3辆。')
+    assert pack['catalog_protocol']['preparation']['requires_recommendation'] is True
+    raw=review('query_summary')
+    assert not cq.record_semantic_clearance(pack,p,raw,reviewer.normalize_quality_review_result(raw))['ok']

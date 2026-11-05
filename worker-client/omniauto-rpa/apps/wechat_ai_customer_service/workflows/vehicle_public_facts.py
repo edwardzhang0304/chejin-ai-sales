@@ -557,6 +557,16 @@ def _scoped_numbers(segment, numbers, entities, receipt, carried):
     def record(n, field, expected, scope):
         result[n["start"]] = {"role":field,"expected":expected,"scope_energy":scope,
                               "verified":expected is not None and public_number(n["value"]) == public_number(expected)}
+        if field in {'stock_count','match_count','known_condition_match_count'}:
+            # Prove a complete count assertion using this same scope parser.
+            # Any remaining prose, alias, range or clarification stays semantic.
+            prefix=segment[:n['start']]
+            generic_scope=aggregate_ready(receipt) and re.fullmatch(
+                r'符合(?:当前|已明确)?条件的?(?:在售)?(?:车源|车辆|车)?(?:一共|总共|共有|有|共)?',prefix)
+            explicit_scope=_stated_inventory_scope(prefix,receipt,whole_stock=field=='stock_count')
+            result[n['start']]['count_only_segment']=bool(result[n['start']]['verified']
+                and (generic_scope or explicit_scope is not None)
+                and re.fullmatch(r'[\s。；;！!]*',segment[n['end']:]))
     for index,n in enumerate(numbers):
         start = max((m.end() for m in re.finditer(r"[。；;！？!?]",segment[:n["start"]])),default=0)
         prefix = segment[start:n["start"]]
@@ -981,6 +991,14 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
 
     from apps.wechat_ai_customer_service.workflows.fact_review_routing import classify_fact_findings
     result.update(classify_fact_findings(plan, products, receipt, result))
+    segments=plan.get('reply_segments') or []
+    result['count_only_reply']=bool(segments) and all(
+        any(o['segment_index']==index and o.get('count_only_segment') for o in occurrences)
+        for index in range(len(segments)))
+    if (preparation.get('requires_recommendation') and recommendations
+            and result['count_only_reply']):
+        result['hard_errors'].append('answer_incomplete')
+        result['decision']='conflict'
     # Keep extraction evidence, but never derive a guessed numeric ownership as
     # a mechanically verified fact, even if its value happened to match.
     numeric_kinds = {'price':'price', 'stock':'stock', 'mileage_km':'mileage',

@@ -271,7 +271,7 @@ def test_original_no_trigger_evidence_survives_desktop_export(case,monkeypatch,t
     assert all(p.read_bytes()==raw for p,raw in before.items())
 
 
-@pytest.mark.parametrize('kind',['empty_text','unsupported_media','order_pending','cross_database','revoke_pending','boundary_second'])
+@pytest.mark.parametrize('kind',['empty_text','app_content_pending','unsupported_media','order_pending','cross_database','revoke_pending','boundary_second'])
 def test_incomplete_valid_history_uses_original_send_deadline_not_global_fault(case,monkeypatch,kind):
     from app.services import hook_send_service
     from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
@@ -286,8 +286,8 @@ def test_incomplete_valid_history_uses_original_send_deadline_not_global_fault(c
         if path=='/SendTextMsg':
             created=int(c.binding['history_since_create_time']) if kind=='boundary_second' else int(time.time())
             c.db.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',(1,'9000000000000000002',
-                43 if kind=='unsupported_media' else 10002 if kind=='revoke_pending' else 1,0,created,0 if kind=='order_pending' else created*1000,
-                1,1,c.binding['peer_wxid'],'' if kind=='empty_text' else 'synthetic pending'))
+                49 if kind=='app_content_pending' else 43 if kind=='unsupported_media' else 10002 if kind=='revoke_pending' else 1,0,created,0 if kind=='order_pending' else created*1000,
+                1,1,c.binding['peer_wxid'],'' if kind in {'empty_text','app_content_pending'} else 'synthetic pending'))
             if kind=='cross_database':
                 c.extra_db.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',
                     (1,'9000000000000000003',1,0,created,created*1000+1,1,2,c.binding['peer_wxid'],'synthetic second shard'))
@@ -404,6 +404,33 @@ def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch,re
             assert len(events)==1
             assert events[0].handoff_reason_code==('HOOK_CUSTOMER_FILE_HANDOFF' if restriction=='file' else 'HOOK_APP_CONTENT_UNCONFIRMED')
             assert db.get(Conversation,c.binding['conversation_id']).status=='waiting_sales_reply'
+
+
+@pytest.mark.parametrize('kind',['file','quote','unsupported'])
+def test_known_app_survives_incomplete_reads_and_worker_restart(case,kind):
+    from test_hook_file_isolation import FILE,QUOTE,UNSUPPORTED
+    from app.models.c3 import HandoffEvent
+    c=case;time.sleep(1.05);created=int(time.time())
+    body={'file':FILE,'quote':QUOTE,'unsupported':UNSUPPORTED}[kind]
+    c.db.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (1,'9000000000000000099',49,0,created,created*1000+1,1,1,c.binding['peer_wxid'],body))
+    c.rt.sync(c.binding)
+    before={p:p.read_bytes() for p in c.rt.private_root.rglob('*.json')}
+    c.db.execute("UPDATE MSG SET StrContent='' WHERE localId=1")
+    # Reconstruct the actual runtime from the same durable state, then reread.
+    old=c.rt
+    c.rt=HookFormalRuntime(old.client,old.credentials,old.gateway,old.prepared,old.private_root,wait=lambda _:None)
+    for _ in range(2):
+        result=c.rt.sync(c.binding)
+        assert not result['history_ready'] and result['content_isolated']
+    c.db.execute('UPDATE MSG SET StrContent=? WHERE localId=1',(body,))
+    c.rt.sync(c.binding)
+    assert all(p.read_bytes()==data for p,data in before.items())
+    assert not any(row[0]=='/SendTextMsg' for row in c.server.requests)
+    with SessionLocal() as db:
+        events=list(db.scalars(select(HandoffEvent).where(HandoffEvent.conversation_id==c.binding['conversation_id'])))
+        assert len(events)==1
+        assert db.get(Worker,c.w['id']).run_status=='running'
 
 
 @pytest.mark.parametrize('stage',['claim','begin'])
