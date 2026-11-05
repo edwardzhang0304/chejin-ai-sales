@@ -18,6 +18,11 @@ from test_update_coordinator import FakeApi, _release, _wait
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     runner = _runner()
+    def preserve_stop():
+        if runner.binding and runner.binding.run_status != 'faulted':
+            runner.binding.run_status = 'paused'
+        return True
+    runner.preserve_update_stop = preserve_stop
     runner.set_run_status = lambda value: setattr(runner.binding, 'run_status', value)
     control = {'update_no_new_work': False, 'inflight_flow_id': None}
     durable = dict(ZERO_DURABLE)

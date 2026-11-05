@@ -1,5 +1,6 @@
 """Synthetic regressions for opaque argv, retained writers and normal cancellation."""
 import argparse
+from contextlib import nullcontext
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,7 +42,8 @@ def test_normal_stop_does_not_create_business_fault_but_real_fault_still_wins():
 
 def test_business_cancellation_preserves_paused_status(monkeypatch):
     stop=threading.Event()
-    runner=SimpleNamespace(stop_event=stop,binding=SimpleNamespace(run_status='paused'))
+    runner=SimpleNamespace(stop_event=stop,binding=SimpleNamespace(run_status='paused'),
+                           update_background_cycle=lambda: nullcontext(True))
     def tick(*a):stop.set();raise HookRuntimeStopping()
     services=HookWorkerServices(None,None,intake_interval_seconds=.1,projection_batch_size=1,
                                dispatcher=SimpleNamespace(tick=tick))

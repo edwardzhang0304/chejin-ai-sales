@@ -537,8 +537,8 @@ class UpdateCoordinator:
                     state = self.store.begin(
                         pre_update_run_status=pre_status,
                         client_instance_id=binding.client_instance_id if binding else self._unbound_instance_id(),
+                        keep_stopped_after_update=True,
                     )
-                    state = self.store.save({**state, "keep_stopped_after_update": True})
                     return state
                 admission, state = self.runner.begin_update_check(begin_request)
                 if state is None:
@@ -714,11 +714,11 @@ class UpdateCoordinator:
                 state = self.store.load()
             except ClientUpdateError:
                 return
-            if state.get("state") in {
+            if (state.get("state") in {
                 "checking",
                 "downloading",
                 "waiting_for_safe_boundary",
-            } and not bool(state.get("install_started")):
+            } or state.get("result_code") == "UPDATE_GATE_RELEASE_FAILED") and not bool(state.get("install_started")):
                 self._reconcile_interrupted_preinstall(state)
                 return
             # A recovery helper can observe the final result and exit before
@@ -756,7 +756,8 @@ class UpdateCoordinator:
         """
 
         request_id = str(state.get("update_request_id") or "")
-        self._set_new_work_gate(False, request_id)
+        if not self._release_check_gate(state):
+            return
         self._cleanup_request_payload(request_id)
         self._operator_pause_after_request = bool(
             state.get("operator_pause_after_request")
@@ -1429,6 +1430,9 @@ class UpdateCoordinator:
 
     def _release_check_gate(self, state: dict[str, Any]) -> bool:
         try:
+            if state.get('keep_stopped_after_update'):
+                if not self.runner.preserve_update_stop():
+                    raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
             self._set_new_work_gate(False, state['update_request_id'])
             return True
         except Exception as exc:

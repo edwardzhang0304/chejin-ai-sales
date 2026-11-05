@@ -146,7 +146,8 @@ class UpdateStateStore:
             _atomic_json_write(self.state_path, saved)
         return saved
 
-    def begin(self, *, pre_update_run_status: str, client_instance_id: str) -> dict[str, Any]:
+    def begin(self, *, pre_update_run_status: str, client_instance_id: str,
+              keep_stopped_after_update: bool = False) -> dict[str, Any]:
         with self._lock:
             current = self.load()
             if current.get("state") not in {"idle", "succeeded", "failed", "rolled_back"}:
@@ -157,6 +158,7 @@ class UpdateStateStore:
                     "update_request_id": f"update-{uuid.uuid4()}",
                     "client_instance_id": client_instance_id,
                     "pre_update_run_status": pre_update_run_status,
+                    "keep_stopped_after_update": keep_stopped_after_update,
                     "operator_pause_after_request": False,
                     "fault_after_request": False,
                     "created_at": utc_now_iso(),

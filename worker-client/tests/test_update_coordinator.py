@@ -76,7 +76,13 @@ class FakeRunner:
     def update_check_safety_snapshot(self):
         return {'allowed': True, 'reason_code': '', 'reason_text': ''}
 
+    def preserve_update_stop(self):
+        if self.binding and self.binding.run_status != 'faulted':
+            self.binding.run_status = 'paused'
+        return True
+
     def begin_update_check(self, begin_request):
+        self.preserve_update_stop()
         state = begin_request()
         coordinator_module.set_update_new_work_gate(True, update_request_id=state['update_request_id'])
         return self.update_check_safety_snapshot(), state

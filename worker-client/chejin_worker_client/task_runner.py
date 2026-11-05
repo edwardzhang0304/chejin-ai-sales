@@ -4806,10 +4806,21 @@ class TaskRunner:
             snapshot = self.update_check_safety_snapshot()
             if not snapshot['allowed']:
                 return snapshot, None
+            # Persist the stop before writing the request or starting a thread.
+            # A crash at any later boundary must restart stopped, even if no
+            # update gate/result has been written yet. This performs no I/O to
+            # WeChat or the backend; the usual status ACK runs asynchronously.
+            if not self.preserve_update_stop():
+                raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
             state = begin_request()
             set_update_new_work_gate(True, update_request_id=state['update_request_id'])
             self._update_quiescing_request_id = state['update_request_id']
             return snapshot, state
+
+    def preserve_update_stop(self) -> bool:
+        """Keep update intent stopped through the existing durable stop path."""
+        return self.binding is None or self._preserve_stopped_run_status(
+            'paused', repeated_observation=True)
 
     def update_pending_read_handoff_snapshot(self, package_manifest: dict[str, Any]) -> dict[str, Any]:
         """Preserve one stopped read for a proven compatible target."""

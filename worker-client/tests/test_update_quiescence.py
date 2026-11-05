@@ -20,6 +20,80 @@ from test_hook_connection import callback
 
 
 @pytest.mark.parametrize('status', ['running', 'paused', 'faulted'])
+@pytest.mark.parametrize('boundary', ['request_before', 'request_after', 'gate_after', 'thread_start'])
+def test_update_crash_boundaries_restart_stopped(stopped_runner, tmp_path, monkeypatch, status, boundary):
+    from chejin_worker_client.task_runner import TaskRunner
+    from chejin_worker_client import task_runner as runner_module
+    from chejin_worker_client.emergency_stop import reset_emergency_stop_for_tests
+    runner, _ = stopped_runner
+    reset_emergency_stop_for_tests()
+    runner._apply_local_run_status('running')
+    runner._apply_local_run_status(status)
+    store = UpdateStateStore(tmp_path/'crash-update')
+    def coordinator(r):
+        return UpdateCoordinator(FakeApi(_release()), r, binding_provider=lambda: r.binding,
+            on_state=lambda _: None, request_normal_exit=lambda: pytest.fail('No install'),
+            state_store=store, formal_package=True)
+    c = coordinator(runner)
+    with monkeypatch.context() as patch:
+        if boundary.startswith('request_'):
+            original = store.begin
+            def crash_request(**kw):
+                if boundary == 'request_after': original(**kw)
+                raise SystemExit('Synthetic process loss')
+            patch.setattr(store, 'begin', crash_request)
+        elif boundary == 'gate_after':
+            original = runner_module.set_update_new_work_gate
+            def crash_gate(*a, **kw):
+                original(*a, **kw)
+                raise SystemExit('Synthetic process loss')
+            patch.setattr(runner_module, 'set_update_new_work_gate', crash_gate)
+        else:
+            patch.setattr(threading.Thread, 'start', lambda _: (_ for _ in ()).throw(SystemExit('Synthetic process loss')))
+        with pytest.raises(SystemExit): c.check_for_updates()
+    restarted = TaskRunner(runner.api, runner.bridge, on_profile=lambda _: None,
+        on_status=lambda _: None, on_step=lambda _: None, on_task=lambda _: None,
+        on_result=lambda _: None, on_error=lambda _: None)
+    restarted.binding = storage.load_binding()
+    # Even before update-result reconciliation can run, the normal task gate
+    # sees the persisted pause; no startup scheduling window is left open.
+    assert restarted.binding.run_status == ('faulted' if status == 'faulted' else 'paused')
+    assert storage.load_runtime_control()['pause_requested']
+    assert not restarted._can_start_new_flow()
+    coordinator(restarted).start_result_reconciliation()
+    assert storage.load_binding().run_status == restarted.binding.run_status
+    assert storage.load_runtime_control()['pause_requested']
+    assert not restarted._can_start_new_flow()
+
+
+def test_interrupted_update_cannot_clear_gate_when_stop_write_fails(stopped_runner, tmp_path, monkeypatch):
+    from chejin_worker_client import task_runner as runner_module
+    from chejin_worker_client.emergency_stop import reset_emergency_stop_for_tests
+    runner, _ = stopped_runner
+    reset_emergency_stop_for_tests()
+    runner._apply_local_run_status('running')
+    store = UpdateStateStore(tmp_path/'interrupted')
+    state = store.begin(pre_update_run_status='running', client_instance_id='synthetic',
+                        keep_stopped_after_update=True)
+    storage.set_update_new_work_gate(True, update_request_id=state['update_request_id'])
+    original = runner_module.save_binding
+    monkeypatch.setattr(runner_module, 'save_binding', lambda _: (_ for _ in ()).throw(OSError('Synthetic disk failure')))
+    c = UpdateCoordinator(FakeApi(_release()), runner, binding_provider=lambda: runner.binding,
+        on_state=lambda _: None, request_normal_exit=lambda: pytest.fail('No install'),
+        state_store=store, formal_package=True)
+    c.start_result_reconciliation()
+    assert store.load()['result_code'] == 'UPDATE_GATE_RELEASE_FAILED'
+    assert storage.load_runtime_control()['update_no_new_work']
+    assert not runner._can_start_new_flow()
+    monkeypatch.setattr(runner_module, 'save_binding', original)
+    c.start_result_reconciliation()
+    assert store.load()['result_code'] == 'UPDATE_PREINSTALL_INTERRUPTED'
+    assert storage.load_binding().run_status == 'paused'
+    assert storage.load_runtime_control()['pause_requested']
+    assert not storage.load_runtime_control()['update_no_new_work']
+
+
+@pytest.mark.parametrize('status', ['running', 'paused', 'faulted'])
 def test_click_during_real_cycle_stops_next_checks_and_waits_for_current(environment, monkeypatch, status):
     runner, control, _, create = environment
     runner.binding.run_status = status
