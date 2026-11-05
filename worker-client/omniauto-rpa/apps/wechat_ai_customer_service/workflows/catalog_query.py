@@ -215,6 +215,25 @@ def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | No
     else:
         query["sort"] = "budget_distance" if query["budget_bounds"] else "price_asc"
         sort_sources = []
+    # "Exclude the one just shown" identifies a vehicle by the settled reply,
+    # never by a guessed name or by a matching number in unsent conversation.
+    latest = next((m for m in reversed(sources) if m.get("sender") in {"customer","client"}), {})
+    current_text = latest.get("content", "")
+    mentions_name = any(n["kind"] == "exclude" and normalized_name(n["text"]) in normalized_name(current_text)
+                        for n in query["name_queries"])
+    relative = re.search(r"(?:刚才|上[次一]|刚刚|之前|那)[^，,。！？]{0,8}(?:辆|台|款)", current_text)
+    exclude = re.search(r"不要|不看|排除|换(?:成|一|个|辆|台)|看看别的|看别的", current_text)
+    if relative and exclude and not mentions_name and not re.search(r"不是不要|别排除|不要排除|不换", current_text):
+        confirmed = [key for key, links in (known_ids or {}).items()
+                     if any(link.get("kind") == "confirmed_native_reply" for link in links)]
+        if len(confirmed) != 1 or (query["exclude_ids"] and set(query["exclude_ids"]) != set(confirmed)):
+            query["unresolved_previous_exclusion"] = True
+            query["exclude_ids"] = []
+            query["name_queries"] = [n for n in query["name_queries"] if n["kind"] != "exclude"]
+        else:
+            query["exclude_ids"] = confirmed
+            query["id_sources"][confirmed[0]] = deepcopy(known_ids[confirmed[0]])
+            query["name_queries"] = [n for n in query["name_queries"] if n["kind"] != "exclude"]
     query.update(model_query_contract=contract, raw_model_query=deepcopy(raw),
                  sort_origin="customer_explicit" if explicit else "program_default",
                  sort_source_ids=sort_sources, redundant_metadata=redundant)
@@ -545,6 +564,8 @@ def snapshot_id(rows: list[dict]) -> str:
 def _selection_blockers(query: dict, names: list[dict], available_ids: set[str]) -> list[str]:
     """Locate uncertainty from validated conditions, never from interpretation prose."""
     reasons = []
+    if query.get("unresolved_previous_exclusion"):
+        reasons.append("unresolved_previous_exclusion")
     if query["budget"]["state"] == "uncertain":
         reasons.append("budget_uncertain")
     if any(n["status"] != "unique" for n in names):
@@ -640,7 +661,9 @@ RECEIPT_INSTRUCTION = (
     "partial表示仅核实known_condition_scope；match_count=null不是0。可以介绍recommendations里的具体车型和真实价格，"
     "必须说明pending_conditions尚未核实，不得称候选满足全部条件或给全条件最低价。"
     "clarification_required表示关键条件不明确，必须用ask_clarifying_question针对原话中的实际未知点澄清，不能从空列表推断无车。"
-    "known_condition_facts仅是已执行条件下的事实材料，供说明和澄清，不能当作符合全部条件的推荐许可。"
+    "known_condition_facts是已执行条件下的有序材料，举例也沿原排序、说明未知字段，不能说已按未支持的年份筛选。"
+    "reply_target点名目标只核对所指车及其价格，不需要从全库第一辆说起；未唯一定位就澄清。"
+    "库存数量、上下界和实际展示台数各按所指范围；客户说的首付、月供是客户意向，不是可办方案。"
     "如年份近一点基准不明，询问具体年份范围；不要绕开实际未知点机械询问预算。"
     "scanned_count只表示读取库存行数，不是匹配数或正文展示数；已知条件数量见known_condition_match_count，"
     "不得扩大其范围。依据、版本、来源均由程序维护，无需复制来源表。"
@@ -658,11 +681,26 @@ def _energy_distribution(values, unresolved=0):
     return counts, unresolved
 
 
-def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
+def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8, sources=()) -> dict:
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import catalog_product_payload
     rows = inventory_snapshot(runtime)
     bounds = query["budget_bounds"]
     name_results = resolve_names(query["name_queries"], rows)
+    # Ground an explicit target in customer speech and the same full inventory
+    # used for selection. A guessed model name must not replace a named car.
+    current = [m for m in sources if m["id"] in scope.get("current_message_ids", []) and m["sender"] in ("customer","client")]
+    text = " ".join(m["content"] for m in current)
+    focus = _named_request(text)
+    if focus:
+        from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import _reply_entities
+        labels = [{"id":r["id"],"name":r["data"].get("name"),"aliases":r["data"].get("aliases") or [],
+                   "public_details":{"model":(r["data"].get("additional_details") or {}).get("model")}} for r in rows]
+        mentioned = _reply_entities(text, labels)
+        if mentioned:
+            name_results = [n for n in name_results if n["kind"] != "reference"]
+            names = [{"text":text[e["start"]:e["end"]],"kind":"reference",
+                      "source_ids":[m["id"] for m in current if normalized_name(text[e["start"]:e["end"]]) in normalized_name(m["content"])]} for e in mentioned]
+            name_results.extend(resolve_names(names,rows))
     blockers = _selection_blockers(query, name_results, {r["id"] for r in rows})
     can_evaluate = _known_conditions_evaluable(query, blockers)
     matches, references, unknown = [], [], {}
@@ -715,6 +753,18 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
         ((p.get("public_details") or {}).get("energy_type") for p in matches), len(unknown))
     stock_counts, stock_unknown = _energy_distribution(
         ((r["data"].get("additional_details") or {}).get("energy_type") for r in rows))
+    energy_prices = {}
+    for item in matches:
+        energy = (item.get("public_details") or {}).get("energy_type")
+        if energy not in ENERGY_TYPES:
+            continue
+        stats = energy_prices.setdefault(energy, {"min":None, "max":None, "unknown":0})
+        price = item.get("price")
+        if type(price) not in (float,int) or not math.isfinite(price) or price <= 0:
+            stats["unknown"] += 1
+        else:
+            stats["min"] = min(price, stats["min"]) if stats["min"] is not None else price
+            stats["max"] = max(price, stats["max"]) if stats["max"] is not None else price
     def rank(p):
         value = p.get("price")
         valid = type(value) in {int, float} and math.isfinite(value) and value > 0
@@ -736,6 +786,9 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8) -> dict:
                "requirement_uncertain": query["requirement_state"] == "uncertain" or bool(blockers), "name_results": name_results,
                "evaluation_version": 1, "clarification_reasons": blockers,
                "known_conditions_evaluated": can_evaluate,
+               "known_energy_prices": energy_prices,
+               "known_price_min": min(prices) if prices else None,
+               "known_price_max": max(prices) if prices else None,
                "stock_energy_counts": stock_counts, "stock_energy_unknown_rows": stock_unknown,
                "known_energy_counts": energy_counts if can_evaluate else None,
                "known_energy_unknown_rows": missing_energy if can_evaluate else None,
@@ -767,9 +820,40 @@ def receipt_products(receipt: dict) -> list[dict]:
     return items
 
 
+def _named_request(words):
+    return bool(re.search(r"只(?:看|想|要|问)|价格|报价|售价|多少钱|介绍|车况|上牌|里程", words))
+
+
+def reply_target(receipt, evidence):
+    """Describe the requested object, not the implementation of its stock lookup."""
+    query = receipt["query"]
+    ids = set(receipt.get("scope", {}).get("current_message_ids", []))
+    current = [m for m in message_sources(evidence) if m["id"] in ids and m["sender"] in ("customer", "client")]
+    words = " ".join(m["content"] for m in current)
+    names = [n for n in receipt.get("name_results", []) if n["kind"] == "reference"]
+    named = [n for n in names if any(m["id"] in n["source_ids"] and normalized_name(n["text"]) in normalized_name(m["content"]) for m in current)]
+    # A named car can occur in a comparison or in a request for alternatives.
+    # Such mentions alone do not turn a list into an exclusive price request.
+    alternatives = re.search(r"(?:别的|其他|其它|另外|类似|同类|以外|除此|对比|比较)", words)
+    direct = query.get("operation") == "details" or bool(names and _named_request(words))
+    if not direct:
+        return {"kind": "list", "source_ids": [m["id"] for m in current]}
+    requested = named or names
+    if not named and names and not query.get("reference_ids"):
+        return {"kind":"unresolved_reference", "source_ids":[m["id"] for m in current], "vehicle_ids":[]}
+    resolved = all(n["status"] == "unique" for n in requested)
+    target_ids = sorted({key for n in requested for key in n["matched_ids"]} or set(query["reference_ids"]))
+    if not resolved or not target_ids or not set(target_ids) <= {p["id"] for p in receipt["references"]}:
+        return {"kind":"unresolved_reference", "source_ids":[m["id"] for m in current], "vehicle_ids":[]}
+    return {"kind":"reference_and_list" if alternatives else "named_reference", "source_ids":[m["id"] for m in current], "vehicle_ids":target_ids,
+            "asks_price": bool(re.search(r"价格|报价|售价|多少钱|几万", words))}
+
+
 def attach_receipt(evidence: dict, receipt: dict) -> None:
     receipt = receipt_view(receipt)
     preparation = (evidence.get("catalog_protocol") or {}).get("preparation")
+    if preparation and receipt.get("query"):
+        receipt["reply_target"] = reply_target(receipt, evidence)
     evidence["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "queried", "receipt": receipt,
                                     "model_query_contract": model_contract(evidence.get("catalog_protocol") or {})}
     if preparation is not None:
@@ -795,7 +879,7 @@ def prepare_catalog_round(*, evidence: dict, settings: dict, brain_input: dict, 
     runtime = runtime_factory()
     scope = {"conversation_id": brain_input["target"]["conversation_id"],
              "current_message_ids": brain_input["current_message"]["message_ids"]}
-    receipt = execute_query(preparation["query"], runtime, scope=scope,
+    receipt = execute_query(preparation["query"], runtime, scope=scope, sources=message_sources(evidence),
                             limit=min(20, max(1, int(settings.get("max_catalog_candidates") or 8))))
     attach_receipt(evidence, receipt)
     return preparation
@@ -838,14 +922,17 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
     for fact in plan.get("facts_claimed", []):
         if fact.get("source_level") == "catalog_query" or fact.get("fact_type") in AGGREGATES:
             field = AGGREGATES.get(fact.get("fact_type"))
-            if (not field or fact.get("source_level") != "catalog_query" or not aggregate_fact_ready(receipt, field)
-                    or fact.get("source_id") != receipt.get("query_id") or receipt.get(field) is None
+            energy = fact.get("scope_energy") or []
+            expected = scoped_aggregate_value(receipt,field,energy) if energy else receipt.get(field)
+            if (not field or fact.get("source_level") != "catalog_query"
+                    or (not energy and not aggregate_fact_ready(receipt, field))
+                    or fact.get("source_id") != receipt.get("query_id") or expected is None
                     or (field in {"price_min", "price_max"} and receipt.get("price_unknown_count"))):
                 errors.append("invalid_catalog_aggregate_source")
                 continue
             try:
                 value = Decimal(str(fact.get("value")))
-                if not value.is_finite() or value != Decimal(str(receipt[field])):
+                if not value.is_finite() or value != Decimal(str(expected)):
                     errors.append("catalog_aggregate_value_mismatch")
             except (InvalidOperation, ValueError):
                 errors.append("invalid_catalog_aggregate_value")
@@ -853,7 +940,30 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
 
 
 AGGREGATES = {"catalog_match_count": "match_count", "catalog_price_min": "price_min", "catalog_price_max": "price_max",
-              "catalog_scanned_count": "scanned_count", "catalog_known_condition_count": "known_condition_match_count"}
+              "catalog_scanned_count": "scanned_count", "catalog_known_condition_count": "known_condition_match_count",
+              "catalog_known_price_min":"known_price_min", "catalog_known_price_max":"known_price_max"}
+
+
+def scoped_aggregate_value(receipt, field, energy):
+    """Look up a witnessed metric in the full evaluated scope, never the displayed page."""
+    if not receipt.get("known_conditions_evaluated") or receipt.get("unknown_field_count"):
+        return None
+    if not energy:
+        return receipt.get(field) if aggregate_fact_ready(receipt, field) else None
+    kinds = set(energy)
+    if not kinds <= set(ENERGY_TYPES) or receipt.get("known_energy_unknown_rows") != 0:
+        return None
+    counts = receipt.get("known_energy_counts") or {}
+    if field == "known_condition_match_count":
+        return sum(counts.get(k, 0) for k in kinds)
+    ranges = [v for k,v in (receipt.get("known_energy_prices") or {}).items() if k in kinds]
+    if not ranges or any(v["unknown"] for v in ranges):
+        return None
+    if field == "known_price_min":
+        return min(v["min"] for v in ranges)
+    if field == "known_price_max":
+        return max(v["max"] for v in ranges)
+    return None
 
 
 def aggregate_ready(receipt):
@@ -863,10 +973,11 @@ def aggregate_ready(receipt):
 def aggregate_fact_ready(receipt, field):
     if field == "scanned_count":
         return receipt.get("scan_complete") is True
-    if field == "known_condition_match_count":
+    if field in {"known_condition_match_count", "known_price_min", "known_price_max"}:
         view = receipt_view(receipt)
         return bool(view.get("scan_complete") is True and view.get("known_conditions_evaluated")
-                    and not view.get("unknown_field_count") and view.get("known_condition_match_count") is not None)
+                    and not view.get("unknown_field_count") and view.get(field) is not None
+                    and (field == "known_condition_match_count" or not view.get("price_unknown_count")))
     return aggregate_ready(receipt)
 
 
@@ -929,7 +1040,9 @@ def prepared_review_route(evidence, plan):
     policy_amount = any(o.get("pending_policy_review") and (o["segment_index"], o["start"], o["end"]) not in covered
                         for o in preliminary["occurrences"])
     question = extract_current_message_text(evidence)
-    if (formal["errors"] or policy_amount or is_appointment_schedule_question(remaining)
+    appointment_terms_in_reply = is_appointment_schedule_question(remaining) and (
+        bool(re.search(r"提前|预约|排期|直接过去|门店确认|无需确认|保证|随时", remaining)))
+    if (formal["errors"] or policy_amount or appointment_terms_in_reply
             or (not refs and is_appointment_schedule_question(question))):
         return {"needs_semantic_review": True, "reason": "free_policy_explanation"}
     validated = validate_reviewed_reply_facts(plan, evidence, refs=refs, mapping=mapping)
@@ -1125,7 +1238,7 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
         runtime = runtime_factory()
         scope = {"conversation_id": brain_input["target"]["conversation_id"],
                  "current_message_ids": brain_input["current_message"]["message_ids"]}
-        receipt = execute_query(query, runtime, scope=scope, limit=min(20, max(1, int(settings.get("max_catalog_candidates") or 8))))
+        receipt = execute_query(query, runtime, scope=scope, sources=message_sources(evidence), limit=min(20, max(1, int(settings.get("max_catalog_candidates") or 8))))
         attach_receipt(evidence, receipt)
         audit["query_seconds"] = time.monotonic() - started
         phase = "completion"
@@ -1175,12 +1288,24 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
                 "catalog_stages": audit, "provider": first_result.get("provider"), "model": first_result.get("model")}
 
 
-def trusted_image_ids(target_state, batch, conversation_id):
+def trusted_vehicle_ids(target_state, batch, conversation_id):
     """Only the validated backend context can contribute IDs, never Brain output/context hints."""
     context = target_state.get("chejin_brain_context") or {}
     if context.get("conversation_id") != conversation_id or not conversation_id:
         return {}
     ids = {}
+    # Select only the latest self turn. An unrelated later sales message or
+    # multiple vehicle IDs does not identify "the previous one".
+    history = context.get("history") or []
+    self_rows = [r for r in history if r.get("sender_role") == "self"]
+    last = (self_rows[-1].get("confirmed_reply") or {}) if self_rows else {}
+    if last:
+        for row in self_rows:
+            proof = row.get("confirmed_reply") or {}
+            if proof.get("batch") == last["batch"]:
+                for vehicle in proof["vehicles"]:
+                    ids.setdefault(vehicle, []).append({"source_id":row["message_event_id"],"conversation_id":conversation_id,
+                                                        "kind":"confirmed_native_reply","batch":proof["batch"],"native":proof["native"]})
     for row in [*(context.get("history") or []), *batch]:
         key = row.get("id") or row.get("message_event_id")
         product = row.get("server_validated_product_id")

@@ -1039,11 +1039,11 @@ def _maybe_run_customer_service_brain_within_time_budget(
         apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)
     if target_state.get("history_authority") == CHEJIN_HISTORY_AUTHORITY:
-        from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources, trusted_image_ids
+        from apps.wechat_ai_customer_service.workflows.catalog_query import PROTOCOL, message_sources, trusted_vehicle_ids
         evidence_pack["catalog_protocol"] = {"protocol": PROTOCOL, "phase": "not_queried",
                                              **({"model_query_contract": target_state["model_query_contract"]} if "model_query_contract" in target_state else {}),
                                              "sources": message_sources(evidence_pack),
-                                             "known_ids": trusted_image_ids(target_state, batch, raw_conversation_id(raw_capture))}
+                                             "known_ids": trusted_vehicle_ids(target_state, batch, raw_conversation_id(raw_capture))}
     if str(evidence_pack.get("knowledge_error") or "").strip():
         payload.update(
             {

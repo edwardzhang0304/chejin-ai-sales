@@ -2074,6 +2074,31 @@ def _brain_snapshot_message_is_semantic(item: dict[str, Any]) -> bool:
     )
 
 
+def _confirmed_reply_history(db, binding, events):
+    """Allow historical vehicle IDs only from an action, its ACK, and its actual echo."""
+    links = {e.id: (e.raw_payload or {}).get("ai_reply_action_id") for e in events
+             if e.conversation_id == binding.conversation_id and e.sender_role == "self"
+             and (e.raw_payload or {}).get("native_source") == "native_history"}
+    action_ids = {v for v in links.values() if isinstance(v,str)}
+    if not action_ids:
+        return {}
+    settled = {a.id:(a, ack) for a,ack in db.execute(
+        select(ReplyAction,SentAck).join(SentAck, SentAck.reply_action_id == ReplyAction.id)
+        .where(ReplyAction.id.in_(action_ids),ReplyAction.conversation_id==binding.conversation_id,
+               ReplyAction.status=="sent", SentAck.send_result=="sent"))}
+    confirmed = {}
+    for event in events:
+        pair = settled.get(links.get(event.id))
+        if pair:
+            action, ack = pair
+            native = (ack.evidence or {}).get("native_msg_id")
+            if (native and native == (event.raw_payload or {}).get("native_msg_id")
+                    and action.reply_text == event.content and action.claimed_task_id == ack.task_id):
+                confirmed[event.id] = {"action":action.id,"batch":action.batch_id,"native":native,
+                                       "vehicles":_brain_plan_vehicle_ids(action.ai_payload or {})}
+    return confirmed
+
+
 def _build_brain_context_snapshot(
     db: Session,
     *,
@@ -2117,6 +2142,11 @@ def _build_brain_context_snapshot(
     window_rows = all_history_rows[-50:]
     prior_messages = [_brain_snapshot_message(item) for item in comparison_views(db, window_rows)]
     # Only the frozen 50-event window can be rendered into history_text.
+    if binding.native_self_wxid:
+        verified = _confirmed_reply_history(db, binding, window_rows)
+        for row in prior_messages:
+            if row["message_event_id"] in verified:
+                row["confirmed_reply"] = verified[row["message_event_id"]]
     # Counting older, deliberately excluded rows would incorrectly report a
     # lost history when the retained window legitimately contains no semantic
     # fact.
