@@ -162,7 +162,7 @@ def effective_customer_sort(sources, supplied, supplied_ids):
 
 
 def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None,
-                          contract: str = PROTOCOL) -> dict:
+                          contract: str = PROTOCOL, current_ids=None) -> dict:
     """Adapt trusted wire identity once; never infer a contract from model fields."""
     if contract == PROTOCOL:
         return normalize_query(raw, sources, known_ids=known_ids)
@@ -217,13 +217,17 @@ def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | No
         sort_sources = []
     # "Exclude the one just shown" identifies a vehicle by the settled reply,
     # never by a guessed name or by a matching number in unsent conversation.
-    latest = next((m for m in reversed(sources) if m.get("sender") in {"customer","client"}), {})
-    current_text = latest.get("content", "")
+    customer = [m for m in sources if m.get("sender") in {"customer", "client"}]
+    current = [m for m in customer if m["id"] in current_ids] if current_ids is not None else customer[-1:]
+    current_text = " ".join(m["content"] for m in current)
     mentions_name = any(n["kind"] == "exclude" and normalized_name(n["text"]) in normalized_name(current_text)
                         for n in query["name_queries"])
     relative = re.search(r"(?:刚才|上[次一]|刚刚|之前|那)[^，,。！？]{0,8}(?:辆|台|款)", current_text)
     exclude = re.search(r"不要|不看|排除|换(?:成|一|个|辆|台)|看看别的|看别的", current_text)
-    if relative and exclude and not mentions_name and not re.search(r"不是不要|别排除|不要排除|不换", current_text):
+    revoked = re.search(r"不是不要|别排除|不要排除|不换", current_text)
+    if relative and revoked and not mentions_name and query["exclude_ids"]:
+        raise CatalogQueryError("previous_vehicle_exclusion_revoked", fields=["exclude_ids"])
+    if relative and exclude and not mentions_name and not revoked:
         confirmed = [key for key, links in (known_ids or {}).items()
                      if any(link.get("kind") == "confirmed_native_reply" for link in links)]
         if len(confirmed) != 1 or (query["exclude_ids"] and set(query["exclude_ids"]) != set(confirmed)):
@@ -382,7 +386,8 @@ def _prepare_catalog_need(evidence: dict) -> dict:
     preference = effective_customer_sort(sources, None, [])
     if preference:
         raw["sort"] = {"value": preference[0], "source_ids": preference[1]}
-    normalized = normalize_model_query(raw, sources, contract=MODEL_QUERY_CONTRACT, known_ids=protocol.get("known_ids"))
+    normalized = normalize_model_query(raw, sources, contract=MODEL_QUERY_CONTRACT, known_ids=protocol.get("known_ids"),
+                                       current_ids=current_ids)
     return {"route": "direct", "reason": "complete_explicit_conditions", "query": normalized, "source_ids": used}
 
 
@@ -821,7 +826,19 @@ def receipt_products(receipt: dict) -> list[dict]:
 
 
 def _named_request(words):
-    return bool(re.search(r"只(?:看|想|要|问)|价格|报价|售价|多少钱|介绍|车况|上牌|里程", words))
+    return bool(re.search(r"只(?:看|想|要|问)|价格|报价|售价|多少钱|介绍|对比|比较|车况|上牌|里程", words))
+
+
+def _requests_other_choices(words):
+    """Comparison of named cars is not a request to introduce another car."""
+    for clause in re.split(r"[，,。；;！？!?]", words):
+        if not re.search(r"别的|其他|其它|另(?:外|有)|同类|替代|备选", clause):
+            continue
+        if re.search(r"(?:不用|不必|无需|不要|别|不想|不看)(?:再|给我|帮我)?(?:推荐|介绍|看|考虑|其他|另外)", clause):
+            continue
+        if re.search(r"推荐|介绍|看看|还有|有没有|有哪些|挑|找|换|给我", clause):
+            return True
+    return False
 
 
 def reply_target(receipt, evidence):
@@ -834,7 +851,7 @@ def reply_target(receipt, evidence):
     named = [n for n in names if any(m["id"] in n["source_ids"] and normalized_name(n["text"]) in normalized_name(m["content"]) for m in current)]
     # A named car can occur in a comparison or in a request for alternatives.
     # Such mentions alone do not turn a list into an exclusive price request.
-    alternatives = re.search(r"(?:别的|其他|其它|另外|类似|同类|以外|除此|对比|比较)", words)
+    alternatives = _requests_other_choices(words)
     direct = query.get("operation") == "details" or bool(names and _named_request(words))
     if not direct:
         return {"kind": "list", "source_ids": [m["id"] for m in current]}
@@ -950,6 +967,8 @@ def scoped_aggregate_value(receipt, field, energy):
         return None
     if not energy:
         return receipt.get(field) if aggregate_fact_ready(receipt, field) else None
+    if not isinstance(energy, (list,tuple)) or not all(isinstance(k,str) for k in energy):
+        return None
     kinds = set(energy)
     if not kinds <= set(ENERGY_TYPES) or receipt.get("known_energy_unknown_rows") != 0:
         return None
@@ -1001,7 +1020,7 @@ def standard_source_refs(mapping):
     return refs
 
 
-def _bind_clearance(evidence, plan, kind, *, method, reason, refs):
+def _bind_clearance(evidence, plan, kind, *, method, reason, refs, validated=None):
     from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
     proof = {"reply": fingerprint(join_reply_segments(plan["reply_segments"]).strip()),
@@ -1009,7 +1028,9 @@ def _bind_clearance(evidence, plan, kind, *, method, reason, refs):
     if (evidence.get("catalog_protocol") or {}).get("preparation"):
         proof.update(version=2, method=method, reason=reason, source_refs=deepcopy(refs),
                      authority=fingerprint(reply_authority_snapshot(evidence)),
-                     plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]))
+                     plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]),
+                     segment_vehicle_ids=deepcopy(validated["segment_vehicle_ids"]))
+        proof["segment_binding"] = fingerprint([proof["plan"],proof["reply"],proof["protocol"],proof["segment_vehicle_ids"]])
     evidence["_catalog_clearance"] = proof
 
 
@@ -1054,7 +1075,7 @@ def prepared_review_route(evidence, plan):
         return {"ok": False, "enforced": True, "invoked": False, "status": "program_checked",
                 "verdict": "repair", "reason": "invalid_final_plan", "errors": check["errors"]}
     reason = "published_standard_answer" if refs else "routine_reply_checked"
-    _bind_clearance(evidence, plan, "program_checked", method="program", reason=reason, refs=refs)
+    _bind_clearance(evidence, plan, "program_checked", method="program", reason=reason, refs=refs, validated=validated)
     return {"ok": True, "enforced": True, "invoked": False, "status": "program_checked",
             "reason": reason, "errors": []}
 
@@ -1106,7 +1127,7 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
                 return {**review, "ok": False, "verdict": "repair", "enforced": True,
                         "errors": final_validation["errors"], "soft_pass_low_risk": False}
         _bind_clearance(evidence, plan, kind, method="semantic", reason="required_semantic_review",
-                        refs=plan.get("policy_refs"))
+                        refs=plan.get("policy_refs"), validated=validated)
     return review
 
 
@@ -1156,6 +1177,12 @@ def serialized_clearance_valid(result: dict, *, require_current=False) -> bool:
     elif type(proof["version"]) is not int or proof["version"] != 2:
         return False
     else:
+        if require_current or "segment_binding" in proof or "segment_vehicle_ids" in proof:
+            segment_ids = proof.get("segment_vehicle_ids")
+            if (not isinstance(segment_ids,list) or len(segment_ids) != len(plan.get("reply_segments") or [])
+                    or any(not isinstance(group,list) or not all(isinstance(v,str) for v in group) for group in segment_ids)
+                    or proof.get("segment_binding") != fingerprint([proof.get("plan"),proof.get("reply"),proof.get("protocol"),segment_ids])):
+                return False
         history = result.get("reply_check_history") or []
         if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
             return False
@@ -1232,7 +1259,8 @@ def run_catalog_round(*, first_result: dict, settings: dict, brain_input: dict, 
             raise CatalogQueryError("query_and_reply_must_be_separate", fields=["catalog_query"])
         query = normalize_model_query(first["catalog_query"], message_sources(evidence),
                                       contract=model_contract(evidence.get("catalog_protocol") or {}),
-                                      known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"))
+                                      known_ids=(evidence.get("catalog_protocol") or {}).get("known_ids"),
+                                      current_ids=brain_input["current_message"]["message_ids"])
         audit["validation_seconds"] = time.monotonic() - started
         phase = "inventory_query"
         runtime = runtime_factory()

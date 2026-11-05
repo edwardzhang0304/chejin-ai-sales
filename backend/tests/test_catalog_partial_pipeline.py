@@ -244,3 +244,85 @@ def test_recording_customer_requirements_does_not_certify_a_seller_claim(monkeyp
         assert pipeline.generate(bid)['decision'] != 'send_reply'
     with SessionLocal() as db:
         assert bool(list(db.scalars(select(ReplyAction)))) is allowed
+
+
+def configure_named_transport(monkeypatch, state, question, segments, operation='search'):
+    configure_partial(monkeypatch,state,'normal')
+    def coverage(binding):
+        view=original_coverage(binding)
+        for scan in view['scans']:
+            for row,text in zip(scan['databases'][0]['pages'][0],['您好',question]):
+                row['StrContent']=text
+        return view
+    monkeypatch.setattr(pipeline,'coverage',coverage)
+    monkeypatch.setattr(pipeline.native,'coverage',coverage)
+    def transport(**kwargs):
+        assert kwargs['model']!='synthetic-reviewer'
+        if not state.get('receipt'):
+            mid=state['invocations'][-1]['batch'][-1]['id']
+            value={'catalog_query':{'operation':operation,'requirement_state':'clear',
+                'budget':{'state':'not_mentioned','source_ids':[]},'filters':[],
+                'name_queries':[{'text':n,'kind':'reference','source_ids':[mid]}
+                                for n in ('合成车4','合成车5') if n in question],
+                'reference_ids':[],'exclude_ids':[],'source_ids':[mid],
+                'unsupported_requirements':[],'interpretation':'按客户点名查询'}}
+        else:
+            value=pipeline.joined.fixtures.base_plan()
+            value.update(answer_mode='direct_answer',reply_segments=segments)
+            value.pop('evidence_used',None);value.pop('facts_claimed',None)
+        return {'ok':True,'status':200,'response_text':json.dumps(value,ensure_ascii=False)}
+    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+
+
+@pytest.mark.parametrize('question,body,allowed', [
+    ('只对比合成车4和合成车5的价格，别推荐其他车。','合成车4报价6.4万，合成车5报价6.8万。',True),
+    ('只对比合成车4和合成车5的价格，别推荐其他车。','合成车4报价6.4万。',False),
+    ('合成车4什么价格？另外推荐两台便宜的。','合成车4报价6.4万。其他车可以看合成车1报价5.2万，合成车2报价5.6万。',True),
+    ('合成车4什么价格？另外推荐两台便宜的。','合成车4报价6.4万。',False),
+    ('合成车4什么价格？另外推荐两台便宜的。','合成车1报价5.2万，合成车2报价5.6万。',False),
+])
+@pytest.mark.parametrize('operation', ['search', 'compare'])
+def test_named_comparisons_and_extra_choices_through_native_chain(monkeypatch,actual_brain,question,body,allowed,operation):
+    configure_named_transport(monkeypatch, actual_brain, question, [body], operation)
+    if allowed:
+        pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
+    else:
+        _,_,_,bid=pipeline.created(monkeypatch)
+        assert pipeline.generate(bid)['decision'] != 'send_reply'
+    with SessionLocal() as db:
+        assert bool(list(db.scalars(select(ReplyAction)))) is allowed
+
+
+def test_first_settled_action_only_credits_its_own_vehicles(monkeypatch, actual_brain):
+    from app.models.wechat import MessageEvent, WechatSessionBinding
+    from app.models.c3 import SentAck
+    from app.models.worker import Worker
+    from app.core.config import get_settings
+    question = '只对比合成车4和合成车5的价格，别推荐其他车。'
+    parts = ['先说您点名的车型。', '合成车4报价6.4万元。', '合成车5报价6.8万元。']
+    configure_named_transport(monkeypatch, actual_brain, question, parts)
+    monkeypatch.setattr(get_settings(), 'c3_reply_segment_max_chars', 24)
+    actual_brain['brain_config']['reply_sequence_max_chars'] = 24
+    original_bound = pipeline.native.bound
+    def bound_with_sequence():
+        worker, task, params, binding = original_bound()
+        with SessionLocal() as db:
+            row = db.get(Worker, worker['id'])
+            row.local_lock_summary = {**(row.local_lock_summary or {}), 'capabilities':{'reply_sequence_version':1}}
+            db.commit()
+        return worker, task, params, binding
+    monkeypatch.setattr(pipeline.native, 'bound', bound_with_sequence)
+    pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique', monkeypatch)
+    with SessionLocal() as db:
+        first, second = list(db.scalars(select(ReplyAction).order_by(ReplyAction.segment_index)))
+        assert (first.reply_text, second.reply_text) == (' '.join(parts[:2]), parts[2])
+        assert first.status == 'sent' and second.status != 'sent'
+        ack, = list(db.scalars(select(SentAck)))
+        assert ack.reply_action_id == first.id
+        event, = list(db.scalars(select(MessageEvent).where(MessageEvent.sender_role == 'self')))
+        binding = db.scalar(select(WechatSessionBinding).where(WechatSessionBinding.conversation_id == event.conversation_id))
+        proof = pipeline.c3_service._confirmed_reply_history(db, binding, [event])[event.id]
+        refs = {p['name']:p['id'] for p in actual_brain['receipt']['references']}
+        assert proof['native'] == ack.evidence['native_msg_id']
+        assert proof['vehicles'] == [refs['合成车4']]
+        assert refs['合成车5'] in pipeline.c3_service._brain_plan_vehicle_ids(first.ai_payload)

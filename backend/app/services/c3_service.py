@@ -2074,12 +2074,39 @@ def _brain_snapshot_message_is_semantic(item: dict[str, Any]) -> bool:
     )
 
 
+def _settled_segment_vehicle_ids(action):
+    """Unsent segments of the same Brain plan cannot introduce a vehicle."""
+    payload = action.ai_payload or {}
+    brain = (payload.get("raw_payload") or {}).get("omniauto_brain_result") or {}
+    plan = brain.get("brain_plan") or {}
+    segments = plan.get("reply_segments") or []
+    if not isinstance(segments, list) or not segments or not all(isinstance(s, str) for s in segments):
+        return []
+    units = [" ".join(s.split()) for s in segments]
+    recorded = (brain.get("_catalog_clearance") or {}).get("segment_vehicle_ids")
+    authorized = _brain_plan_vehicle_ids(payload)
+    # A Worker action can pack multiple complete semantic units into one
+    # message. Credit only the units that uniquely match its actual echo.
+    if not isinstance(recorded, list) or len(recorded) != len(units):
+        return authorized if action.segment_count == 1 and " ".join(units) == action.reply_text else []
+    matches = [(start, end) for start in range(len(units)) for end in range(start + 1, len(units) + 1)
+               if " ".join(units[start:end]) == action.reply_text]
+    if len(matches) != 1:
+        return []
+    start, end = matches[0]
+    groups = recorded[start:end]
+    if not all(isinstance(group, list) for group in groups):
+        return []
+    return [vehicle for vehicle in authorized if any(vehicle in group for group in groups)]
+
+
 def _confirmed_reply_history(db, binding, events):
     """Allow historical vehicle IDs only from an action, its ACK, and its actual echo."""
     links = {e.id: (e.raw_payload or {}).get("ai_reply_action_id") for e in events
              if e.conversation_id == binding.conversation_id and e.sender_role == "self"
              and (e.raw_payload or {}).get("native_source") == "native_history"}
-    action_ids = {v for v in links.values() if isinstance(v,str)}
+    links = {key:value for key,value in links.items() if isinstance(value,str) and value}
+    action_ids = set(links.values())
     if not action_ids:
         return {}
     settled = {a.id:(a, ack) for a,ack in db.execute(
@@ -2095,7 +2122,7 @@ def _confirmed_reply_history(db, binding, events):
             if (native and native == (event.raw_payload or {}).get("native_msg_id")
                     and action.reply_text == event.content and action.claimed_task_id == ack.task_id):
                 confirmed[event.id] = {"action":action.id,"batch":action.batch_id,"native":native,
-                                       "vehicles":_brain_plan_vehicle_ids(action.ai_payload or {})}
+                                       "vehicles":_settled_segment_vehicle_ids(action)}
     return confirmed
 
 

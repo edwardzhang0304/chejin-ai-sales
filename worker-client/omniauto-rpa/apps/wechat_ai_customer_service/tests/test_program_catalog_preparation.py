@@ -735,3 +735,76 @@ def test_order_is_inherited_until_the_customer_replaces_or_withdraws_it(latest,e
     assert q['sort']==expected and q['sort_source_ids']==([source] if source else [])
     assert q['sort_origin']==('customer_explicit' if source else 'program_default')
     assert q['raw_model_query']==raw
+
+
+@pytest.mark.parametrize('answer,expected', [
+    ('合成车4报价6.4万元。',True),
+    ('合成车1报价5.2万元。',False),
+    ('合成车4报价5.2万元。',False),
+    ('合成车4适合城市通勤。',False),
+])
+def test_named_price_uses_referenced_vehicle_even_outside_the_display_page(answer,expected):
+    pack,_,_,runtime=prepared('请介绍合成车4，先只看这一辆，价格多少？')
+    raw={'operation':'search','requirement_state':'clear','budget':{'state':'not_mentioned','source_ids':[]},
+         'filters':[],'reference_ids':[],'exclude_ids':[],'source_ids':['m1'],'unsupported_requirements':[],
+         'name_queries':[{'kind':'reference','text':'合成车1','source_ids':['m1']}],'interpretation':'查询客户点名车辆'}
+    query=cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT)
+    receipt=cq.execute_query(query,runtime,scope={'conversation_id':'c1','current_message_ids':['m1']},limit=1,sources=cq.message_sources(pack))
+    cq.attach_receipt(pack,receipt)
+    assert pack['catalog_protocol']['receipt']['reply_target']['vehicle_ids']==['4']
+    assert [p['id'] for p in receipt['recommendations']]==['1']
+    result=validate_reply_public_facts({'answer_mode':'direct_answer','reply_segments':[answer]},pack)
+    assert result['ok']==expected,result
+
+
+@pytest.mark.parametrize('text,allowed', [
+    ('新能源这边我查到6台现车，上牌年份还未核实。',True),
+    ('新能源这边我查到2台现车，上牌年份还未核实。',False),
+    ('符合近年份的新能源我查到6台现车。',False),
+    ('白色纯电我查到6台现车，上牌年份还需核实。',False),
+    ('新能源这边我查到6台现车，价格从5.2万到7.2万，上牌年份仍待核实。',True),
+    ('新能源这边我查到6台现车，价格从7.2万到5.2万，上牌年份仍待核实。',False),
+])
+def test_scoped_stock_totals_and_range_endpoints(text,allowed):
+    pack,_,_=partial_year_pack()
+    check=validate_reply_public_facts({'answer_mode':'ask_clarifying_question','reply_segments':[text]},pack)
+    assert check['ok']==allowed,check
+
+
+@pytest.mark.parametrize('text,allowed', [
+    ('首付2万不等于车辆总价，月供还需要核实。您大概想买什么总价的车？',True),
+    ('您的首付3万，您大概想买什么总价的车？',False),
+    ('首付2万，月供1500是您的期望吗？',True),
+    ('门店规定首付2万就能办。',False),
+])
+def test_customer_payment_source_is_not_a_finance_policy(text,allowed):
+    pack,_,_,_=prepared('首付2万，月供1500左右，能介绍下吗？')
+    from test_catalog_query_entry import fixtures
+    plan=fixtures.base_plan();plan.update(answer_mode='ask_clarifying_question',reply_segments=[text],
+                                         facts_claimed=[],evidence_used={})
+    result=cq.prepared_review_route(pack,plan)
+    assert (result.get('ok') is True)==allowed,result
+
+
+@pytest.mark.parametrize('car_ids,question,declared,expected', [
+    (['4'], '刚才那辆不要了。', [], ['4']),
+    (['4','5'], '刚才那辆不要了。', [], None),
+    ([], '刚才那辆不要了。', [], None),
+    (['4'], '刚才那辆不要排除。', ['4'], 'revoked'),
+])
+def test_previous_vehicle_exclusion_depends_on_current_messages_and_unique_sent_history(car_ids,question,declared,expected):
+    sources = [{'id':'one','sender':'customer','content':question},
+               {'id':'two','sender':'customer','content':'8万以内。'}]
+    raw = {'operation':'search','requirement_state':'clear',
+           'budget':{'state':'specified','mode':'upper','value':8,'source_ids':['two']},
+           'filters':[], 'name_queries':[], 'reference_ids':[], 'exclude_ids':declared,
+           'source_ids':['one','two'], 'unsupported_requirements':[], 'interpretation':'看上一轮和预算'}
+    known = {key:[{'kind':'confirmed_native_reply', 'source_id':'prior'}] for key in car_ids}
+    args = dict(known_ids=known, contract=cq.MODEL_QUERY_CONTRACT, current_ids=['one','two'])
+    if expected == 'revoked':
+        with pytest.raises(cq.CatalogQueryError, match='previous_vehicle_exclusion_revoked'):
+            cq.normalize_model_query(raw, sources, **args)
+        return
+    normalized = cq.normalize_model_query(raw, sources, **args)
+    assert normalized['exclude_ids'] == (expected or [])
+    assert bool(normalized.get('unresolved_previous_exclusion')) == (expected is None)

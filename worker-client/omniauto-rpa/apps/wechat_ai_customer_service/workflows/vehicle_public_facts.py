@@ -63,6 +63,10 @@ def _reply_entities(text: str, products: list[dict]) -> list[dict]:
     matches = []
     for label, ids in labels.items():
         for match in re.finditer(re.escape(label), normalized):
+            # A model suffix/digit is meaningful (A4 is not A45 or A4L).
+            if (label[-1].isascii() and label[-1].isalnum() and match.end()<len(normalized)
+                    and normalized[match.end()].isascii() and normalized[match.end()].isalnum()):
+                continue
             matches.append({"start": positions[match.start()], "end": positions[match.end() - 1] + 1, "ids": sorted(ids)})
     chosen = []
     for match in sorted(matches, key=lambda m: (-(m["end"] - m["start"]), m["start"])):
@@ -472,12 +476,28 @@ def _stated_inventory_scope(subject, receipt):
             return None
     if not kinds and not scope.get("filters") and budget.get("state") != "specified":
         return None
+    # Every qualifier must have a source. Removing verified dimensions leaves
+    # only stock/count/price wording, never another free-form car attribute.
+    remaining = subject
+    for start, end in reversed(_customer_budget_spans(subject, [], budget)):
+        remaining = remaining[:start] + remaining[end:]
+    remaining = re.sub(_ENERGY_LABEL, "", remaining)
+    for f in scope.get("filters", []):
+        if f["field"] != "energy_type":
+            for value in f["value"] if f["op"] == "in" else [f["value"]]:
+                remaining = remaining.replace(str(value), "")
+    words = (r"门店|店里|这边|我这儿|目前|当前|已经|一共|合计|库存|在售|现有|现车|车源|二手车|车型|车辆|"
+             r"查到|找到|筛到|看到|查了|价格区间|最低价|最高价|价格|售价|报价|价位|预算|以内|以下|"
+             r"代步车|可选|条件|这些|这批|我们|我|的|按|有|共|车|为|是|从|在|内|[，,：:\s]")
+    if re.sub(words, "", remaining):
+        return None
     return sorted(kinds)
 
 
-def _scoped_numbers(segment, numbers, entities, receipt):
+def _scoped_numbers(segment, numbers, entities, receipt, carried):
     from apps.wechat_ai_customer_service.workflows.catalog_query import scoped_aggregate_value, aggregate_ready
     result = {}
+    last_scope, last_end = carried, 0
     def record(n, field, expected, scope):
         result[n["start"]] = {"role":field,"expected":expected,"scope_energy":scope,
                               "verified":expected is not None and public_number(n["value"]) == public_number(expected)}
@@ -486,34 +506,57 @@ def _scoped_numbers(segment, numbers, entities, receipt):
         prefix = segment[start:n["start"]]
         # An inventory count requires a stock predicate and its subject. It
         # cannot borrow an equal list size or include unverified conditions.
-        if n["unit"] == "台" and re.search(r"查到|找到|筛到|看到|(?:目前|现有|一共|共|库存|车源|在售).{0,5}有?$",prefix):
+        if n["unit"] == "台" and re.search(r"查到|找到|筛到|看到|(?:目前|现有|一共|共|库存|车源|在售).{0,5}有?$|(?:^|店里|这边|门店)有$",prefix):
             tail = re.split(r"[，,。；;！？!?]",segment[n["end"]:])[0]
             scope = _stated_inventory_scope(prefix+tail,receipt)
             stated = prefix + tail
             named_count = any(start <= e["start"] < n["start"] for e in entities)
-            if not named_count and scope is not None:
+            if named_count:
+                last_scope = None
+            elif scope is not None:
                 record(n,"known_condition_match_count",scoped_aggregate_value(receipt,"known_condition_match_count",scope),scope)
-            elif not named_count and re.search(_ENERGY_LABEL,stated) and not _scanned_count_scope(segment,n):
+                last_scope, last_end = scope, n["end"]
+            elif re.search(_ENERGY_LABEL,stated) and not _scanned_count_scope(segment,n):
                 record(n,"known_condition_match_count",None,[])
-        if n["unit"] != "万元" or index+1 >= len(numbers):
-            continue
-        end = numbers[index+1]
-        if end["unit"] != "万元" or not re.fullmatch(r"\s*(?:到|至|[-—～~])\s*",segment[n["end"]:end["start"]]):
+                last_scope = None
+            elif aggregate_ready(receipt) and not _scanned_count_scope(segment,n):
+                record(n,"match_count",receipt.get("match_count"),[])
+        if n["unit"] != "万元":
             continue
         local = re.split(r"[，,]",prefix)[-1]
-        if not re.search(r"(?:价格|售价|报价|价位|价格区间)(?:在|从|为|是|约|大概|大约|\s)*$",local):
-            continue
+        next_number = numbers[index+1] if index+1<len(numbers) else None
+        connector = segment[n["end"]:next_number["start"]].strip() if next_number else ""
+        pair = (next_number is not None and next_number["unit"]=="万元"
+                and (connector in ("到","至","-","—","～","~") or
+                     (connector in ("和","与") and re.match(r"\s*(?:之间|间)",segment[next_number["end"]:]))))
+        if pair and re.search(r"(?:价格|售价|报价|价位|价格区间)(?:在|从|为|是|约|大概|大约|\s)*$",local):
+            endpoints = [(n,"min"),(next_number,"max")]
+        else:
+            bound = (re.search(r"(最低|最高)(?:车价|价|售价|报价)?(?:为|是)?\s*$",local) or
+                     re.match(r"\s*(起)(?:售|步)?",segment[n["end"]:]))
+            if not bound:
+                continue
+            endpoints = [(n,"max" if bound[1]=="最高" else "min")]
+        end = endpoints[-1][0]
         if any(start <= e["start"] < end["end"] for e in entities):
             continue  # A particular vehicle or a customer budget owns its own amount.
         scope = _stated_inventory_scope(prefix,receipt)
+        if scope is None and last_scope is not None and not any(e["start"] >= last_end and e["start"] < n["start"] for e in entities):
+            # An immediately following bare price-range clause continues the
+            # last verified inventory subject, even across a reply segment.
+            continuation = segment[last_end:n["start"]]
+            if re.fullmatch(rf"\s*(?:{_ENERGY_LABEL})?(?:现车|车辆|车源|二手车|车)?[，,。\s]*(?:其|这些车的|这批车的)?(?:价格|售价|报价|价位|价格区间)(?:在|从|为|是|约|大概|大约|\s)*", continuation):
+                scope = last_scope
         complete = aggregate_ready(receipt)
         explicit_conditions = re.search(_ENERGY_LABEL + r"|年份|车龄|大修|事故|所有条件|全部条件|预算", prefix)
-        for num, bound in ((n,"min"),(end,"max")):
+        for num, bound in endpoints:
             field = "known_price_"+bound if scope is not None or not complete else "price_"+bound
             expected = (scoped_aggregate_value(receipt,field,scope) if scope is not None
                         else receipt.get(field) if complete and not explicit_conditions and not receipt.get("price_unknown_count") else None)
             record(num,field,expected,scope or [])
-    return result
+    if any(e["start"]>=last_end for e in entities):
+        last_scope = None
+    return result, last_scope
 
 
 _PAYMENT_ROLE = re.compile(r"首付|月供|定金|订金")
@@ -612,7 +655,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         if role not in {"首付","月供","定金"}:
             return False
         before,after = _payment_clause(segment, number["start"],number["end"])
-        if _PAYMENT_OFFER.search(before+after) or re.search(r"(?:我们|我方|门店).{0,8}(?:提供|可办|能给)",before):
+        if (_PAYMENT_OFFER.search(before+after) or
+                re.search(r"实际|给您|我们|我方|门店|销售|公司|我能|本车|办理",before)):
             return False
         payment = customer_payments.get(role)
         if payment and _payment_value(number,role) == payment[0]:
@@ -623,6 +667,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
     customer_payments = _latest_customer_payments(message_sources(evidence))
     target = receipt.get("reply_target") or {}
     target_ids = set(target.get("vehicle_ids", []))
+    segment_ids = []
+    inventory_scope = None
     prior_entities = [{"start":0, "end":0, "ids":sorted(target_ids)}] if target_ids else []
     for segment_index, segment in enumerate(plan.get("reply_segments") or []):
         entities = _reply_references(segment, _reply_entities(segment, products), prior_entities)
@@ -632,6 +678,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             for entity in entities:
                 if len(entity["ids"]) > 1 and target_ids.issubset(entity["ids"]):
                     entity["ids"] = sorted(target_ids)
+        segment_ids.append(list(dict.fromkeys(e["ids"][0] for e in entities if len(e["ids"]) == 1)))
         numbers = factual_number_spans(segment, excluded=[(e["start"], e["end"]) for e in entities])
         # A customer preference question is not an assertion about a car's year.
         numbers = [n for n in numbers if n["unit"] != "年" or
@@ -648,7 +695,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                 customer_positions.add(n["start"])
         customer_numbers = {n["start"] for n in numbers if customer_amount(segment, n, budget_spans)}
         display_positions = set()
-        scoped = _scoped_numbers(segment,numbers,entities,receipt)
+        scoped, inventory_scope = _scoped_numbers(segment,numbers,entities,receipt,inventory_scope)
         for number in numbers:
             item = scoped.get(number["start"])
             if not item or number["start"] in customer_numbers:
@@ -656,9 +703,9 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             display_positions.add(number["start"]); owners.pop(number["start"],None)
             occurrences.append({"segment_index":segment_index,**number,**item})
             if not item["verified"]:
-                errors.append("inventory_scoped_metric_mismatch")
+                errors.append("inventory_scoped_metric_mismatch" if item["expected"] is not None else "unverified_reply_numeric_fact")
                 continue
-            kind = {"known_condition_match_count":"catalog_known_condition_count",
+            kind = {"known_condition_match_count":"catalog_known_condition_count","match_count":"catalog_match_count",
                     "known_price_min":"catalog_known_price_min","known_price_max":"catalog_known_price_max",
                     "price_min":"catalog_price_min","price_max":"catalog_price_max"}[item["role"]]
             fact = {"fact_type":kind,"value":item["expected"],"source_level":"catalog_query","source_id":receipt["query_id"]}
@@ -769,9 +816,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:number["start"]])), default=0)
             local_entities = [e for e in entities if clause_start <= e["start"] < number["end"]]
             if not local_entities and amount_role(segment, number["start"]) is None and aggregate_ready(receipt) and value is not None:
-                candidates = [("catalog_match_count", "match_count")] if number["unit"] == "台" else (
-                    [("catalog_price_min", "price_min"), ("catalog_price_max", "price_max")]
-                    if number["unit"] == "万元" and not receipt.get("price_unknown_count") else [])
+                candidates = [("catalog_match_count", "match_count")] if number["unit"] == "台" else []
                 for kind, field in candidates:
                     if value == public_number(receipt.get(field)):
                         valid = True
@@ -830,7 +875,8 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             errors.append("answer_referenced_vehicle_omitted")
         if target.get("asks_price") and any(by_id[i].get("price") is not None and i not in priced_ids for i in target_ids if i in by_id):
             errors.append("answer_referenced_price_omitted")
-    if target.get("kind") not in {"named_reference", "unresolved_reference"} and receipt.get("query", {}).get("operation") == "search":
+    if target.get("kind") == "reference_and_list" or (target.get("kind") not in {"named_reference", "unresolved_reference"}
+            and receipt.get("query", {}).get("operation") == "search"):
         options = recommendations or receipt.get("known_condition_facts", [])
         ordered_ids = [str(p["id"]) for p in options if p["id"] not in target_ids]
         actual_recommendations = [i for i in actual_ids if i in ordered_ids]
@@ -860,7 +906,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                                    "actual_vehicle_ids":actual_ids, "priced_ids":sorted(priced_ids),
                                    "ordered_ids":ordered_ids, "segments":list(plan.get("reply_segments") or [])}
                                   if errors else None), "facts_claimed": facts,
-            "product_ids": actual_ids, "occurrences": occurrences, "customer_statements": customer_statements,
+            "product_ids": actual_ids, "segment_vehicle_ids":segment_ids, "occurrences": occurrences, "customer_statements": customer_statements,
             "reply_sha256": hashlib.sha256(json.dumps(plan.get("reply_segments") or [], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
 
 
