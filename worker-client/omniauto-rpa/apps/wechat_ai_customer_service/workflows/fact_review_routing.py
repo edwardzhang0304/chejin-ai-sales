@@ -25,6 +25,7 @@ def classify_fact_findings(plan, products, receipt, validation):
         start, end = occurrence['start'], occurrence['end']
         product = by_id.get(occurrence.get('product_id'))
         certain = False
+        explicit_price_span = None
         if product and occurrence.get('expected') is not None:
             name = product.get('name', '')
             pos = segment.rfind(name, 0, start) if name else -1
@@ -44,7 +45,7 @@ def classify_fact_findings(plan, products, receipt, validation):
                                and re.fullmatch(r'\s*[，,:：]?\s*' + predicate + r'\s*[:：]?\s*', bridge)
                                and (not tail or re.match(r'[。；;，,！!？?\s]', tail)))
                 if certain and occurrence.get('role') == 'price':
-                    explicit_price_spans.append((occurrence['segment_index'],pos,end))
+                    explicit_price_span = (occurrence['segment_index'],pos,end)
         if not certain and occurrence.get('unit') == '万元' and receipt.get('scan_complete'):
             from apps.wechat_ai_customer_service.adapters.vehicle_fields import public_number
             clause = re.split(r'[。；;！？!?，,]', segment[:start])[-1]
@@ -74,6 +75,11 @@ def classify_fact_findings(plan, products, receipt, validation):
             certain = bool(occurrence.get('expected') is not None
                 and re.fullmatch(r'(?:全店|库存|本店库存|当前库存|本次查询结果)(?:一共|总共|共有|有|共计|共)', clause)
                 and re.fullmatch(r'[0-9０-９零一二两三四五六七八九十百]+(?:台|辆)', occurrence['text']))
+        sentence_end = re.search(r'[。；;！？!?]|$', segment[end:])
+        if sentence_end.group() in {'？','?'}:
+            certain = False
+        if certain and explicit_price_span is not None:
+            explicit_price_spans.append(explicit_price_span)
         if occurrence.get('verified'):
             # A coincidentally matching value does not establish its role.
             # In particular, normalized measure units must agree with the

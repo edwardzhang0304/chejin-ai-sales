@@ -82,6 +82,7 @@ def test_explicit_named_price_list_retains_program_order_even_if_model_passes():
 
 
 @pytest.mark.parametrize('text',[
+    '大众高尔夫1.4T报价2万元？',
     '如果大众高尔夫1.4T报价2万元，您就考虑吗？',
     '客户问的是“大众高尔夫1.4T报价2万元？”',
 ])
