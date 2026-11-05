@@ -1196,6 +1196,34 @@ def extract_llm_response_text(*, provider: Any, data: Any) -> str:
     return str(message.get("content", "") or "").strip()
 
 
+class _LLMRequestTrace:
+    """Per-request, content-free progress that survives the outer wall timeout."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._started = time.monotonic()
+        self._phase_started = self._started
+        self._facts: dict[str, Any] = {"schema_version": 1, "transport_phase": "preparing_request"}
+
+    def mark(self, phase: str, **facts: Any) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._facts.update(facts)
+            self._facts["transport_phase"] = phase
+            self._phase_started = now
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            now = time.monotonic()
+            facts = {key: value for key, value in self._facts.items() if key != "provider_request_id"}
+            return {**facts, "request_elapsed_ms": int((now - self._started) * 1000),
+                    "transport_phase_elapsed_ms": int((now - self._phase_started) * 1000)}
+
+    def request_id(self) -> str:
+        with self._lock:
+            return str(self._facts.get("provider_request_id") or "")
+
+
 def call_llm_request_once(
     *,
     provider: Any,
@@ -1210,7 +1238,9 @@ def call_llm_request_once(
     json_mode: bool = False,
     explicit_reasoning_effort: Any | None = None,
     allow_insecure_tls: Any | None = None,
+    _diagnostic_trace: _LLMRequestTrace | None = None,
 ) -> dict[str, Any]:
+    trace = _diagnostic_trace or _LLMRequestTrace()
     provider_id = normalize_llm_provider(provider)
     request_style = llm_provider_request_style(provider_id)
     if request_style == "anthropic_messages":
@@ -1283,6 +1313,7 @@ def call_llm_request_once(
     }
     provider_request_id = ""
     try:
+        trace.mark("waiting_for_headers", **diagnostics)
         with llm_urlopen(
             request,
             timeout=max(1, timeout),
@@ -1291,11 +1322,16 @@ def call_llm_request_once(
         ) as response:
             diagnostics["http_status"] = int(getattr(response, "status", 200) or 200)
             provider_request_id = _provider_request_id_from_response(response)
+            trace.mark("reading_body", **diagnostics,
+                       headers_received_ms=trace.snapshot()["request_elapsed_ms"],
+                       provider_request_id=provider_request_id)
             raw_bytes = response.read()
             diagnostics["body_bytes"] = len(raw_bytes)
             diagnostics["body_read_complete"] = True
             raw = raw_bytes.decode("utf-8", errors="replace")
             diagnostics["json_decode_attempted"] = True
+            trace.mark("decoding_json", **diagnostics,
+                       body_completed_ms=trace.snapshot()["request_elapsed_ms"])
             data = json.loads(raw)
             diagnostics["json_decoded"] = True
             try:
@@ -1304,9 +1340,12 @@ def call_llm_request_once(
                 diagnostics["collection_failed"] = True
             diagnostics["extraction_attempted"] = True
             diagnostics["extracted_chars"] = 0
+            trace.mark("extracting_response", **diagnostics)
             response_text = extract_llm_response_text(provider=provider_id, data=data)
             diagnostics["extracted_chars"] = len(response_text)
             diagnostics["extraction_succeeded"] = True
+            trace.mark("complete", **diagnostics)
+            diagnostics.update(trace.snapshot())
             result = {
                 "ok": True,
                 "provider": provider_id,
@@ -1323,9 +1362,20 @@ def call_llm_request_once(
                 result["provider_request_id"] = provider_request_id
             return result
     except urllib.error.HTTPError as exc:
-        raw_error = exc.read()
-        body = raw_error.decode("utf-8", errors="replace")
-        diagnostics.update(http_status=int(getattr(exc, "code", 0) or 0), body_bytes=len(raw_error), body_read_complete=True)
+        # HTTPError already proves headers arrived, even if reading its body stalls.
+        trace.mark("reading_error_body", http_status=int(getattr(exc, "code", 0) or 0),
+                   headers_received_ms=trace.snapshot()["request_elapsed_ms"],
+                   provider_request_id=_provider_request_id_from_response(exc))
+        try:
+            with exc:
+                raw_error = exc.read()
+        except Exception:  # noqa: BLE001 - a failed body cannot erase the known HTTP error
+            body = "http_error_body_read_failed"
+        else:
+            body = raw_error.decode("utf-8", errors="replace")
+            trace.mark("reading_error_body", body_bytes=len(raw_error), body_read_complete=True,
+                       body_completed_ms=trace.snapshot()["request_elapsed_ms"])
+        diagnostics.update(trace.snapshot())
         result = {
             "ok": False,
             "provider": provider_id,
@@ -1343,6 +1393,7 @@ def call_llm_request_once(
             result["provider_request_id"] = provider_request_id
         return result
     except Exception as exc:  # noqa: BLE001 - caller converts to user-visible diagnostics
+        diagnostics = {**trace.snapshot(), **diagnostics}
         return {
             "ok": False,
             "provider": provider_id,
@@ -1368,10 +1419,11 @@ def call_llm_request_once_with_wall_timeout(
         return call_llm_request_once(**kwargs)
     result_holder: dict[str, Any] = {}
     finished = threading.Event()
+    trace = _LLMRequestTrace()
 
     def worker() -> None:
         try:
-            result_holder["result"] = call_llm_request_once(**kwargs)
+            result_holder["result"] = call_llm_request_once(**kwargs, _diagnostic_trace=trace)
         except Exception as exc:  # noqa: BLE001 - convert late worker errors to diagnostics
             result_holder["result"] = {"ok": False, "status": 0, "error": repr(exc)}
         finally:
@@ -1390,6 +1442,10 @@ def call_llm_request_once_with_wall_timeout(
         "wall_timeout": True,
         "error_kind": "transport",
         "wall_timeout_seconds": wait_seconds,
+        "provider": normalize_llm_provider(kwargs.get("provider")),
+        "model": kwargs.get("model"),
+        "response_diagnostics": trace.snapshot(),
+        "provider_request_id": trace.request_id(),
     }
 
 

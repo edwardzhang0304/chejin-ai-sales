@@ -16,7 +16,8 @@ THINKING = "PRIVATE-THINKING-SENTINEL"
 
 @pytest.fixture
 def http_provider(monkeypatch, tmp_path):
-    state = {"body": {}, "status": 200, "calls": 0}
+    state = {"body": {}, "status": 200, "calls": 0, "block": None,
+             "release": threading.Event(), "completed": threading.Event()}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -25,11 +26,16 @@ def http_provider(monkeypatch, tmp_path):
             self.rfile.read(int(self.headers["Content-Length"]))
             state["calls"] += 1
             body = state["body"] if isinstance(state["body"], bytes) else json.dumps(state["body"]).encode()
+            if state["block"] == "headers":
+                state["release"].wait(3)
             self.send_response(state["status"])
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(state.get("declared_bytes", len(body))))
             self.send_header("x-request-id", "test-request-id")
             self.end_headers()
+            if state["block"] == "body":
+                state["release"].wait(3)
             self.wfile.write(body)
+            state["completed"].set()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -37,14 +43,16 @@ def http_provider(monkeypatch, tmp_path):
     progress = tmp_path / "progress.jsonl"
     monkeypatch.setenv("CHEJIN_AI_PROGRESS_PATH", str(progress))
     monkeypatch.setenv("CHEJIN_AI_PROGRESS_ID", "diag-test")
-    def call(body, *, provider="openai_compatible", status=200):
+    def call(body, *, provider="openai_compatible", status=200, wall_timeout=None, timeout=3):
         state.update(body=body, status=status)
         return llm_config.call_llm_request_with_failover(
             provider=provider, api_key=SECRET, base_url=f"http://127.0.0.1:{server.server_port}/v1",
             model="test-model", messages=[{"role": "user", "content": "PRIVATE-CUSTOMER-SENTINEL"}],
-            timeout=3, max_tokens=8192, allow_fallback=False, progress_stage="brain_llm",
+            timeout=timeout, max_tokens=8192, allow_fallback=False, progress_stage="brain_llm",
+            wall_timeout=wall_timeout,
         )
     yield call, progress, state
+    state["release"].set()
     server.shutdown()
     server.server_close()
     thread.join(timeout=2)
@@ -53,6 +61,35 @@ def http_provider(monkeypatch, tmp_path):
 def _response(content, *, finish="stop", **message_fields):
     return {"choices": [{"message": {"content": content, **message_fields}, "finish_reason": finish}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 23, "completion_tokens_details": {"reasoning_tokens": 23}}}
+
+
+@pytest.mark.parametrize("block,status,expected_phase", [
+    ("headers", 200, "waiting_for_headers"),
+    ("body", 200, "reading_body"),
+    ("body", 503, "reading_error_body"),
+])
+def test_wall_timeout_preserves_transport_phase_and_backend_evidence(http_provider, block, status, expected_phase):
+    call, progress, state = http_provider
+    state["block"] = block
+    result = call(_response(TEXT), status=status, wall_timeout=.25)
+    assert not result["ok"] and result["wall_timeout"]
+    diag = result["response_diagnostics"]
+    assert diag["transport_phase"] == expected_phase
+    assert diag["request_elapsed_ms"] >= 200
+    if block == "body":
+        assert diag["http_status"] == status
+        assert "headers_received_ms" in diag
+    else:
+        assert "http_status" not in diag
+        assert not result.get("provider_request_id")
+    assert not diag.get("body_read_complete")
+    events = _read_provider_progress(progress, progress_id="diag-test")
+    assert events[-1]["response_diagnostics"]["transport_phase"] == expected_phase
+    assert all(secret not in progress.read_text() for secret in (SECRET, TEXT, THINKING))
+    saved = json.dumps(diag, sort_keys=True)
+    state["release"].set()
+    assert state["completed"].wait(2)
+    assert json.dumps(diag, sort_keys=True) == saved  # late completion cannot rewrite timeout evidence
 
 
 @pytest.mark.parametrize("stop_reason,expected", [
@@ -140,15 +177,47 @@ def test_anthropic_text_blocks_are_counted_without_saving_thinking(http_provider
     assert THINKING not in progress.read_text()
 
 
-def test_http_error_is_not_misreported_as_successful_empty_content(http_provider):
+@pytest.mark.parametrize("status", [400, 502])
+def test_http_error_is_not_misreported_as_successful_empty_content(http_provider, status):
     call, progress, _ = http_provider
-    result = call({"error": TEXT}, status=502)
-    assert result["ok"] is False and result["status"] == 502
+    result = call({"error": TEXT}, status=status)
+    assert result["ok"] is False and result["status"] == status
     diag = _read_provider_progress(progress, progress_id="diag-test")[-1]["response_diagnostics"]
-    assert diag["http_status"] == 502
+    assert diag["http_status"] == status
     assert diag["body_read_complete"] is True
     assert diag["json_decode_attempted"] is False
     assert TEXT not in progress.read_text()
+
+
+@pytest.mark.parametrize("status", [200, 400, 503])
+@pytest.mark.parametrize("failure", ["truncated", "socket_timeout"])
+def test_interrupted_body_keeps_known_status_through_backend(http_provider, status, failure):
+    call, progress, state = http_provider
+    if failure == "truncated":
+        state["declared_bytes"] = 9999
+    else:
+        state["block"] = "body"
+    result = call({"error": TEXT}, status=status, timeout=1, wall_timeout=2)
+    assert not result["ok"] and not result.get("wall_timeout")
+    if status >= 400:
+        assert result["status"] == status and result["error_kind"] == "http"
+        assert result["error"] == "http_error_body_read_failed"
+    diag = result["response_diagnostics"]
+    assert diag["http_status"] == status
+    assert diag["transport_phase"] == ("reading_error_body" if status >= 400 else "reading_body")
+    assert diag["body_read_complete"] is False
+    assert "body_completed_ms" not in diag
+    assert "body_bytes" not in diag
+    assert result["provider_request_id"] == "test-request-id"
+    events = _read_provider_progress(progress, progress_id="diag-test")
+    assert events[-1]["response_diagnostics"] == diag
+    assert events[-1]["provider_request_id"] == "test-request-id"
+    assert state["calls"] == 1
+    assert all(secret not in progress.read_text() for secret in (SECRET, TEXT, THINKING))
+    saved = progress.read_text()
+    state["release"].set()
+    assert state["completed"].wait(2)
+    assert progress.read_text() == saved
 
 
 @pytest.mark.parametrize("failed_component", ["collector", "writer"])

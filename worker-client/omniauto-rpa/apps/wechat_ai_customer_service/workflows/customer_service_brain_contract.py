@@ -17,6 +17,17 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+OUTPUT_FIELDS_INSTRUCTION = (
+    "只输出本次输出协议明确允许的字段，不要多填字段；"
+    "不得把输入中的内部标记、调试信息或资料字段自行复制为输出字段。"
+    "必填字段不得遗漏，不得改变客户条件或事实。"
+)
+
+
+def constrain_output_fields(system: str) -> str:
+    """One instruction for understanding, generation, repair and review."""
+    return system if OUTPUT_FIELDS_INSTRUCTION in system else system + "\n" + OUTPUT_FIELDS_INSTRUCTION
+
 POLICY_REFS_INSTRUCTION = (
     "另须显式返回policy_refs对象，无卖方政策为{}。键只能是policy_reference_map.statements中的S编号，"
     "值为非空K编号列表，K仅从policy_reference_map.knowledge选，多个来源表示共同支持，编号去重。"

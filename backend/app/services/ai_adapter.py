@@ -54,6 +54,7 @@ def _safe_response_diagnostics(raw: object) -> dict:
         "requested_max_tokens", "http_status", "body_bytes", "choices_count",
         "content_chars", "content_nonblank_chars", "reasoning_chars", "refusal_chars",
         "tool_calls_count", "extracted_chars", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+        "request_elapsed_ms", "transport_phase_elapsed_ms", "headers_received_ms", "body_completed_ms",
     ):
         value = raw.get(key)
         if key in raw and (value is None or type(value) is int and 0 <= value <= 10**12):
@@ -67,6 +68,9 @@ def _safe_response_diagnostics(raw: object) -> dict:
         if isinstance(value, str) and value in types:
             result[key] = value
     reasons = {"stop", "length", "content_filter", "tool_calls", "function_call", "end_turn", "max_tokens", "model_context_window_exceeded", "stop_sequence", "tool_use", "pause_turn", "refusal", "missing", "other"}
+    phases = {"preparing_request", "waiting_for_headers", "reading_body", "reading_error_body", "decoding_json", "extracting_response", "complete"}
+    if isinstance(raw.get("transport_phase"), str) and raw["transport_phase"] in phases:
+        result["transport_phase"] = raw["transport_phase"]
     reason = raw.get("finish_reason")
     if isinstance(reason, str) and reason in reasons:
         result["finish_reason"] = reason

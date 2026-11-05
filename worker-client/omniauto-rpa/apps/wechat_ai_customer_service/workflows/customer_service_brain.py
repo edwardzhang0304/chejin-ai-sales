@@ -31,6 +31,7 @@ from apps.wechat_ai_customer_service.llm_config import (
 )
 from llm_output_adapter import llm_json_parse_evidence, llm_json_response_is_incomplete, parse_complete_llm_json_response
 from customer_service_brain_contract import (
+    constrain_output_fields,
     reply_trigger_context,
     POLICY_FACT_TYPES,
     PRODUCT_FACT_TYPES,
@@ -70,7 +71,7 @@ from reply_evidence_builder import (
     chejin_managed_knowledge_match_count,
     chejin_context_projection,
     compact_message,
-    reply_authority_snapshot,
+    model_authority_view,
 )
 try:
     from apps.wechat_ai_customer_service.wechat_message_normalizer import split_wechat_ocr_speaker_prefix
@@ -3103,7 +3104,6 @@ def maybe_repair_brain_json_structure(
         "stage": stage,
         "raw_brain_output": raw_text,
         "schema": schema,
-        "model_query_contract": protocol.get("model_query_contract", "vehicle_query_v1") if protocol else None,
     }
     timeout_seconds = positive_int_setting(settings, "json_structure_repair_timeout_seconds", 8, minimum=3)
     fallback_timeout_seconds = resolve_brain_fallback_timeout(settings, timeout_seconds)
@@ -3114,7 +3114,7 @@ def maybe_repair_brain_json_structure(
         base_url=base_url,
         model=model,
         messages=[
-            {"role": "system", "content": system},
+            {"role": "system", "content": constrain_output_fields(system)},
             {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
         ],
         timeout=timeout_seconds,
@@ -3345,7 +3345,7 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
     return {
         "schema_version": 1,
         "response_schema": response_schema,
-        "system": system,
+        "system": constrain_output_fields(system),
         "user": {
             "task": "理解需求并选择唯一查询或非查询分支。" if understanding_phase else "生成 BrainPlan，不要直接绕过guard发送。",
             "brain_input": slim_brain_input_for_prompt(brain_input, settings=settings),
@@ -3463,7 +3463,7 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
             ),
             "conversation_interaction_state": interaction_state,
         },
-        "content_basis": reply_authority_snapshot(evidence) if (evidence.get("catalog_protocol") or {}).get("preparation") else {
+        "content_basis": model_authority_view(evidence) if (evidence.get("catalog_protocol") or {}).get("preparation") else {
             "product_master": product_master,
             "formal_knowledge": formal_knowledge,
             "evidence": content_evidence,
@@ -3748,7 +3748,7 @@ def build_brain_repair_prompt_pack(
     system = prepared_draft_instructions(system, brain_input.get("evidence") or {})
     return {
         "schema_version": 1,
-        "system": system,
+        "system": constrain_output_fields(system),
         "response_schema": draft_response_schema(brain_input.get("evidence") or {}),
         "user": {
             "task": "修复未通过质量自检的 BrainPlan。",

@@ -24,7 +24,7 @@ from apps.wechat_ai_customer_service.llm_config import (
     resolve_llm_base_url,
     resolve_llm_tier_model,
 )
-from customer_service_brain_contract import join_reply_segments, normalize_space, reply_trigger_context
+from customer_service_brain_contract import constrain_output_fields, join_reply_segments, normalize_space, reply_trigger_context
 from llm_output_adapter import (
     llm_json_parse_evidence,
     llm_json_response_is_incomplete,
@@ -1080,6 +1080,7 @@ def run_quality_reviewer_llm(*, settings: dict[str, Any], request: dict[str, Any
             "failover": response.get("failover"),
             "elapsed_ms": response.get("elapsed_ms"),
             "http_status": response.get("status"),
+            "response_diagnostics": deepcopy(response.get("response_diagnostics") or {}),
         }
     raw_text = str(response.get("response_text") or "")
     if llm_json_response_is_incomplete(response):
@@ -1194,7 +1195,7 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
         system += ("核对catalog_protocol中的结构化需求与source_evidence原文是否一致：总预算不是首付/月供，"
                    "当前要求优先于已否定或过去预算，未提预算不等于明确不限。核对拒绝旧车、品牌、比较意图。"
                    "需求理解错误必须repair，不能仅因报价真实放行；你不能自行修改查询需求或回执。"
-                   "model_query_contract=vehicle_need_v2时，预算金额固定以万元表示，核对原话单位，不能把首付/元当总价/万元。"
+                   "本轮查询预算金额以万元表示，核对原话单位，不能把首付/元当总价/万元。"
                    "核对raw_model_query及sort_origin/sort_source_ids：program_default只表示没有明确偏好；"
                    "客户明确便宜优先等排序却漏sort、排序来源不支持或排序诉求未保留，必须repair，不能因默认碰巧相同放行。"
                    "未查询不能宣称当前库存事实；匹配数量只对应列出的已支持条件，字段未知或不支持条件必须如实表达。"
@@ -1222,7 +1223,7 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
                    "请结合完整原句核对数字角色、指代范围、年款与上牌年份、近似预算与精确报价、比较与推荐。"
                    "若实际表达符合原始资料可以pass，不得仅因程序猜测的数量或价格不符而要求改稿。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
-    return system, user
+    return constrain_output_fields(system), user
 
 
 def catalog_prompt_protocol(evidence):
@@ -1321,8 +1322,8 @@ def compact_brain_plan_for_review(plan: dict[str, Any]) -> dict[str, Any]:
 
 def compact_authority_evidence_for_review(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
-        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
-        return reply_authority_snapshot(evidence_pack)
+        from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import model_authority_view
+        return model_authority_view(evidence_pack)
     knowledge = evidence_pack.get("knowledge") if isinstance(evidence_pack.get("knowledge"), dict) else {}
     evidence = knowledge.get("evidence") if isinstance(knowledge.get("evidence"), dict) else {}
     product_master = knowledge.get("product_master") if isinstance(knowledge.get("product_master"), dict) else {}

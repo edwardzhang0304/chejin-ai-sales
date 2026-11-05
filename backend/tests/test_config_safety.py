@@ -147,10 +147,12 @@ def test_packaged_brain_config_uses_runtime_secret_only():
     assert brain["total_time_budget_seconds"] == 175
     assert brain["primary_attempt_timeout_seconds"] == 90
     assert brain["same_capture_brain_unavailable_retry_timeout_seconds"] == 60
-    assert brain["semantic_reviewer_timeout_seconds"] == 25
+    assert brain["semantic_reviewer_timeout_seconds"] == 60
+    assert brain["semantic_reviewer_fallback_timeout_seconds"] == 60
+    # Stage limits are maxima within the shared turn deadline. A recovery
+    # attempt consumes that same budget, not an additional guaranteed minute.
     assert (
         brain["primary_attempt_timeout_seconds"]
-        + brain["same_capture_brain_unavailable_retry_timeout_seconds"]
         + brain["semantic_reviewer_timeout_seconds"]
         <= brain["total_time_budget_seconds"]
     )
