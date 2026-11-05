@@ -682,17 +682,17 @@
     "chejin_same_review_policy_refs_and_serialized_clearance"
   ],
   "current_release": {
-    "version": "0.10.30",
+    "version": "0.10.31",
     "source_commit": "209f7fb66a01a05736fdd32e54808e54a9b66ce3",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.30",
-    "contract_sha256": "fb8d1a0f4d08c090cf3b66db2d9ac1b65925640a3dc71cdaee78ccd3e4a64bb7",
+    "contract_revision": "0.10.31",
+    "contract_sha256": "151e28dc4e812e2b0274c8d7dce718547b382fe4f527c81016ad7d93c7c2ea16",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.30 integrates architect-reviewed PE02 increments 14b3fca5, 2016b372, 7269f490; no runtime changes after review. Preserve original memory evidence, bindings and unknown sends."
+    "note": "0.10.31 manual preserve-data candidate with five integrated branch heads."
   },
   "historical_integrations": [
     {

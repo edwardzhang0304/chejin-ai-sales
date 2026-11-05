@@ -17,12 +17,16 @@ def bound(*, confirm_initial=True):
     r=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(t,p,prep));assert r.status_code==200,r.text
     binding=r.json()['data']
     if confirm_initial:
-        friends={'code':0,'data':[{'wxid':binding['peer_wxid'],'markname':binding['remark_code']}]}
-        checked=post(w,f"/workers/{w['id']}/wechat/native-relationships/observe",{
-            **p,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
-            'friend_list':friends,'raw_evidence_digest':shared_adapter('hook_contract_rules').digest(friends)})
-        assert checked.status_code==200 and not checked.json()['data']['initial_check_pending'],checked.text
+        confirm_initial_binding(w,p,binding)
     return w,t,p,binding
+
+
+def confirm_initial_binding(w,p,binding):
+    friends={'code':0,'data':[{'wxid':binding['peer_wxid'],'markname':binding['remark_code']}]}
+    checked=post(w,f"/workers/{w['id']}/wechat/native-relationships/observe",{
+        **p,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
+        'friend_list':friends,'raw_evidence_digest':shared_adapter('hook_contract_rules').digest(friends)})
+    assert checked.status_code==200 and not checked.json()['data']['initial_check_pending'],checked.text
 
 
 def coverage(binding,changes=None):

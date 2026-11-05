@@ -30,7 +30,7 @@ from app.models.wechat import MessageEvent
 from app.models.task import Task
 from app.services import c3_service
 from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
-from test_hook_history_business_http import bound
+from test_hook_history_business_http import bound, confirm_initial_binding
 from test_hook_account_client import identity_client
 from test_hook_gateway import lab
 from test_partial_reply_recovery_provider import controlled_recovery_provider
@@ -81,7 +81,9 @@ def second_bound(w, account):
     assert response.status_code==200,response.text
     response=post(w,f"/workers/{w['id']}/wechat/native-bindings",body(task,account,prep,('wxid_customer_B',)))
     assert response.status_code==200,response.text
-    return response.json()['data']
+    binding=response.json()['data']
+    confirm_initial_binding(w,account,binding)
+    return binding
 
 
 class Actor:
@@ -402,7 +404,27 @@ def test_capture_during_full_business_and_original_recovery(identity_client, lab
         rounds=(4 if repeat==2 else 3) if scenario=='running_dispatch' else 1
         expected_sends=len(answer)*rounds
         assert len([r for r in server.requests if r[0]=='/SendTextMsg'])==expected_sends
-        assert [r['model'] for r in model_requests]==['recovery-author','recovery-reviewer']*rounds
+        # Compare actual provider calls with each persisted content decision.
+        # The merged AI policy uses program checks for routine prepared replies.
+        with SessionLocal() as db:
+            batches=list(db.scalars(select(MessageBatch).order_by(MessageBatch.created_at)))
+            assert len(batches)==rounds
+            methods=[]
+            expected_models=[]
+            for batch in batches:
+                native=batch.ai_response_snapshot['raw_payload']['omniauto_brain_result']
+                method=native['_catalog_clearance']['method']
+                assert method in {'program','semantic'}
+                methods.append(method)
+                expected_models.append('recovery-author')
+                if method=='semantic':
+                    expected_models.append('recovery-reviewer')
+                assert [r['stage'] for r in native['reply_check_history']]==['content_decision','consume_decision']
+            if scenario=='running_dispatch':
+                assert methods[:3]==['semantic','semantic','program']
+            else:
+                assert methods==['program']
+            assert [r['model'] for r in model_requests]==expected_models
         evidence.update(model_exchanges=model_exchanges, hook_requests=server.requests)
         report.update(mode=mode,scenario=scenario,repeat=repeat,business_seconds=reply['business_seconds'],
             model_calls=[r['model'] for r in model_requests],driver_backend_pid=os.getpid(),
