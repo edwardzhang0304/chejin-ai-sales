@@ -686,6 +686,28 @@ def _energy_distribution(values, unresolved=0):
     return counts, unresolved
 
 
+def _common_public_uses(details):
+    """Keep only affirmative public uses shared by every car of an energy type."""
+    common = {}
+    for item in details:
+        energy = item.get("energy_type")
+        if energy not in ENERGY_TYPES:
+            continue
+        description = item.get("customer_description") or ""
+        uses = set()
+        if isinstance(description, str) and not re.search(r"不|未|仅|只|除非|但|如果|需要|需核实", description):
+            for clause in re.split(r"[，,。；;！!]", description):
+                stated = re.fullmatch(r"(?:适合|适用于)([\u4e00-\u9fff]{2,12})", clause.strip())
+                if stated:
+                    uses.add(stated[1])
+                    uses.add(re.sub(r"^(?:日常城市|城市|日常|家庭)(?=.{2,})", "", stated[1]))
+        if energy in common:
+            common[energy].intersection_update(uses)
+        else:
+            common[energy] = uses
+    return {key: sorted(values) for key, values in common.items() if values}
+
+
 def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8, sources=()) -> dict:
     from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import catalog_product_payload
     rows = inventory_snapshot(runtime)
@@ -795,6 +817,8 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8, sources=
                "known_price_min": min(prices) if prices else None,
                "known_price_max": max(prices) if prices else None,
                "stock_energy_counts": stock_counts, "stock_energy_unknown_rows": stock_unknown,
+               "stock_common_public_uses": _common_public_uses((r["data"].get("additional_details") or {}) for r in rows),
+               "known_common_public_uses": _common_public_uses((p.get("public_details") or {}) for p in matches),
                "known_energy_counts": energy_counts if can_evaluate else None,
                "known_energy_unknown_rows": missing_energy if can_evaluate else None,
                "known_condition_match_count": len(matches) if can_evaluate else None,
@@ -940,7 +964,7 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
         if fact.get("source_level") == "catalog_query" or fact.get("fact_type") in AGGREGATES:
             field = AGGREGATES.get(fact.get("fact_type"))
             energy = fact.get("scope_energy") or []
-            expected = scoped_aggregate_value(receipt,field,energy) if energy else receipt.get(field)
+            expected = scoped_aggregate_value(receipt,field,energy) if energy or field == 'stock_count' else receipt.get(field)
             if (not field or fact.get("source_level") != "catalog_query"
                     or (not energy and not aggregate_fact_ready(receipt, field))
                     or fact.get("source_id") != receipt.get("query_id") or expected is None
@@ -957,12 +981,21 @@ def query_plan_errors(plan: dict, evidence: dict) -> list[str]:
 
 
 AGGREGATES = {"catalog_match_count": "match_count", "catalog_price_min": "price_min", "catalog_price_max": "price_max",
-              "catalog_scanned_count": "scanned_count", "catalog_known_condition_count": "known_condition_match_count",
+              "catalog_scanned_count": "scanned_count", "catalog_stock_count": "stock_count", "catalog_known_condition_count": "known_condition_match_count",
               "catalog_known_price_min":"known_price_min", "catalog_known_price_max":"known_price_max"}
 
 
 def scoped_aggregate_value(receipt, field, energy):
     """Look up a witnessed metric in the full evaluated scope, never the displayed page."""
+    if field == "stock_count":
+        if not receipt.get("scan_complete") or not isinstance(energy, (list,tuple)):
+            return None
+        if not energy:
+            return receipt.get("scanned_count")
+        if receipt.get("stock_energy_unknown_rows") != 0 or not all(isinstance(k, str) and k in ENERGY_TYPES for k in energy):
+            return None
+        counts = receipt.get("stock_energy_counts") or {}
+        return sum(counts[k] for k in set(energy)) if set(energy) <= set(counts) else None
     if not receipt.get("known_conditions_evaluated") or receipt.get("unknown_field_count"):
         return None
     if not energy:
@@ -990,7 +1023,7 @@ def aggregate_ready(receipt):
 
 
 def aggregate_fact_ready(receipt, field):
-    if field == "scanned_count":
+    if field in {"scanned_count", "stock_count"}:
         return receipt.get("scan_complete") is True
     if field in {"known_condition_match_count", "known_price_min", "known_price_max"}:
         view = receipt_view(receipt)

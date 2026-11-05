@@ -453,12 +453,36 @@ def _inventory_assertion_errors(text, receipt):
 
 
 
-def _stated_inventory_scope(subject, receipt):
-    """Match the dimensions actually stated to the executed filters and budget."""
+_WHOLE_STOCK = re.compile(r"全店|全库|整个(?:门店|库存)|所有在售")
+_REMAINING = re.compile(r"剩下|剩余|余下|其余|剩")
+_PREVIOUS_EXCLUDED = re.compile(
+    r"(?:刚才|之前|上次|前面)?(?:的)?(?:那|这)(?:一)?(?:辆|台|款)(?:车)?(?:先)?"
+    r"(?:放(?:在)?一边|不(?:看|算|考虑)|排除|不计入|跳过)")
+
+
+def _stated_inventory_scope(subject, receipt, *, whole_stock=False):
+    """Resolve qualifiers against the executed scope before looking at a number."""
     from apps.wechat_ai_customer_service.workflows.catalog_budget import budget_statement
-    scope = receipt.get("known_condition_scope") or {}
-    if scope.get("exclude_ids") or re.search(r"年份|上牌|车龄|大修|事故|水泡|火烧|所有条件|全部条件|全店", subject):
+    known = receipt.get("known_condition_scope") or {}
+    scope = {} if whole_stock else known
+    if re.search(r"年份|上牌|车龄|大修|事故|水泡|火烧|所有条件|全部条件", subject):
         return None
+    if whole_stock:
+        subject = _WHOLE_STOCK.sub("", subject)
+    elif _WHOLE_STOCK.search(subject):
+        return None
+    if known.get("exclude_ids"):
+        # An anaphora can only remove a uniquely confirmed, actually sent car.
+        excluded = known["exclude_ids"]
+        links = (receipt.get("query") or {}).get("id_sources") or {}
+        acknowledged = _PREVIOUS_EXCLUDED.search(subject)
+        if acknowledged:
+            if len(excluded) != 1 or not any(v.get("kind") == "confirmed_native_reply" for v in links.get(excluded[0], [])):
+                return None
+            subject = _PREVIOUS_EXCLUDED.sub("", subject)
+        if not whole_stock and not acknowledged and not _REMAINING.search(subject):
+            return None
+    subject = _REMAINING.sub("", subject)
     budget = scope.get("budget") or {}
     if budget.get("state") == "specified" and not _customer_budget_spans(subject, [], budget):
         return None
@@ -474,7 +498,7 @@ def _stated_inventory_scope(subject, receipt):
                 return None
         elif f["op"] not in ("eq","in") or not all(str(v) in subject for v in vals):
             return None
-    if not kinds and not scope.get("filters") and budget.get("state") != "specified":
+    if not whole_stock and not kinds and not scope.get("filters") and budget.get("state") != "specified":
         return None
     # Every qualifier must have a source. Removing verified dimensions leaves
     # only stock/count/price wording, never another free-form car attribute.
@@ -486,11 +510,18 @@ def _stated_inventory_scope(subject, receipt):
         if f["field"] != "energy_type":
             for value in f["value"] if f["op"] == "in" else [f["value"]]:
                 remaining = remaining.replace(str(value), "")
-    words = (r"门店|店里|这边|我这儿|目前|当前|已经|一共|合计|库存|在售|现有|现车|车源|二手车|车型|车辆|"
+    words = (r"好的|门店|店里|这边|我这儿|目前|现在|当前|已经|一共|总共|合计|只有|仅有|库存|在售|现有|现车|车源|二手车|车型|车辆|"
              r"查到|找到|筛到|看到|查了|价格区间|最低价|最高价|价格|售价|报价|价位|预算|以内|以下|"
              r"代步车|可选|条件|这些|这批|我们|我|的|按|有|共|车|为|是|从|在|内|[，,：:\s]")
-    if re.sub(words, "", remaining):
-        return None
+    qualifier = re.sub(words, "", remaining)
+    if qualifier:
+        level = "stock" if whole_stock else "known"
+        counts = receipt.get(level + "_energy_counts") or {}
+        uses = receipt.get(level + "_common_public_uses") or {}
+        present = [k for k in (kinds or counts) if counts.get(k)]
+        if (receipt.get(level + "_energy_unknown_rows") != 0 or not present
+                or not all(qualifier in uses.get(k, []) for k in present)):
+            return None
     return sorted(kinds)
 
 
@@ -506,12 +537,17 @@ def _scoped_numbers(segment, numbers, entities, receipt, carried):
         prefix = segment[start:n["start"]]
         # An inventory count requires a stock predicate and its subject. It
         # cannot borrow an equal list size or include unverified conditions.
-        if n["unit"] == "台" and re.search(r"查到|找到|筛到|看到|(?:目前|现有|一共|共|库存|车源|在售).{0,5}有?$|(?:^|店里|这边|门店)有$",prefix):
+        if n["unit"] == "台" and (_WHOLE_STOCK.search(prefix) or re.search(r"查到|找到|筛到|看到|(?:现有|一共|库存|车源|在售|剩余|剩下)\s*$|有\s*$",prefix)):
             tail = re.split(r"[，,。；;！？!?]",segment[n["end"]:])[0]
-            scope = _stated_inventory_scope(prefix+tail,receipt)
             stated = prefix + tail
+            whole_stock = bool(_WHOLE_STOCK.search(stated))
+            scope = _stated_inventory_scope(stated,receipt,whole_stock=whole_stock)
             named_count = any(start <= e["start"] < n["start"] for e in entities)
             if named_count:
+                last_scope = None
+            elif whole_stock:
+                expected = scoped_aggregate_value(receipt, "stock_count", scope) if scope is not None else None
+                record(n, "stock_count", expected, scope or [])
                 last_scope = None
             elif scope is not None:
                 record(n,"known_condition_match_count",scoped_aggregate_value(receipt,"known_condition_match_count",scope),scope)
@@ -520,7 +556,8 @@ def _scoped_numbers(segment, numbers, entities, receipt, carried):
                 record(n,"known_condition_match_count",None,[])
                 last_scope = None
             elif aggregate_ready(receipt) and not _scanned_count_scope(segment,n):
-                record(n,"match_count",receipt.get("match_count"),[])
+                expected = None if (receipt.get("known_condition_scope") or {}).get("exclude_ids") else receipt.get("match_count")
+                record(n,"match_count",expected,[])
         if n["unit"] != "万元":
             continue
         local = re.split(r"[，,]",prefix)[-1]
@@ -548,7 +585,7 @@ def _scoped_numbers(segment, numbers, entities, receipt, carried):
             if re.fullmatch(rf"\s*(?:{_ENERGY_LABEL})?(?:现车|车辆|车源|二手车|车)?[，,。\s]*(?:其|这些车的|这批车的)?(?:价格|售价|报价|价位|价格区间)(?:在|从|为|是|约|大概|大约|\s)*", continuation):
                 scope = last_scope
         complete = aggregate_ready(receipt)
-        explicit_conditions = re.search(_ENERGY_LABEL + r"|年份|车龄|大修|事故|所有条件|全部条件|预算", prefix)
+        explicit_conditions = re.search(_ENERGY_LABEL + r"|年份|车龄|大修|事故|所有条件|全部条件|预算", prefix) or _WHOLE_STOCK.search(prefix)
         for num, bound in endpoints:
             field = "known_price_"+bound if scope is not None or not complete else "price_"+bound
             expected = (scoped_aggregate_value(receipt,field,scope) if scope is not None
@@ -705,7 +742,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             if not item["verified"]:
                 errors.append("inventory_scoped_metric_mismatch" if item["expected"] is not None else "unverified_reply_numeric_fact")
                 continue
-            kind = {"known_condition_match_count":"catalog_known_condition_count","match_count":"catalog_match_count",
+            kind = {"known_condition_match_count":"catalog_known_condition_count","match_count":"catalog_match_count","stock_count":"catalog_stock_count",
                     "known_price_min":"catalog_known_price_min","known_price_max":"catalog_known_price_max",
                     "price_min":"catalog_price_min","price_max":"catalog_price_max"}[item["role"]]
             fact = {"fact_type":kind,"value":item["expected"],"source_level":"catalog_query","source_id":receipt["query_id"]}

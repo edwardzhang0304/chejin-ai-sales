@@ -808,3 +808,51 @@ def test_previous_vehicle_exclusion_depends_on_current_messages_and_unique_sent_
     normalized = cq.normalize_model_query(raw, sources, **args)
     assert normalized['exclude_ids'] == (expected or [])
     assert bool(normalized.get('unresolved_previous_exclusion')) == (expected is None)
+
+
+@pytest.mark.parametrize('scope,count,description,allowed', [
+    ('那辆先放一边，8万以内我这边看到', 5, '适合城市通勤。', True),
+    ('那辆先放一边，8万以内我这边看到', 3, '适合城市通勤。', False),
+    ('那辆先放一边，8万以内我这边看到', 5, '', False),
+    ('那辆先放一边，8万以内我这边看到', 5, '不适合通勤。', False),
+    ('那辆先放一边，全店只有', 5, '适合城市通勤。', False),
+    ('那辆先放一边，全店一共有', 6, '适合城市通勤。', True),
+    ('算上刚才那辆，8万以内我这边看到', 5, '适合城市通勤。', False),
+])
+def test_count_uses_all_members_of_the_stated_stock_scope(scope, count, description, allowed):
+    customer = '刚才那辆不要了，8万以内看看别的。'
+    pack = evidence(customer)
+    rows = [row(str(i), 4+i/2, energy_type='electric', customer_description='适合城市通勤。')
+            for i in range(1,7)]
+    # This car is outside the three displayed recommendations but still in
+    # the counted set. Its public description must support the stated use.
+    rows[0]['data']['additional_details']['customer_description'] = description
+    for item in rows:
+        item['source'] = {'type':'chejin_backend'}
+    raw = {'operation':'search','requirement_state':'clear','source_ids':['m1'],
+           'budget':{'state':'specified','mode':'upper','value':8,'source_ids':['m1']},
+           'name_queries':[], 'filters':[], 'exclude_ids':['4'], 'reference_ids':[],
+           'unsupported_requirements':[], 'interpretation':'已确认排除上一辆'}
+    links = {'4':[{'source_id':'previous','conversation_id':'c1','kind':'confirmed_native_reply'}]}
+    q = cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT,known_ids=links)
+    receipt = cq.execute_query(q,Runtime(rows),scope={'conversation_id':'c1','current_message_ids':['m1']},limit=3)
+    cq.attach_receipt(pack,receipt)
+    assert len(receipt['recommendations']) == 3 and receipt['known_condition_match_count'] == 5
+    intro = f'{scope}{count}台纯电通勤车。'
+    names = '，'.join(f"{p['name']}报价{p['price']}万" for p in receipt['recommendations'])
+    result = validate_reply_public_facts({'answer_mode':'recommend_from_catalog','reply_segments':[intro,names]},pack)
+    assert result['ok'] is allowed, result
+
+
+@pytest.mark.parametrize('first,allowed', [
+    ('现在有6台纯电，价格5.2到7.2万。',True),
+    ('现在有3台纯电，价格5.2到7.2万。',False),
+    ('现在有6台纯电，价格4.2到7.2万。',False),
+    ('现在有6台纯电，价格5.2到7.8万。',False),
+    ('现在有6台符合年份的纯电，价格5.2到7.2万。',False),
+])
+def test_known_inventory_count_and_shared_unit_range(first,allowed):
+    pack,_,_=partial_year_pack()
+    plan={'answer_mode':'ask_clarifying_question','reply_segments':[first,'年份还需核实，您希望哪年以后？']}
+    result=validate_reply_public_facts(plan,pack)
+    assert result['ok'] is allowed,result
