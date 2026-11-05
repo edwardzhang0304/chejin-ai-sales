@@ -3124,6 +3124,23 @@ def hook_update_business_blockers(process_generation: str | None) -> dict[str, i
             if process_generation is not None:
                 sql += ' AND process_generation=?'
                 args.append(process_generation)
+            elif table == 'hook_active_calls' and 'hook_process_recovery' in tables:
+                # Login/callback readiness is not OS process liveness. A failed
+                # login must not discard already recorded death proof for an old
+                # read. Do not settle/delete records or exempt sends/voices.
+                from .hook_active_calls import UPDATE_READ_KINDS
+                from .hook_read_retry import validate_schema
+                validate_schema(conn, 'hook_process_recovery')
+                read_kinds = sorted(UPDATE_READ_KINDS)
+                placeholders = ','.join('?' for _ in read_kinds)
+                sql += f''' AND NOT (kind IN ({placeholders}) AND EXISTS (
+                    SELECT 1 FROM hook_process_recovery AS proof
+                    WHERE proof.old_generation=hook_active_calls.process_generation
+                    AND proof.new_generation<>proof.old_generation
+                    AND proof.death_proof='os_process_generation_absent'
+                    AND length(proof.evidence_sha256)=64
+                    AND length(proof.verified_at)>0))'''
+                args.extend(read_kinds)
             counts['hook_unresolved_calls'] += int(conn.execute(sql, args).fetchone()[0])
         if 'hook_delivery_outbox' in tables:
             from .hook_delivery_lifecycle import terminal_delivery

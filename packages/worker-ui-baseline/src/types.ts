@@ -125,5 +125,8 @@ export interface WorkerClientModel {
     status_text?: string;
     in_progress?: boolean;
     available?: boolean;
+    check_allowed?: boolean;
+    check_reason_code?: string;
+    check_reason_text?: string;
   };
 }

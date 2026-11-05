@@ -3,6 +3,9 @@ from . import storage
 from .models import utc_now_iso
 from .hook_process import HookProcessError
 CALL_KINDS=frozenset({'history_capture','send_text','IsLoginStatus','ConfigureMsgReciveFullURL','GetDBHandleAndPath','QueryDB','SendTextMsg','GetFriendAndChatRoomList','Voice2Text','DiySceneStats','SwapMemory'})
+# Only these operations can cease blocking an update after durable OS death
+# proof. Sends, callback configuration and transcription retain their gates.
+UPDATE_READ_KINDS=frozenset({'history_capture','IsLoginStatus','GetDBHandleAndPath','QueryDB','GetFriendAndChatRoomList'})
 FIELDS=('process_generation','action_id','kind','state','attempted_at','completed_at')
 
 

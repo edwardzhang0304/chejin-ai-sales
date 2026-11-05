@@ -59,6 +59,7 @@ def _headless_web_ui_module():
         "PySide6.QtWidgets",
         "chejin_worker_client.qt_application",
         "chejin_worker_client.web_ui",
+        "chejin_worker_client.update_controls_preview",
     )
     previous = {name: sys.modules.get(name) for name in module_names}
 
@@ -228,6 +229,8 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         window.state_revision = 0
         window.step_history = []
         window.update_state = {}
+        window.update_coordinator = types.SimpleNamespace(
+            controls_state=lambda state, admission=None: {**state, "check_allowed": False})
         window.runtime_process_timeline = module.RuntimeProcessTimeline()
         window.runner = _Runner()
         window.rpa_bridge = types.SimpleNamespace(last_probe_payload={})
