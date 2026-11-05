@@ -4136,6 +4136,7 @@ class TaskRunner:
                  "bound_at": binding.bound_at} if binding else {})
 
     def _observe_layout_result(self, scope: str, payload: dict[str, Any]) -> None:
+        stopped = False
         with self._run_status_intent_lock:
             previous = load_c2_state("layout_recovery")
             identity = self._layout_binding_identity()
@@ -4147,9 +4148,13 @@ class TaskRunner:
                 return
             view = layout_recovery_view(state)
             if view["blocked"] and self.binding and self.binding.run_status == "running":
-                # Diagnostic persistence cannot be a prerequisite for stopping.
-                self.set_run_status("paused")
+                # Save the stop here; its network acknowledgement belongs
+                # outside this local intent transaction, like update admission.
+                self._preserve_stopped_run_status("paused")
+                stopped = True
             save_c2_state("layout_recovery", state)
+        if stopped:
+            self._sync_pending_run_status(force=True)
         if not payload.get("ok") and view["attempts"]:
             append_log(
                 "WARN", "wechat_layout_retry_limited", view["message"],
@@ -4844,7 +4849,9 @@ class TaskRunner:
         already past that check is an admitted writer, never an idle boundary:
         its registered background cycle and original Flow/lease must drain.
         """
-        with self._update_cycle_lock:
+        # Global order: status intent before the short cycle-registration lock.
+        # Neither lock may enclose a network call or an admission-lock wait.
+        with self._run_status_intent_lock, self._update_cycle_lock:
             snapshot = self.update_check_safety_snapshot()
             if not snapshot['allowed']:
                 return snapshot, None
@@ -4852,14 +4859,13 @@ class TaskRunner:
             # A crash at any later boundary must restart stopped, even if no
             # update gate/result has been written yet. This performs no I/O to
             # WeChat or the backend; the usual status ACK runs asynchronously.
-            with self._run_status_intent_lock:
-                original_revision = self._run_status_revision
-                original_flow_id = load_runtime_control().get('inflight_flow_id')
-                if not self.preserve_update_stop():
-                    raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
-                self._update_original_revision = original_revision
-                self._update_stop_revision = self._run_status_revision
-                self._update_original_flow_id = original_flow_id
+            original_revision = self._run_status_revision
+            original_flow_id = load_runtime_control().get('inflight_flow_id')
+            if not self.preserve_update_stop():
+                raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
+            self._update_original_revision = original_revision
+            self._update_stop_revision = self._run_status_revision
+            self._update_original_flow_id = original_flow_id
             state = begin_request()
             set_update_new_work_gate(True, update_request_id=state['update_request_id'])
             self._update_quiescing_request_id = state['update_request_id']
@@ -7149,14 +7155,18 @@ class TaskRunner:
                 binding = self.binding
                 if self.hook_services is None and not self._refresh_vision_credential(binding):
                     return
+                ready = self._check_fault_recovery()["ready"]
                 with self._run_status_intent_lock:
-                    if revision != self._run_status_revision or not self._check_fault_recovery()["ready"]:
+                    if revision != self._run_status_revision or not ready:
                         return
                 attempted = True
                 profile = self.api.set_run_status(binding, "running", recover_from_fault=True)
+                # Full readiness may wait for connection/installation snapshots.
+                # Inspect outside the intent lock, then fence the local commit.
+                ready = self._check_fault_recovery()["ready"]
                 with self._run_status_intent_lock:
                     if (profile.run_status != "running" or revision != self._run_status_revision
-                            or not self._check_fault_recovery()["ready"]):
+                            or not ready or load_runtime_control().get("update_no_new_work")):
                         raise RuntimeError("恢复期间状态发生变化，继续停止接单")
                     self._backend_confirmed_run_status = "running"
                     previous_layout_state = load_c2_state("layout_recovery")

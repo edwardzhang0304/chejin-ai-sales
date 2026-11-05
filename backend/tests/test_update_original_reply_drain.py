@@ -86,7 +86,8 @@ def check_original_claim_scope(worker_id, batch_id):
 
 
 @pytest.mark.parametrize('segments,failure', [(1, None), (2, None), (2, 'receipt'),
-    (2, 'finish'), (2, 'read_before'), (2, 'read_after'), (2, 'send_unknown')])
+    (2, 'finish'), (2, 'read_before'), (2, 'read_after'), (2, 'send_unknown'),
+    (2, 'pause_delay'), (2, 'pause_action_lock'), (2, 'pause_after_begin')])
 def test_update_finishes_original_reply_through_normal_consumer(identity_client, lab, tmp_path, monkeypatch, segments, failure):
     def drive(runtime, binding, batch_id, **kwargs):
         deadline = time.monotonic() + 20
@@ -178,6 +179,38 @@ def test_update_finishes_original_reply_through_normal_consumer(identity_client,
                     conn.getresponse = response_without_body
                 return original_post(conn, route, payload, limit)
             monkeypatch.setattr(hook_transport, 'post', lose_send_response)
+        revoked = []
+        if failure in {'pause_delay', 'pause_action_lock', 'pause_after_begin'}:
+            def pause_again():
+                assert runner.update_flow_continuation_allowed(runtime.active_flow_id)
+                assert runner.set_run_status('paused')
+                assert not runner.update_flow_continuation_allowed(runtime.active_flow_id)
+                revoked.append(runtime.active_flow_id)
+            if failure == 'pause_delay':
+                original_wait = runtime.wait
+                def delayed_pause(seconds):
+                    original_wait(seconds)
+                    pause_again()
+                runtime.wait = delayed_pause
+            elif failure == 'pause_after_begin':
+                original_begin = type(runtime.client).native_send_begin
+                def paused_begin(client, *args, **kwargs):
+                    result = original_begin(client, *args, **kwargs)
+                    pause_again()
+                    return result
+                monkeypatch.setattr(type(runtime.client), 'native_send_begin', paused_begin)
+            else:
+                # Competing operator intent arrives while the sender is waiting
+                # for the physical action lock; check the real post-lock guard.
+                from contextlib import contextmanager
+                original_lock = runtime.gateway._locked
+                @contextmanager
+                def paused_lock(process, operation):
+                    if operation == 'hook_send_text':
+                        pause_again()
+                    with original_lock(process, operation) as lease:
+                        yield lease
+                monkeypatch.setattr(runtime.gateway, '_locked', paused_lock)
         c = UpdateCoordinator(FakeApi(_release()), runner, binding_provider=lambda: runner.binding,
             on_state=lambda _: None, request_normal_exit=lambda: pytest.fail('No OS installation'),
             state_store=UpdateStateStore(tmp_path/'update'), formal_package=True)
@@ -244,13 +277,25 @@ def test_update_finishes_original_reply_through_normal_consumer(identity_client,
                     'backend_flow': runner._backend_inflight_flow_state,
                     'snapshot': runner.update_install_safety_snapshot(),
                     'requests': requests[-10:], 'refusals': refusals[:5]}))
-            assert len(sends()) == segments
+            expected_sends = 1 if revoked else segments
+            assert len(sends()) == expected_sends
+            if revoked:
+                assert len(revoked) == 1
+                receipts = list((runtime.private_root/'send-receipts').glob('*.json'))
+                assert any('"physical_send_attempted":false' in path.read_text().replace(' ', '')
+                           for path in receipts)
             assert not storage.load_runtime_control()['inflight_flow_id']
             assert storage.load_binding().run_status == 'paused'
             assert storage.load_runtime_control()['pause_requested']
             assert storage.load_runtime_control()['update_no_new_work']
             with SessionLocal() as db:
-                assert len(list(db.scalars(select(SentAck)))) == segments
+                acks = list(db.scalars(select(SentAck)))
+                assert len(acks) == segments
+                if revoked:
+                    assert sum(a.send_result == 'sent' for a in acks) == 1
+                    blocked = [a for a in acks if a.action_phase == 'not_attempted']
+                    assert len(blocked) == 1 and blocked[0].send_result == 'failed'
+                    assert blocked[0].evidence['native_no_trigger_verified'] is True
             assert bool(lost) == (failure in {'receipt', 'finish'})
             if failure in {'read_before', 'read_after'}:
                 assert read_failures == ['QueryDB'] and hook_read_retry.pending() is None
