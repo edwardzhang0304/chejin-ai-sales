@@ -167,12 +167,14 @@ def test_undrained_writer_never_changes_clock_and_explicit_retry_can_finish(runt
     sync=ClockSync(runner,tmp_path,repair=lambda *args:called.append(args) or {'result':'cancelled'})
     sync.start();finish(sync)
     assert not called and sync.snapshot()['state']=='stop_failed'
+    assert sync.snapshot()['retryRequired'] is True
     owned=storage.load_runtime_control()['update_request_id']
     assert owned.startswith('clock-sync-') and binding.run_status=='paused'
     monkeypatch.setattr(runner,'stop_for_update',original)
     sync.start();finish(sync)
     assert len(called)==1 and called[0][0]!=owned and valid_operation(called[0][0])
     assert not storage.load_runtime_control()['update_no_new_work']
+    assert sync.snapshot()['retryRequired'] is False
 
 
 def test_crash_recovery_revokes_pending_authorization_without_clearing_unknown(tmp_path, monkeypatch):
@@ -538,3 +540,67 @@ def test_real_clock_producer_to_qt_and_shipped_ui_unknown_states_then_recovery(r
         assert '"actions":0' in result.stdout
         assert binding.run_status=='paused'
     finally:backend_peer.status=200
+
+
+@pytest.mark.parametrize('offset,zone_ok,reference_status,expected', [
+    (60, True, 'aligned', True),
+    (0, False, 'aligned', True),
+    (0, True, 'aligned', False),
+    (60, True, 'unconfirmed', False),
+    (60, True, 'skewed', False),
+])
+def test_confirmed_local_clock_fault_pauses_without_repair_or_resend(
+        runtime, backend_peer, tmp_path, monkeypatch, offset, zone_ok, reference_status, expected):
+    from chejin_worker_client import hook_backend
+    runner, services, binding, _, _, _, posted, _ = runtime
+    body = json.loads(backend_peer.body)
+    body['data']['run_status'] = 'running'
+    reference = {**REFERENCE, 'status': reference_status}
+    if reference_status == 'skewed':
+        reference.update(offset_lower_seconds=60, offset_upper_seconds=60.1)
+    body['data']['clock_reference'] = reference
+    backend_peer.body = json.dumps(body).encode()
+    delta = [offset]
+    monkeypatch.setattr(hook_backend, 'time', SimpleNamespace(
+        time=lambda: time.time()+delta[0], monotonic=time.monotonic))
+    zone = {**ZONE, 'beijing_timezone': zone_ok}
+    monitor = ClockDiagnostics(tmp_path, zone_reader=lambda: zone)
+    services.connection.backend = replace(services.connection.backend, clock_diagnostics=monitor)
+    monkeypatch.setattr(windows, 'synchronize_windows', lambda *a: pytest.fail('automatic clock mutation'))
+    original = tmp_path/'transactions'/'unknown.json'
+    original.parent.mkdir()
+    original.write_bytes(b'{"state":"unknown","do_not_resend":true}')
+    before = original.read_bytes()
+    binding.run_status = 'running'; storage.save_binding(binding)
+    runner.start(binding)
+    until(lambda: monitor.snapshot()['comparison_status'] in {'skewed', 'aligned'})
+    if expected:
+        until(lambda: binding.run_status == 'paused')
+        assert storage.load_binding().run_status == 'paused'
+        check = services.startup_check_state()
+        assert check['clockCheck']['repairRequired'] is True and not check['canStart']
+        assert not runner.set_run_status('running')
+        # Even manual Windows repair / the next healthy heartbeat cannot resume orders.
+        delta[0] = 0; zone['beijing_timezone'] = True
+        until(lambda: monitor.snapshot()['comparison_status'] == 'aligned'
+              and not services.startup_check_state()['clockCheck']['repairRequired'])
+        assert binding.run_status == 'paused' and 'running' not in posted
+    else:
+        assert not services.startup_check_state()['clockCheck']['repairRequired']
+        assert binding.run_status == 'running'
+    assert original.read_bytes() == before
+
+
+def test_clock_fault_does_not_downgrade_existing_fault(runtime, backend_peer, tmp_path):
+    runner, services, binding, *_ = runtime
+    body = json.loads(backend_peer.body)
+    body['data']['run_status'] = 'faulted'
+    backend_peer.body = json.dumps(body).encode()
+    monitor = ClockDiagnostics(tmp_path, zone_reader=lambda: {**ZONE, 'beijing_timezone': False})
+    services.connection.backend = replace(services.connection.backend, clock_diagnostics=monitor)
+    binding.run_status = 'faulted'; storage.save_binding(binding)
+    runner.start(binding)
+    until(lambda: services.connection.prepared is not None)
+    check = services.startup_check_state()
+    assert check['clockCheck']['repairRequired'] and not check['canStart']
+    assert binding.run_status == storage.load_binding().run_status == 'faulted'

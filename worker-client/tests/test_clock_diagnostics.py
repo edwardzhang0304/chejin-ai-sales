@@ -372,3 +372,19 @@ def test_cloudflare_reference_reaches_worker_export_without_bypassing_safety(tmp
         assert reference_summary({**sample.clock_reference, **change}) == {'status': 'unconfirmed'}
     sample.clock_reference = {**sample.clock_reference, 'status': 'unconfirmed'}
     assert verification_view(compare_clock(sample, ZONE))['status'] == 'unconfirmed'
+
+
+@pytest.mark.parametrize('age,zone,comparison,reference,required', [
+    (0, True, 'skewed', 'aligned', True),
+    (0, False, 'pending', 'unconfirmed', True),
+    (121, False, 'stale', 'unconfirmed', False),
+    (0, None, 'pending', 'unconfirmed', False),
+    (0, True, 'skewed', 'skewed', False),
+    (0, True, 'skewed', 'unconfirmed', False),
+    (0, True, 'unconfirmed', 'aligned', False),
+    (0, True, 'aligned', 'aligned', False),
+])
+def test_clock_repair_classification_never_guesses_from_notice(age, zone, comparison, reference, required):
+    from chejin_worker_client.clock_diagnostics import clock_repair_required
+    assert clock_repair_required({'sample_age_seconds': age, 'timezone': {'beijing_timezone': zone},
+        'comparison_status': comparison, 'backend_reference': {'status': reference}}) is required
