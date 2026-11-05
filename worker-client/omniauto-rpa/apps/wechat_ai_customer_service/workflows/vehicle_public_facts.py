@@ -297,7 +297,7 @@ def _display_counts(segments: list[str], products: list[dict], receipt: dict | N
         prefix = text[start:number["start"]]
         retrospective = bool(re.search(r"(?:这|那|上述|以上)(?:共|一共)?\s*$", prefix))
         prospective = bool(re.search(r"(?:看|推荐|介绍|给|补|列|挑|选|说)", prefix))
-        inventory = bool(re.search(r"库存|在售|全店|一共|总共|仅有|只有|剩余|看到|查到|找到|匹配到", prefix)
+        inventory = bool(_stock_count_predicate(prefix)
                          or _scanned_count_scope(text, number) or _known_count_scope(text, number, receipt or {}))
         if inventory or not (retrospective or prospective):
             continue
@@ -454,7 +454,13 @@ def _inventory_assertion_errors(text, receipt):
 
 
 _WHOLE_STOCK = re.compile(r"全店|全库|整个(?:门店|库存)|所有在售")
-_REMAINING = re.compile(r"剩下|剩余|余下|其余|剩")
+_REMAINING = re.compile(r"(?:还|仅|只)?(?:剩(?:下|余)?|余下|余有|余)|其余")
+_STOCK_PREDICATE = re.compile(r"查到|找到|筛到|看到|匹配到|库存|在售|总共|一共|合计|(?:现有|共有|有)\s*$")
+
+
+def _stock_count_predicate(clause):
+    return bool(_REMAINING.search(clause) or _WHOLE_STOCK.search(clause) or _STOCK_PREDICATE.search(clause))
+
 _PREVIOUS_EXCLUDED = re.compile(
     r"(?:刚才|之前|上次|前面)?(?:的)?(?:那|这)(?:一)?(?:辆|台|款)(?:车)?(?:先)?"
     r"(?:放(?:在)?一边|不(?:看|算|考虑)|排除|不计入|跳过)")
@@ -512,7 +518,7 @@ def _stated_inventory_scope(subject, receipt, *, whole_stock=False):
                 remaining = remaining.replace(str(value), "")
     words = (r"好的|门店|店里|这边|我这儿|目前|现在|当前|已经|一共|总共|合计|只有|仅有|库存|在售|现有|现车|车源|二手车|车型|车辆|"
              r"查到|找到|筛到|看到|查了|价格区间|最低价|最高价|价格|售价|报价|价位|预算|以内|以下|"
-             r"代步车|可选|条件|这些|这批|我们|我|的|按|有|共|车|为|是|从|在|内|[，,：:\s]")
+             r"代步车|可选|可供|条件|这些|这批|我们|我|还|尚|仅|只|的|按|有|共|车|为|是|从|在|内|[，,：:\s]")
     qualifier = re.sub(words, "", remaining)
     if qualifier:
         level = "stock" if whole_stock else "known"
@@ -537,7 +543,7 @@ def _scoped_numbers(segment, numbers, entities, receipt, carried):
         prefix = segment[start:n["start"]]
         # An inventory count requires a stock predicate and its subject. It
         # cannot borrow an equal list size or include unverified conditions.
-        if n["unit"] == "台" and (_WHOLE_STOCK.search(prefix) or re.search(r"查到|找到|筛到|看到|(?:现有|一共|库存|车源|在售|剩余|剩下)\s*$|有\s*$",prefix)):
+        if n["unit"] == "台" and _stock_count_predicate(re.split(r"[，,]", prefix)[-1]):
             tail = re.split(r"[，,。；;！？!?]",segment[n["end"]:])[0]
             stated = prefix + tail
             whole_stock = bool(_WHOLE_STOCK.search(stated))
@@ -847,17 +853,10 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
         for number in (n for n in numbers if n["start"] not in owners):
             if number["start"] in customer_numbers or number["start"] in display_positions:
                 continue
-            value = public_number(number["value"])
             policy = policy_number(number, segment_index)
             valid = policy
             clause_start = max((m.end() for m in re.finditer(r"[，,。；;！？!?]", segment[:number["start"]])), default=0)
             local_entities = [e for e in entities if clause_start <= e["start"] < number["end"]]
-            if not local_entities and amount_role(segment, number["start"]) is None and aggregate_ready(receipt) and value is not None:
-                candidates = [("catalog_match_count", "match_count")] if number["unit"] == "台" else []
-                for kind, field in candidates:
-                    if value == public_number(receipt.get(field)):
-                        valid = True
-                        add(kind, receipt[field], "catalog_query", receipt["query_id"])
             occurrences.append({"segment_index": segment_index, **number, "verified": valid and (not policy or formal_validation is not None),
                                 "pending_policy_review": policy and formal_validation is None,
                                 "role_candidates": [amount_role(segment, number["start"]), "catalog_aggregate"],
@@ -867,7 +866,12 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             role = amount_role(segment, number["start"])
             policy_statement = any(si == segment_index and lo <= number["start"] < hi
                                    for si, lo, hi in (formal_validation or {}).get("policy_statements", []))
-            asserted_quantity = (local_entities or role or policy_statement or number["unit"] == "年" or
+            # Counted vehicles need an owner even when the wording uses an
+            # unfamiliar stock predicate. A question about a customer's choice
+            # has no asserted inventory total.
+            preference = re.search(r"(?:您|你)(?:想|希望|打算|要|偏好)|(?:想看|想买|需要).{0,6}(?:吗|呢|？)", local_text)
+            unowned_count = number["unit"] == "台" and not preference
+            asserted_quantity = (local_entities or role or policy_statement or unowned_count or number["unit"] == "年" or
                                  re.search(r"共|合计|符合|条件|查到|匹配|在售|库存|最低|最高|价[位格]|预算|区间|报价|服务费|定金|首付|月供", local_text))
             if not valid and asserted_quantity:
                 errors.append("unverified_reply_numeric_fact")

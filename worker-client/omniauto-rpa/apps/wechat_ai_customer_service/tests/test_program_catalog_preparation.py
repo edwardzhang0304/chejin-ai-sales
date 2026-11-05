@@ -812,6 +812,13 @@ def test_previous_vehicle_exclusion_depends_on_current_messages_and_unique_sent_
 
 @pytest.mark.parametrize('scope,count,description,allowed', [
     ('那辆先放一边，8万以内我这边看到', 5, '适合城市通勤。', True),
+    ('那辆先放一边，8万以内还剩', 5, '适合城市通勤。', True),
+    ('那辆先放一边，8万以内还剩', 6, '适合城市通勤。', False),
+    ('那辆先放一边，8万以内余下', '五', '适合城市通勤。', True),
+    ('那辆先放一边，8万以内余下', '六', '适合城市通勤。', False),
+    ('那辆先放一边，8万以内仅剩', '五', '适合城市通勤。', True),
+    ('那辆先放一边，8万以内尚余', '六', '适合城市通勤。', False),
+    ('那辆先放一边，8万以内还剩', '五', '', False),
     ('那辆先放一边，8万以内我这边看到', 3, '适合城市通勤。', False),
     ('那辆先放一边，8万以内我这边看到', 5, '', False),
     ('那辆先放一边，8万以内我这边看到', 5, '不适合通勤。', False),
@@ -849,6 +856,9 @@ def test_count_uses_all_members_of_the_stated_stock_scope(scope, count, descript
     ('现在有3台纯电，价格5.2到7.2万。',False),
     ('现在有6台纯电，价格4.2到7.2万。',False),
     ('现在有6台纯电，价格5.2到7.8万。',False),
+    ('现在有六台纯电，价格五点二到七点二万。',True),
+    ('现在有六台纯电，价格四点二到七点二万。',False),
+    ('现在有六台纯电，价格五点二到七点八万。',False),
     ('现在有6台符合年份的纯电，价格5.2到7.2万。',False),
 ])
 def test_known_inventory_count_and_shared_unit_range(first,allowed):
