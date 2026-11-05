@@ -1063,6 +1063,8 @@ def _bind_clearance(evidence, plan, kind, *, method, reason, refs, validated=Non
                      authority=fingerprint(reply_authority_snapshot(evidence)),
                      plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]),
                      segment_vehicle_ids=deepcopy(validated["segment_vehicle_ids"]))
+        proof['fact_findings'] = {k: deepcopy(validated[k]) for k in
+            ('decision', 'semantic_findings', 'confirmed_conflicts', 'occurrences')}
         proof["segment_binding"] = fingerprint([proof["plan"],proof["reply"],proof["protocol"],proof["segment_vehicle_ids"]])
     evidence["_catalog_clearance"] = proof
 
@@ -1083,11 +1085,14 @@ def prepared_review_route(evidence, plan):
     refs = standard_source_refs(mapping)
     preliminary = validate_reply_public_facts(plan, evidence)
     remaining = " ".join(row["text"] for sid, row in mapping["statements"].items() if sid not in refs)
-    errors = query_plan_errors(plan, evidence) + preliminary["errors"]
+    errors = query_plan_errors(plan, evidence) + preliminary["hard_errors"]
     if has_unqualified_commitment(remaining):
         errors.append("unsafe_commitment_without_caution")
     if errors:
         return _content_rejection(errors)
+    if preliminary["semantic_findings"]:
+        return {"needs_semantic_review": True, "reason": "public_fact_semantics_pending",
+                "findings": preliminary["semantic_findings"]}
     formal = validate_policy_refs(refs, segments=plan["reply_segments"], mapping=mapping,
                                   customer_statements=preliminary["customer_statements"])
     covered = {(n["segment_index"], n["start"], n["end"]) for n in formal["covered_numbers"]}
@@ -1133,7 +1138,8 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
             return {**review, "ok": False, "status": "error", "verdict": "block", "error_kind": "protocol",
                     "contract_errors": contract_errors, "errors": contract_errors, "enforced": True,
                     "reason": "policy_refs_invalid_contract", "soft_pass_low_risk": False}
-        validated = validate_reviewed_reply_facts(plan, evidence, refs=raw_review["policy_refs"], mapping=mapping)
+        validated = validate_reviewed_reply_facts(plan, evidence, refs=raw_review["policy_refs"], mapping=mapping,
+            semantic_approved=bool(review.get("ok") and raw_review.get("verdict") == "pass" and raw_review.get("status", "ok") == "ok"))
         errors.extend(validated["errors"])
         if validated["product_ids"] and kind != "vehicle_facts":
             errors.append("catalog_claim_classification_conflict")
@@ -1141,6 +1147,12 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
         errors.append("catalog_claim_classification_required")
     if kind in {"vehicle_facts", "query_summary"} and not receipt.get("scan_complete"):
         errors.append("current_inventory_not_queried")
+    preparation = (evidence.get("catalog_protocol") or {}).get("preparation") or {}
+    if kind == "query_summary" and (preparation.get("requires_recommendation")
+            or preparation.get("answer_goal") == "uncertain"):
+        # A reviewer-declared count-only answer cannot satisfy a known
+        # recommendation request or resolve an unconfirmed answer goal.
+        errors.append("catalog_summary_does_not_satisfy_answer_goal")
     if kind == "query_summary" and not prepared:
         aggregates = [f for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", [])) if f.get("fact_type") in AGGREGATES]
         if not aggregates or any(not aggregate_fact_ready(receipt, AGGREGATES[f["fact_type"]]) for f in aggregates):

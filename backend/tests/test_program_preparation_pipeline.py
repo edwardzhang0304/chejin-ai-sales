@@ -134,8 +134,13 @@ def test_incorrect_text_or_unavailable_review_never_creates_send_action(monkeypa
         if mutation=='timeout':
             assert len(state['wire'])==2
             assert native['no_visible_reply']['class']=='review_timeout'
+        elif mutation=='wrong_second_price':
+            assert not state['reviews']  # Explicit false price remains a hard gate.
         else:
-            assert not state['reviews']  # independent numeric/goal gate, before semantic pass can mask it
+            # Whether a natural answer satisfies the request is semantic.
+            # Its declared vehicle-facts classification still cannot fabricate
+            # a complete recommendation; the no-action assertions above stay.
+            assert state['reviews']
 
 
 @pytest.mark.parametrize('mutation',['generation_capacity','review_capacity'])
@@ -377,11 +382,18 @@ def test_numeric_entity_assignment_through_review_guard_and_native_permit(monkey
         if kw['model']!='synthetic-reviewer':
             value=json.loads(response['response_text']);value['reply_segments']=segments
             response['response_text']=json.dumps(value,ensure_ascii=False)
+        elif not allowed:
+            # Fixed semantic oracle for the boundary test. Ambiguous references
+            # now reach the existing reviewer; a blanket fake pass is no longer
+            # a valid fixture for these known-negative examples.
+            value=pipeline.joined.review('vehicle_facts',verdict='repair',
+                semantic_errors=['车辆指代、报价或预算表达与固定案例证据不一致'])
+            response['response_text']=json.dumps(value,ensure_ascii=False)
         return response
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire']) == 1 and not state['reviews']
+        assert len(state['wire']) == 1+len(state['reviews']) and len(state['reviews'])<=1
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
@@ -389,8 +401,7 @@ def test_numeric_entity_assignment_through_review_guard_and_native_permit(monkey
             assert not list(db.scalars(select(ReplyAction)))
             n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
             assert n['model_call_accounting']['failure_category']=='content_review',n
-            assert n['no_visible_reply']['class']=='fact_validation_failed',n
-        assert not state['reviews']
+            assert n['no_visible_reply']['failure_category']=='content_review',n
 
 
 @pytest.mark.parametrize('text,allowed',[
@@ -413,11 +424,14 @@ def test_equal_price_entities_keep_independent_authority_in_final_pipeline(monke
             body=text.replace('合成车4','{first}').replace('合成车5','{second}').format(first=a['name'],second=b['name'])
             value['reply_segments']=[body]
             response['response_text']=json.dumps(value,ensure_ascii=False)
+        elif not allowed:
+            value=pipeline.joined.review('vehicle_facts',verdict='repair',semantic_errors=['第二台车报价错误'])
+            response['response_text']=json.dumps(value,ensure_ascii=False)
         return response
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire']) == 1 and not state['reviews']
+        assert len(state['wire']) == 1+len(state['reviews']) and len(state['reviews'])<=1
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
@@ -457,11 +471,14 @@ def test_budget_relation_integrity_reaches_final_consumers(monkeypatch,actual_br
         if kw['model']!='synthetic-reviewer':
             value=json.loads(response['response_text']);value['reply_segments']=['预算'+relation+'8万，合成车6报价7.2万。']
             response['response_text']=json.dumps(value,ensure_ascii=False)
+        elif not allowed:
+            value=pipeline.joined.review('vehicle_facts',verdict='repair',semantic_errors=['预算比较关系与客户条件不一致'])
+            response['response_text']=json.dumps(value,ensure_ascii=False)
         return response
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire']) == 1 and not state['reviews']
+        assert len(state['wire']) == 1+len(state['reviews']) and len(state['reviews'])<=1
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
@@ -469,7 +486,7 @@ def test_budget_relation_integrity_reaches_final_consumers(monkeypatch,actual_br
             assert not list(db.scalars(select(ReplyAction)))
             n=db.get(MessageBatch,bid).ai_response_snapshot['raw_payload']['omniauto_brain_result']
             assert n['no_visible_reply']['failure_category']=='content_review'
-            assert n['failed_draft']['errors']==n['plan_validation']['errors']
+            assert n['review_history'][-1]['raw_result']['semantic_errors']==['预算比较关系与客户条件不一致']
 
 
 @pytest.mark.parametrize('case,allowed', [

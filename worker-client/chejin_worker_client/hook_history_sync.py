@@ -92,7 +92,8 @@ class HookHistorySynchronizer:
         coverage={'schema_version':'hook-history-coverage-v2' if self.media_enabled else 'hook-history-coverage-v1','since_create_time':since,
             'scans':scans,'local_pending_count':end[1]}
         if self.media_enabled:coverage['excluded_pre_invite_metadata']=exclusions
-        rules.validate_coverage(coverage,delivery.peer_wxid,int(since))
+        checked = rules.validate_coverage(coverage,delivery.peer_wxid,int(since))
+        self.content_pending = checked['reason_code'] == rules.APP_CONTENT_PENDING
         hook_read_retry.succeeded(process.generation,'QueryDB',subject)
         self.profile = {'capture_seconds': round(time.perf_counter()-started, 6),
                         'dll_http_seconds': round(reader.api_seconds, 6),

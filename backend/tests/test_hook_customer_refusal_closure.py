@@ -355,12 +355,27 @@ def test_callback_interruption_then_fresh_customer_turn_can_reply(case,monkeypat
     assert all(p.read_bytes()==raw for p,raw in old.items())
 
 
-def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch):
+@pytest.mark.parametrize('restriction',['human','file','empty_app'])
+def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch,restriction):
     from test_hook_account_http import client
     from test_hook_business_http import proof,body
     c=case;original=HookFormalClient.native_send_claim
     with monkeypatch.context() as patch:
-        def refused(*args,**kw):human_takeover(c);return original(*args,**kw)
+        def refused(*args,**kw):
+            if restriction=='human':
+                human_takeover(c)
+            else:
+                time.sleep(1.05)
+                from test_hook_file_isolation import FILE
+                created=int(time.time())
+                c.db.execute('INSERT INTO MSG VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (1,'9000000000000000099',49,0,created,created*1000+1,1,1,
+                     c.binding['peer_wxid'],FILE if restriction=='file' else ''))
+                first=c.rt.sync(c.binding)
+                repeated=c.rt.sync(c.binding)
+                assert first['content_isolated']==repeated['content_isolated']==(restriction=='empty_app')
+                assert not first.get('message_batch') and not repeated.get('message_batch')
+            return original(*args,**kw)
         patch.setattr(HookFormalClient,'native_send_claim',refused)
         assert c.rt.reply_once(c.binding,c.data,history=c.history)['status']=='not_triggered'
     lead=client.post('/api/leads',json={'customer_name':'synthetic second customer','phones':['13800000004']})
@@ -381,7 +396,14 @@ def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch):
     assert len(calls)==1 and calls[0][1]['toid']=='wxid_other_customer'
     with SessionLocal() as db:
         assert db.get(Worker,c.w['id']).run_status=='running'
-        assert db.get(Conversation,c.binding['conversation_id']).reply_ownership['owner']=='human'
+        if restriction=='human':
+            assert db.get(Conversation,c.binding['conversation_id']).reply_ownership['owner']=='human'
+        else:
+            from app.models.c3 import HandoffEvent
+            events=list(db.scalars(select(HandoffEvent).where(HandoffEvent.conversation_id==c.binding['conversation_id'])))
+            assert len(events)==1
+            assert events[0].handoff_reason_code==('HOOK_CUSTOMER_FILE_HANDOFF' if restriction=='file' else 'HOOK_APP_CONTENT_UNCONFIRMED')
+            assert db.get(Conversation,c.binding['conversation_id']).status=='waiting_sales_reply'
 
 
 @pytest.mark.parametrize('stage',['claim','begin'])

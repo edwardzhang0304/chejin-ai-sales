@@ -792,6 +792,16 @@ class HookFormalRuntime:
             except Exception as exc:
                 if send_diagnostic is not None:send_diagnostic.finish(exc)
                 raise
+            if synchronizer.content_pending and reconciliation is None:
+                # Reuse the existing three-read budget, then persist/publish the
+                # incomplete result. This is never a connection or send failure.
+                event={'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED','attempt':attempt+1,
+                    'retry_allowed':attempt<2,'observed_at':self.clock.now().isoformat(),
+                    'binding_id':binding['binding_id'],'physical_send_retried':False}
+                budget.save(evidence_root/'history-retries'/f'{capture}.json',event)
+                if attempt<2:
+                    self.wait(.5)
+                    continue
             if send_diagnostic is not None:send_diagnostic.finish()
             captured_at=time.monotonic()
             self._history_profile = dict(synchronizer.profile)

@@ -107,3 +107,23 @@ def test_scan_records_local_bounds_separately_from_backend_clock(history_lab):
         clock[name]=(datetime.fromisoformat(clock[name])+timedelta(seconds=10)).isoformat()
     with pytest.raises(ValueError,match='CLOCK_INVALID'):
         hook_history_rules.validate_coverage(coverage,delivery.peer_wxid,1791543600)
+
+
+@pytest.mark.parametrize('body,expected_kind',[
+    ('<msg><appmsg><title>synthetic.zip</title><type>6</type></appmsg></msg>','file'),
+    ('','unconfirmed'),
+    ('<msg><appmsg>','unconfirmed'),
+])
+def test_app_content_uses_shared_classification_without_connection_fault(history_lab,body,expected_kind):
+    _,gateway,process,scope,delivery,_,db=history_lab
+    db.execute('DELETE FROM MSG WHERE Type=34')
+    db.execute('UPDATE MSG SET Type=49,StrContent=? WHERE localId=1',(body,))
+    saved=[]
+    sync=HookHistorySynchronizer(gateway,saved.append,lambda:(0,0),media_enabled=True)
+    _,coverage=sync.capture(process,scope,delivery,'1791543600')
+    checked=hook_history_rules.validate_coverage(coverage,delivery.peer_wxid,1791543600)
+    assert next(iter(checked['app_messages'].values()))['kind']==expected_kind
+    assert len(saved)==8
+    assert checked['ready'] is (expected_kind=='file')
+    assert sync.content_pending is (expected_kind=='unconfirmed')
+    assert any(r['Type']=='49' and r['StrContent']==body for r in checked['rows'])

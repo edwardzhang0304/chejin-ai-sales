@@ -820,6 +820,10 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             if len(entity["ids"]) != 1:
                 if any(entity_index in owners.get(n["start"], []) for n in numbers):
                     errors.append("reply_vehicle_reference_ambiguous")
+                    for n in numbers:
+                        if entity_index in owners.get(n['start'], []):
+                            occurrences.append({'segment_index':segment_index, **n, 'verified':False,
+                                'role':'vehicle_reference_unconfirmed', 'candidate_product_ids':entity['ids']})
                 continue
             product_id = entity["ids"][0]
             product = by_id[product_id]
@@ -967,7 +971,7 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                 value = public_number(values[0]["value"])
             if not product or value is None or value != public_number(product.get("price")):
                 errors.append("model_declared_fact_conflict")
-    return {"ok": not errors, "errors": list(dict.fromkeys(errors)),
+    result = {"ok": not errors, "errors": list(dict.fromkeys(errors)),
             "conflict_evidence": ({"query_id":receipt.get("query_id"), "target":target,
                                    "actual_vehicle_ids":actual_ids, "priced_ids":sorted(priced_ids),
                                    "ordered_ids":ordered_ids, "segments":list(plan.get("reply_segments") or [])}
@@ -975,8 +979,21 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             "product_ids": actual_ids, "segment_vehicle_ids":segment_ids, "occurrences": occurrences, "customer_statements": customer_statements,
             "reply_sha256": hashlib.sha256(json.dumps(plan.get("reply_segments") or [], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
 
+    from apps.wechat_ai_customer_service.workflows.fact_review_routing import classify_fact_findings
+    result.update(classify_fact_findings(plan, products, receipt, result))
+    # Keep extraction evidence, but never derive a guessed numeric ownership as
+    # a mechanically verified fact, even if its value happened to match.
+    numeric_kinds = {'price':'price', 'stock':'stock', 'mileage_km':'mileage',
+                     'first_registration':'year', 'displacement':'configuration'}
+    uncertain = {(o.get('product_id'), numeric_kinds.get(o.get('role')))
+                 for o in occurrences if o.get('disposition') == 'semantic_pending' and o.get('product_id')}
+    certain = {(o.get('product_id'), numeric_kinds.get(o.get('role')))
+               for o in occurrences if o.get('disposition') == 'verified' and o.get('product_id')}
+    result['mechanical_facts_claimed'] = [f for f in facts if (f['source_id'], f['fact_type']) not in uncertain - certain]
+    return result
 
-def validate_reviewed_reply_facts(plan: dict, evidence: dict, *, refs: dict, mapping: dict) -> dict:
+
+def validate_reviewed_reply_facts(plan: dict, evidence: dict, *, refs: dict, mapping: dict, semantic_approved: bool = False) -> dict:
     """One actual-text check used by semantic clearance and final Guard.
 
     Policy selections can support only their actual monetary roles. Vehicle
@@ -987,9 +1004,19 @@ def validate_reviewed_reply_facts(plan: dict, evidence: dict, *, refs: dict, map
     formal = validate_policy_refs(refs, segments=plan.get("reply_segments") or [], mapping=mapping,
                                   customer_statements=preliminary["customer_statements"])
     validated = validate_reply_public_facts(plan, evidence, formal_validation=formal)
+    # A selected policy cannot lend an absent numeric term to the draft.
+    # Preserve this independent source check when vehicle wording is cleared.
+    policy_conflicts = [o for o in validated['occurrences']
+        if not o.get('verified') and not o.get('product_id') and any(
+            si == o['segment_index'] and lo <= o['start'] < hi
+            for si, lo, hi in formal.get('policy_statements', []))]
+    if policy_conflicts:
+        validated['hard_errors'].append('policy_numeric_fact_not_supported')
     validated["facts_claimed"].extend(formal["facts_claimed"])
+    validated['mechanical_facts_claimed'].extend(formal['facts_claimed'])
     validated["formal_source_ids"] = formal["source_ids"]
-    validated["errors"] = list(dict.fromkeys([*formal["errors"], *validated["errors"]]))
+    validated["errors"] = list(dict.fromkeys([*formal["errors"], *(validated["hard_errors"] if semantic_approved else validated["errors"])]))
+    validated["semantic_approved"] = semantic_approved
     validated["ok"] = not validated["errors"]
     return validated
 
@@ -998,7 +1025,7 @@ def derive_reviewed_fact_fields(plan: dict, validated: dict) -> None:
     """Called only by the existing semantic-clearance owner after actual pass."""
     if not validated.get("ok"):
         raise ValueError("cannot_derive_unverified_facts")
-    plan["facts_claimed"] = deepcopy(validated["facts_claimed"])
+    plan["facts_claimed"] = deepcopy(validated['mechanical_facts_claimed'])
     evidence = plan.setdefault("evidence_used", {})
     evidence["product_ids"] = list(validated["product_ids"])
     evidence["formal_knowledge_ids"] = list(validated.get("formal_source_ids") or [])

@@ -549,3 +549,17 @@ def test_lost_ack_without_send_intent_keeps_recovery_request_before_optional_flo
     entries=read_zip(export_bundle(root,tmp_path/'result.zip'))
     assert 'receipts/hook/flows/unregistered-flow.json' in entries
     assert 'receipts/hook/recovery/flow_start/unregistered-flow/request.json' in entries
+
+
+def test_file_content_hold_and_bounded_reads_remain_in_diagnostic_zip(tmp_path):
+    root=seed(tmp_path/'home');hook=root/'transactions/hook'
+    write(hook,'history-retries/file-read.json',{'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED',
+        'attempt':3,'retry_allowed':False,'physical_send_retried':False})
+    write(hook,'history-receipts/file-read.json',{'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED',
+        'content_isolated':True,'history_ready':False})
+    write(hook,'history-captures/file-read.json',{'raw_utf8':json.dumps({'data':[
+        {'MsgSvrID':'98765','localId':'1348','Type':'49','IsSender':'1','StrContent':''}]})})
+    entries=read_zip(export_bundle(root,tmp_path/'file-diagnostic.zip'))
+    assert b'HOOK_APP_CONTENT_UNCONFIRMED' in entries['receipts/hook/history-retries/file-read.json']
+    assert b'HOOK_APP_CONTENT_UNCONFIRMED' in entries['receipts/hook/history-receipts/file-read.json']
+    assert b'1348' in entries['receipts/hook/history-captures/file-read.json']

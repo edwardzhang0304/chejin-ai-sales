@@ -8,6 +8,7 @@ import pytest
 
 from test_hook_gateway import lab
 from test_hook_history import history_lab
+from test_hook_dispatcher import DiscoveryFixture
 from chejin_worker_client import storage
 from chejin_worker_client.hook_dispatcher import HookBusinessDispatcher
 from chejin_worker_client.hook_history_sync import HookHistorySynchronizer
@@ -60,7 +61,7 @@ def test_changed_customer_yields_to_other_then_reads_fresh_before_reply(history_
             return {'reply_action': {'status':'queued'}, 'task': {'id':str(uuid.uuid4())},
                     'observation_only':run_status[0]!='running'}
 
-    class Runtime:
+    class Runtime(DiscoveryFixture):
         def __init__(self, *args, **kwargs):
             self.credentials=credentials; self.account=account; self.scope=scope
             self.active_flow_id=None; self.active_task_id=None

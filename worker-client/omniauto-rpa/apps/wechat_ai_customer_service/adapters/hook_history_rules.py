@@ -13,11 +13,12 @@ FIELDS = {'localId','CreateTime','Sequence','MsgServerSeq','MsgSequence','MsgSvr
 NUMBERS = FIELDS - {'StrTalker','StrContent'}
 MAX_ROWS = 10000
 OUTGOING_ID_PENDING = 'HOOK_HISTORY_OUTGOING_ID_PENDING'
+APP_CONTENT_PENDING = 'HOOK_APP_CONTENT_UNCONFIRMED'
 # Only successfully validated coverage can produce these incomplete states.
 COVERAGE_PENDING_REASONS = frozenset({
     'HOOK_HISTORY_CROSS_DATABASE_ORDER_UNVERIFIED', 'HOOK_REVOKE_FIELDS_UNCONFIRMED',
     'HOOK_NATIVE_MEDIA_OR_SYSTEM_PENDING', 'HOOK_HISTORY_BOUNDARY_SECOND_UNRESOLVED',
-    'HOOK_HISTORY_ORDER_UNRESOLVED', 'HOOK_HISTORY_TEXT_UNRESOLVED', OUTGOING_ID_PENDING,
+    'HOOK_HISTORY_ORDER_UNRESOLVED', 'HOOK_HISTORY_TEXT_UNRESOLVED', OUTGOING_ID_PENDING, APP_CONTENT_PENDING,
 })
 
 
@@ -173,6 +174,7 @@ def validate_coverage(payload, peer, since):
     ready=True; reason=None
     if len(active)>1:ready=False;reason='HOOK_HISTORY_CROSS_DATABASE_ORDER_UNVERIFIED'
     semantic=[]; media=[]; all_semantic=[];revoked_ids=[];quote_links={};notice_ids=[]; last_sequence=last_msg_sequence=last_time=-1
+    app_messages = {}
     media_enabled=payload['schema_version']=='hook-history-coverage-v2'
     # localId is only pagination. Reconstruct text order with the verified
     # Sequence field, then require agreement with MsgSequence and CreateTime.
@@ -198,11 +200,11 @@ def validate_coverage(payload, peer, since):
             continue
         if kind==10000:continue
         if media_enabled and kind==49:
-            from .hook_event_rules import quote
-            parsed=quote(row['StrContent'])
-            if parsed is None:
-                ready=False;reason=reason or 'HOOK_NATIVE_MEDIA_OR_SYSTEM_PENDING';continue
-            quote_links[row['MsgSvrID']]=parsed
+            from .hook_event_rules import app_message
+            app = app_message(row['StrContent'])
+            app_messages[row['MsgSvrID']] = app
+            if app['kind'] == 'quote':
+                quote_links[row['MsgSvrID']] = app['quote']
         if kind!=1 and not (media_enabled and kind in {3,34,49}):
             ready=False;reason=reason or 'HOOK_NATIVE_MEDIA_OR_SYSTEM_PENDING';continue
         if integer(row['CreateTime'])==since:
@@ -211,7 +213,7 @@ def validate_coverage(payload, peer, since):
         if not (sequence>0 and msg_sequence>0 and sequence>last_sequence and msg_sequence>last_msg_sequence and created>=last_time):
             ready=False;reason=reason or 'HOOK_HISTORY_ORDER_UNRESOLVED'
         last_sequence,last_msg_sequence,last_time=sequence,msg_sequence,created
-        if kind in {1,49}:
+        if kind == 1 or (kind == 49 and row['MsgSvrID'] in quote_links):
             if not isinstance(row['StrContent'],str) or not row['StrContent']:
                 ready=False;reason=reason or 'HOOK_HISTORY_TEXT_UNRESOLVED'
             semantic.append(row)
@@ -236,6 +238,9 @@ def validate_coverage(payload, peer, since):
                 or item['native_msg_id'] in included or item['native_msg_id'] in excluded):
             raise ValueError('HOOK_HISTORY_EXCLUSION_INVALID')
         excluded.append(item['native_msg_id'])
+    app_messages = {mid: app for mid, app in app_messages.items() if mid not in revoked_ids}
+    if any(app['kind'] == 'unconfirmed' for app in app_messages.values()):
+        ready=False;reason=reason or APP_CONTENT_PENDING
     pending_outgoing = [row for row in second if unresolved_outgoing(row)]
     if pending_outgoing:
         ready=False;reason=reason or OUTGOING_ID_PENDING
@@ -243,4 +248,4 @@ def validate_coverage(payload, peer, since):
             'unresolved_outgoing_rows':pending_outgoing,
             'catalog_fingerprint':scans[1]['catalog_fingerprint'],'observed_at':scans[1]['observed_at'],
             'friend_verification_notices':[r for r in second if is_friend_verification_required_notice(r)],
-            'excluded_native_ids':excluded,'revoked_native_ids':revoked_ids,'system_notice_native_ids':notice_ids,'quote_links':quote_links}
+            'excluded_native_ids':excluded,'revoked_native_ids':revoked_ids,'system_notice_native_ids':notice_ids,'quote_links':quote_links,'app_messages':app_messages}

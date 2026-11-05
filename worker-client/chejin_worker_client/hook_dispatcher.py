@@ -57,6 +57,7 @@ class HookBusinessDispatcher:
         self._reconciled=False
         self._last_wait_codes={}
         self._sync_cache=HistoryReceiptCache()
+        self._content_holds={}
         self.diagnostic_context={}
         self._wait_events=0
         self._pending_wait_phases={}
@@ -159,7 +160,7 @@ class HookBusinessDispatcher:
         Unfinished batches remain protected until the normal consumer closes them.
         """
         visible={b['binding_id'] for b in inventory['bindings']}
-        for mapping in (self._live_batches_by_binding,self._open_handoffs_by_binding,
+        for mapping in (self._content_holds,self._live_batches_by_binding,self._open_handoffs_by_binding,
                         self._friend_holds_by_binding,self._reply_owners_by_binding):
             for key in list(mapping):
                 if key not in visible:mapping.pop(key,None)
@@ -541,9 +542,21 @@ class HookBusinessDispatcher:
     def _read_history(self,binding,*,barrier=None):
         rt=self.runtime
         key=(rt.scope.process_generation,binding['binding_id'],binding['binding_revision'])
-        self._invalidate_history_cache(key)
         before=rt.barrier(binding) if barrier is None else barrier
+        held=self._content_holds.get(binding['binding_id'])
+        if held and held[:2] == (key,before) and before[1] == 0:
+            return dict(held[2])  # only a hold, never a history/send permit
+        self._content_holds.pop(binding['binding_id'],None)
+        self._invalidate_history_cache(key)
         synced=rt.sync(binding)
+        if (synced.get('content_isolated') is True and not synced.get('history_ready')
+                and before[1] == 0 and rt.barrier(binding) == before):
+            # Compact bounded state. Durable receipts survive restart; a new
+            # callback/revision/generation triggers the original bounded read.
+            if len(self._content_holds)>=64:
+                self._content_holds.pop(next(iter(self._content_holds)))
+            self._content_holds[binding['binding_id']] = (key,before,{
+                k:synced[k] for k in ('history_ready','reason_code','content_isolated','conversation_id') if k in synced})
         # Never label an older receipt with a callback that landed during
         # capture or publication. Failed reads leave no reusable cache.
         if before[1]==0 and rt.barrier(binding)==before:

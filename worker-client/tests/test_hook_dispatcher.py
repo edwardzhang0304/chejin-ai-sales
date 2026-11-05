@@ -36,7 +36,7 @@ def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
         create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api'))
 
 
-@pytest.mark.parametrize("pending_review", [None, "inventory", "fresh"], ids=["model_wait", "pending_inventory", "pending_fresh"])
+@pytest.mark.parametrize("pending_review", [None, "inventory", "fresh", "file"], ids=["model_wait", "pending_inventory", "pending_fresh", "file_content_hold"])
 @pytest.mark.parametrize("run_status", ["running", "paused"])
 @pytest.mark.parametrize("pending_friend", [False, True, "conflict"])
 def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend,run_status,pending_review):
@@ -66,7 +66,10 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
             calls.append(task_id)
             raise ApiError('HOOK_BINDING_CONFLICT' if pending_friend=='conflict' else 'HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
         def barrier(self,b):return (0,0)
-        def sync(self,b):return {'history_ready':True}
+        def sync(self,b):
+            if pending_review=='file' and b is bindings[0]:
+                return {'history_ready':False,'content_isolated':True,'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED'}
+            return {'history_ready':True}
         def reply_once(self,b,data,*,history):sends.append(b['binding_id']);return {'status':'sent'}
     runner=SimpleNamespace(binding=SimpleNamespace(run_status=run_status),stop_event=threading.Event(),api=SimpleNamespace(),
         _can_start_new_flow=lambda:run_status=='running',_worker_transaction_barrier_ready=lambda *a,**kw:True)
@@ -78,7 +81,7 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
         assert ('pending-friend' in calls)==bool(pending_friend)
         assert sends==([bindings[1]['binding_id']] if run_status=='running' else [])
         assert runner.binding.run_status==run_status
-        if run_status=='running':assert any(bindings[0]['batch_ids'][0] in path for path in calls)
+        if run_status=='running' and pending_review!='file':assert any(bindings[0]['batch_ids'][0] in path for path in calls)
     finally:manager.close()
 
 
@@ -356,3 +359,19 @@ def test_history_owner_supersedes_stale_voice_inventory(lab,backend_peer,tmp_pat
         dispatcher.tick(runner,services)
         assert len(captured)==int(current_owner=='ai')
     finally:manager.close()
+
+
+def test_terminal_content_hold_is_bounded_and_invalidated_by_new_observation(tmp_path):
+    d=HookBusinessDispatcher(None,tmp_path,lambda *a:None,lambda *a:None,automatic_transcription_disabled=lambda:True)
+    reads=[];barrier=[0,0]
+    d.runtime=SimpleNamespace(scope=SimpleNamespace(process_generation='p1'),
+        barrier=lambda b:tuple(barrier),sync=lambda b:(reads.append(b['binding_id']) or {
+            'history_ready':False,'content_isolated':True,'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED'}))
+    binding={'binding_id':'customer-a','binding_revision':1}
+    for _ in range(20):assert not d._read_history(binding)['history_ready']
+    assert reads==['customer-a']
+    barrier[0]+=1
+    d._read_history(binding)
+    assert len(reads)==2
+    d._read_history({'binding_id':'customer-b','binding_revision':1})
+    assert reads[-1]=='customer-b'

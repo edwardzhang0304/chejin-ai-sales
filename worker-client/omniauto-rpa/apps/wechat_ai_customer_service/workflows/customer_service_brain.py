@@ -4931,7 +4931,7 @@ def validate_plan_against_evidence(plan: dict[str, Any], evidence_pack: dict[str
     if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
         from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts
         public_validation = validate_reply_public_facts(plan, evidence_pack)
-        errors.extend(public_validation["errors"])
+        errors.extend(public_validation["hard_errors"])
     evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
     if public_validation is not None:
         for source_id in evidence.get("product_ids", []) or []:

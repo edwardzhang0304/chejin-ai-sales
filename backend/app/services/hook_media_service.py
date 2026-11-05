@@ -118,7 +118,11 @@ def handoff_native_media(db,binding,message,reason):
         return None
     event,created=c3_service._create_or_reuse_open_handoff(db,conversation=conversation,batch_id=None,
         handoff_reason_code=reason,reason_detail=('客户语音转写结果未确认，需要销售人工处理；原语音不会自动重试' if reason=='HOOK_VOICE_RESULT_UNCONFIRMED'
-            else '客户发来图片，需要销售人工处理' if message.message_type=='image' else '客户语音转写失败，需要销售处理'),
+            else '客户发来图片，需要销售人工处理' if message.message_type=='image'
+            else '客户发来文件，需要销售人工处理' if reason=='HOOK_CUSTOMER_FILE_HANDOFF'
+            else '客户发来暂不支持的富内容消息，需要销售人工处理' if reason=='HOOK_CUSTOMER_APP_HANDOFF'
+            else '该会话有内容不完整的微信消息，需要人工核对；原发送结果仍按原记录核对' if reason=='HOOK_APP_CONTENT_UNCONFIRMED'
+            else '客户语音转写失败，需要销售处理'),
         trigger_message_event_ids=[message.id],risk_flags=[reason.lower()],
         evidence_refs=['native_message:'+str((message.raw_payload or {}).get('native_msg_id'))],
         ai_payload={'source':'hook_native_media','parent_message_event_id':message.id,'image_understanding_called':False})
@@ -127,3 +131,18 @@ def handoff_native_media(db,binding,message,reason):
     c3_service.cancel_active_batches_for_conversation_change(db,binding.conversation_id,reason='客户媒体交由销售处理')
     c3_service.supersede_open_reply_actions_for_new_inbound(db,binding.conversation_id)
     return event.id
+
+
+def handoff_unconfirmed_app_messages(db, binding, rows, ctx):
+    """A content hold restricts this conversation; it never classifies its actor."""
+    from app.services.hook_history_review import needs_review
+    applied = set(ctx.get('media_handoff_applied_ids', []))
+    affected = [m for m in rows if not needs_review(m)
+                and (m.raw_payload or {}).get('native_app_message', {}).get('kind') == 'unconfirmed']
+    for message in affected:
+        if message.id not in applied:
+            if handoff_native_media(db, binding, message, 'HOOK_APP_CONTENT_UNCONFIRMED'):
+                applied.add(message.id)
+    ctx['media_handoff_applied_ids'] = sorted(applied)
+    binding.native_context = dict(ctx)
+    return bool(affected)

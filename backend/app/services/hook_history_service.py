@@ -202,11 +202,20 @@ def accept_coverage(db,authenticated,instance,payload):
     notice_ready = checked['ready'] or reason == history.OUTGOING_ID_PENDING
     for row in checked['semantic_rows']:
         role='customer' if row['IsSender']=='0' else 'self'
-        kind={'1':'text','49':'text','34':'voice','3':'image'}[row['Type']]
+        app = checked['app_messages'].get(row['MsgSvrID'], {})
+        kind = ('file' if app.get('kind') == 'file' else 'app_message'
+                if app.get('kind') in {'unsupported','unconfirmed'} else
+                {'1':'text','49':'text','34':'voice','3':'image'}[row['Type']])
         content=(checked['quote_links'][row['MsgSvrID']]['new_text'] if row['Type']=='49' else row['StrContent']) if kind=='text' else None
         key=message_key(payload.self_wxid,binding.native_peer_wxid,row['MsgSvrID'])
         event=db.scalar(select(MessageEvent).where(MessageEvent.conversation_id==binding.conversation_id,
             MessageEvent.dedupe_key==key))
+        completing_app = bool(event and event.sender_role == role and event.message_type == 'app_message'
+            and (event.raw_payload or {}).get('native_app_message', {}).get('kind') == 'unconfirmed'
+            and app.get('kind') in {'quote','file','unsupported'})
+        if completing_app:
+            event.message_type=kind;event.content=content
+            event.item_state='text_ready' if kind=='text' else 'metadata_observed'
         if event and (event.sender_role!=role or event.message_type!=kind or (kind=='text' and event.content!=content)):
             raise AppError('HOOK_MESSAGE_ID_CONFLICT','历史与已有原生消息事实不一致',409)
         at=datetime.fromtimestamp(int(row['CreateTime']),timezone.utc)
@@ -224,7 +233,8 @@ def accept_coverage(db,authenticated,instance,payload):
             'sender_source':'customer' if role=='customer' else raw.get('sender_source','unresolved'),
             'ordering_fields':{k:row[k] for k in ('localId','CreateTime','Sequence','MsgServerSeq','MsgSequence')},
             'database':row['database'],'database_generation':row['database_generation']})
-        if row['Type']=='49':raw['native_quote']=checked['quote_links'][row['MsgSvrID']]
+        if row['MsgSvrID'] in checked['quote_links']:raw['native_quote']=checked['quote_links'][row['MsgSvrID']]
+        if app:raw['native_app_message']=app
         if kind!='text':raw['native_media_xml']=row['StrContent']
         event.raw_payload=raw
         from app.services.hook_business_time import stamp_receipt, received_at
@@ -363,6 +373,10 @@ def accept_coverage(db,authenticated,instance,payload):
         from app.services.hook_customer_notice_service import apply_unresolved_outgoing_notice
         apply_unresolved_outgoing_notice(db, binding, checked, receipt, ctx)
     batch=None
+    content_isolated = False
+    if reconciliation is None and checked['reason_code'] == history.APP_CONTENT_PENDING:
+        from app.services.hook_media_service import handoff_unconfirmed_app_messages
+        content_isolated = handoff_unconfirmed_app_messages(db, binding, business_rows, ctx)
     if ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
@@ -380,6 +394,8 @@ def accept_coverage(db,authenticated,instance,payload):
             for message in tail:
                 if message.id in media_handled:continue
                 reason_code=('HOOK_CUSTOMER_IMAGE_HANDOFF' if message.message_type=='image' else
+                    'HOOK_CUSTOMER_FILE_HANDOFF' if message.message_type=='file' else
+                    'HOOK_CUSTOMER_APP_HANDOFF' if message.message_type=='app_message' else
                     'C2_VOICE_TRANSCRIBE_FAILED' if message.message_type=='voice' and message.item_state=='failed' else None)
                 if reason_code:
                     handoff_native_media(db,binding,message,reason_code)
@@ -408,7 +424,7 @@ def accept_coverage(db,authenticated,instance,payload):
                 batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                     trigger_type='friend_welcome',trigger_key='hook-invite:'+ctx['source_task_id'])
     result={'process_run_id':process_run_id,'conversation_id':binding.conversation_id,'capture_id':payload.capture_id,'history_receipt_id':receipt.id,'binding_id':binding.id,
-        'history_ready':ready,'reason_code':reason,'message_event_ids':ids,'new_message_event_ids':new_ids,
+        'history_ready':ready,'reason_code':reason,'content_isolated':content_isolated,'message_event_ids':ids,'new_message_event_ids':new_ids,
         'history_state_digest':state_digest,'coverage_digest':payload.coverage_digest,'message_batch':batch,'native_send_ready':False,
         'reply_ownership':state(ownership_conversation) if ownership_conversation else {},
         'reconciliation_only':reconciliation is not None,

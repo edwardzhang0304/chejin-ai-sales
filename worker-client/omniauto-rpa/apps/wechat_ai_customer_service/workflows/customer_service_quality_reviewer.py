@@ -1217,7 +1217,10 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
                    "catalog_protocol.preparation中的明确需求已冻结。客户要推荐且有合格车必须具体给车和已知价格、遵守候选顺序；"
                    "回答目标未明不能直接视为只需统计；同时要数量和推荐须都完成，明确不要推荐只问数量应尊重。"
                    "不能删成汇总或机械追问过审。客户仅问数量/区间可以按完整查询回答；年份未知、未支持条件必须如实说明。"
-                   "同一回复存在未解决错误时不得pass；无需改写客户正文或额外填写另一套证明。")
+                   "同一回复存在未解决错误时不得pass；无需改写客户正文或额外填写另一套证明。"
+                   "program_fact_findings是程序不确定的词面提取线索，不是已经证实的错误。"
+                   "请结合完整原句核对数字角色、指代范围、年款与上牌年份、近似预算与精确报价、比较与推荐。"
+                   "若实际表达符合原始资料可以pass，不得仅因程序猜测的数量或价格不符而要求改稿。")
     user = json.dumps({"task": "审稿候选Brain回复，不要生成客户回复。", "review_request": request}, ensure_ascii=False)
     return system, user
 
@@ -1225,6 +1228,16 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
 def catalog_prompt_protocol(evidence):
     from apps.wechat_ai_customer_service.workflows.catalog_query import prompt_protocol
     return prompt_protocol(evidence)
+
+
+def _program_fact_findings(plan, evidence):
+    if not (evidence.get("catalog_protocol") or {}).get("preparation"):
+        return {}
+    from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts
+    checked = validate_reply_public_facts(plan, evidence)
+    return {"decision": checked["decision"], "findings": checked["semantic_findings"],
+            "occurrences": [o for o in checked["occurrences"]
+                            if not o.get("verified") or o.get("disposition") == "semantic_pending"]}
 
 
 def build_quality_review_request(
@@ -1248,6 +1261,7 @@ def build_quality_review_request(
         },
         "reply_trigger": reply_trigger_context(current_message.get("trigger_type")),
         "catalog_protocol": catalog_prompt_protocol(evidence_pack),
+        "program_fact_findings": _program_fact_findings(plan, evidence_pack),
         "authority_review_required": bool(deterministic_quality.get("authority_review_required")),
         "current_user_messages": [current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or ""))],
         "conversation_summary": clip(str(conversation.get("summary") or ""), int(settings.get("semantic_reviewer_summary_chars") or 260)),
