@@ -119,16 +119,46 @@ def query_instruction(contract: str = PROTOCOL, *, understanding_only: bool = Fa
     return common + "\n" + query_format_instruction(contract)
 
 
-_CHEAP_FIRST = re.compile(r"便宜的?先(?:给我看|看|推荐)?|价格从低到高|从低到高|低价优先")
+# These are the three existing sort values. Both routes read the same
+# chronological instructions; they do not infer a fourth ordering policy.
+_SORT_INSTRUCTION = re.compile(
+    r"(?P<price_asc>便宜的?先(?:给我看|看|推荐)?|便宜(?:的)?优先|(?:价格)?从低到高|低价优先)"
+    r"|(?P<price_desc>贵的?先(?:给我看|看|推荐)?|贵的?优先|(?:价格)?从高到低|高价优先)"
+    r"|(?P<budget_distance>(?:最?接近|贴近)预算(?:的)?|按预算距离)"
+    r"|(?P<reset>(?:取消|不用|不再|不按|不需要)(?:之前的?|原来(?:的)?)?(?:价格)?排序|排序(?:随意|不限))")
 
 
-def explicit_cheap_first(text):
-    """Locate the existing explicit order without treating a negation as a request."""
-    for match in _CHEAP_FIRST.finditer(text):
+def sort_instructions(text):
+    """Yield only affirmative instructions or an explicit withdrawal, in order."""
+    for match in _SORT_INSTRUCTION.finditer(text):
         clause = re.split(r"[。；;，,！？!?]", text[:match.start()])[-1]
-        if not re.search(r"不|别|取消|之前|原来|以前|如果|假如|是否", clause):
-            return match
-    return None
+        if re.search(r"之前说|原来说|以前说|如果|假如|是否", clause):
+            continue
+        revoked = bool(re.search(r"(?:不要|不再|不用|别|取消|不按)(?:按|看|选|按原来)?\s*$", clause))
+        yield match, match.lastgroup, revoked
+
+
+def effective_customer_sort(sources, supplied, supplied_ids):
+    chosen = None
+    touched = False
+    for source in sources:
+        if source.get("sender") not in {"customer", "client"}:
+            continue
+        text = budget_statement(source["content"])["remainder"]
+        instructions = list(sort_instructions(text))
+        if not instructions and supplied and source["id"] in supplied_ids:
+            # A later customer-authored ordering request interpreted by the
+            # semantic path may supersede an earlier explicit preference.
+            if not touched or re.search(r"排序|优先|先看|先推荐|排前", text):
+                chosen = (supplied, list(supplied_ids))
+        for _, value, revoked in instructions:
+            touched = True
+            if value == "reset" or revoked:
+                if value == "reset" or chosen is None or chosen[0] == value:
+                    chosen = None
+            else:
+                chosen = (value, [source["id"]])
+    return chosen
 
 
 def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | None = None,
@@ -177,18 +207,14 @@ def normalize_model_query(raw: Any, sources: list[dict], *, known_ids: dict | No
             explicit_budget = explicit_total_budget(source["content"])
     if explicit_budget and query["budget_bounds"] != {k: v for k, v in explicit_budget.as_dict().items() if k != "kind"}:
         raise CatalogQueryError("budget_conflicts_with_explicit_source", fields=["budget", "budget.source_ids"])
-    # The semantic supplement can omit or mistranslate an explicit preference.
-    # Check the latest frozen customer instruction with the direct route's
-    # parser; retain the original model payload as evidence of that difference.
-    latest = next((item for item in reversed(sources) if item.get("sender") in ("customer", "client")), None)
-    if latest and explicit_cheap_first(budget_statement(latest["content"])["remainder"]):
-        query["sort"] = "price_asc"
-        sort_sources = [latest["id"]]
-        if latest["id"] not in query["source_ids"]:
-            query["source_ids"].append(latest["id"])
-        explicit = True
-    elif not explicit and query["budget_bounds"]:
-        query["sort"] = "budget_distance"
+    preference = effective_customer_sort(sources, candidate["sort"] if explicit else None, sort_sources)
+    explicit = preference is not None
+    if explicit:
+        query["sort"], sort_sources = preference
+        query["source_ids"] = list(dict.fromkeys([*query["source_ids"], *sort_sources]))
+    else:
+        query["sort"] = "budget_distance" if query["budget_bounds"] else "price_asc"
+        sort_sources = []
     query.update(model_query_contract=contract, raw_model_query=deepcopy(raw),
                  sort_origin="customer_explicit" if explicit else "program_default",
                  sort_source_ids=sort_sources, redundant_metadata=redundant)
@@ -289,7 +315,6 @@ def _prepare_catalog_need(evidence: dict) -> dict:
     if re.fullmatch(r"[\s，。！？!?]*(你好|您好|在吗|谢谢|好的|再见)[\s，。！？!?]*", current_text):
         return {"route": "non_inventory", "reason": "plain_social_turn", "source_ids": [m["id"] for m in current]}
     budget = {"state": "not_mentioned", "source_ids": []}
-    sort = None
     used = []
     # This grammar does not guess brands or strip adjectives. Any unconsumed
     # phrase (e.g. 纯电/年份/不要/刚才那辆) requires semantic supplementation.
@@ -307,17 +332,16 @@ def _prepare_catalog_need(evidence: dict) -> dict:
             continue
         parsed = budget_statement(text)
         remainder = parsed["remainder"]
-        explicit_sort = explicit_cheap_first(remainder)
-        if explicit_sort:
-            sort = {"value": "price_asc", "source_ids": [message["id"]]}
-            remainder = remainder[:explicit_sort.start()] + " " * len(explicit_sort.group()) + remainder[explicit_sort.end():]
+        order_spans = list(sort_instructions(remainder))
+        for match, _, _ in reversed(order_spans):
+            remainder = remainder[:match.start()] + " " * len(match.group()) + remainder[match.end():]
         remainder = filler.sub("", remainder)
         remainder = re.sub(r"[\s，,。；;！？!?、：:]", "", remainder)
         # Multiple monetary directives can express a correction/conflict. The
         # old parser's last-number policy alone cannot authorize this route.
         if remainder or parsed["unconsumed_comparisons"] or len(parsed["recognized_spans"]) > 1:
             return {"route": "semantic", "reason": "unresolved_conditions_or_context", "source_ids": [message["id"]]}
-        if not parsed["present"] and not explicit_sort and not re.search(r"车|推荐|多少台|多少辆|几台|几辆|价格", text):
+        if not parsed["present"] and not order_spans and not re.search(r"车|推荐|多少台|多少辆|几台|几辆|价格", text):
             return {"route": "semantic", "reason": "no_complete_catalog_request"}
         if parsed["present"]:
             value = parsed["budget"]
@@ -336,8 +360,9 @@ def _prepare_catalog_need(evidence: dict) -> dict:
     raw = {"operation": "search", "requirement_state": "clear", "budget": budget,
            "filters": [], "name_queries": [], "reference_ids": [], "exclude_ids": [],
            "source_ids": used, "unsupported_requirements": [], "interpretation": "程序完整解析明确车辆请求"}
-    if sort:
-        raw["sort"] = sort
+    preference = effective_customer_sort(sources, None, [])
+    if preference:
+        raw["sort"] = {"value": preference[0], "source_ids": preference[1]}
     normalized = normalize_model_query(raw, sources, contract=MODEL_QUERY_CONTRACT, known_ids=protocol.get("known_ids"))
     return {"route": "direct", "reason": "complete_explicit_conditions", "query": normalized, "source_ids": used}
 

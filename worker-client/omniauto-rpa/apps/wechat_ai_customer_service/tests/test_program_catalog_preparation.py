@@ -717,3 +717,21 @@ def test_frozen_customer_order_survives_the_semantic_supplement(declared):
     query = cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT)
     assert query['raw_model_query'] == raw
     assert (query['sort'],query['sort_origin'],query['sort_source_ids']) == ('price_asc','customer_explicit',['m1'])
+
+
+@pytest.mark.parametrize('latest,expected,source', [
+    ('只看纯电车。', 'price_asc', 'h0'),
+    ('不用便宜的先推荐了，只看纯电车。', 'budget_distance', None),
+    ('只看纯电车，价格从高到低。', 'price_desc', 'm1'),
+    ('只看纯电车，挑最接近预算的。', 'budget_distance', 'm1'),
+])
+def test_order_is_inherited_until_the_customer_replaces_or_withdraws_it(latest,expected,source):
+    pack, _, _, _ = prepared(latest, history=['总价8万以内，便宜的先推荐。'])
+    raw={'operation':'search','requirement_state':'clear','budget':{'state':'specified','mode':'upper','value':8,'source_ids':['h0']},
+         'filters':[{'field':'energy_type','op':'eq','value':'electric','source_ids':['m1']}],
+         'name_queries':[], 'reference_ids':[], 'exclude_ids':[], 'source_ids':['h0','m1'],
+         'unsupported_requirements':[],'interpretation':'新能源筛选保留历史总价上限'}
+    q=cq.normalize_model_query(raw,cq.message_sources(pack),contract=cq.MODEL_QUERY_CONTRACT)
+    assert q['sort']==expected and q['sort_source_ids']==([source] if source else [])
+    assert q['sort_origin']==('customer_explicit' if source else 'program_default')
+    assert q['raw_model_query']==raw
