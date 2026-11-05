@@ -238,6 +238,55 @@ def review_brain_reply_semantics(
     deterministic_quality: dict[str, Any] | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
+    # One content decision per actual draft and frozen authority. The last
+    # Guard and Provider consume it; they do not review the reply again.
+    if not (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        return _review_content(settings=settings, brain_input=brain_input, evidence_pack=evidence_pack,
+                               plan=plan, deterministic_quality=deterministic_quality, force=force)
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, clearance_kind
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments, brain_plan_to_guard_candidate
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain import brain_plan_allows_soft_evidence_override
+    from apps.wechat_ai_customer_service.workflows.llm_reply_guard import evaluate_content_rules
+    text = join_reply_segments(plan.get("reply_segments") or []).strip()
+    proof = evidence_pack.get("_catalog_clearance") or {}
+    if (proof.get("version") == 2 and proof.get("guard", {}).get("allowed") and
+            proof.get("plan") == fingerprint(plan) and clearance_kind(text, evidence_pack)):
+        return deepcopy(proof["content_result"])
+    result = _review_content(settings=settings, brain_input=brain_input, evidence_pack=evidence_pack,
+                             plan=plan, deterministic_quality=deterministic_quality, force=force)
+    proof = evidence_pack.get("_catalog_clearance") or {}
+    if result.get("ok") and proof.get("version") == 2:
+        guard_settings = dict(settings, brain_first_guard=True)
+        guard_settings.setdefault("require_evidence", True)
+        if brain_plan_allows_soft_evidence_override(plan):
+            guard_settings["advisor_mode"] = "clear_common_sense_recommendation"
+        guard = evaluate_content_rules(candidate=brain_plan_to_guard_candidate(plan), evidence_pack=evidence_pack,
+                                       settings=guard_settings, reviewed_plan=plan)
+        if guard.get("allowed"):
+            proof["guard"] = deepcopy(guard)
+            proof["content_result"] = deepcopy(result)
+        else:
+            evidence_pack.pop("_catalog_clearance", None)
+            result = {**result, "ok": False, "enforced": True, "verdict": "repair",
+                      "reason": guard["reason"], "errors": [guard["reason"]],
+                      "repair_instruction": guard.get("repair_instruction", "")}
+    evidence_pack.setdefault("reply_check_history", []).append({
+        "stage": "content_decision", "reply": fingerprint(text),
+        "method": proof.get("method") or ("semantic" if result.get("invoked") or result.get("unavailable") else "program"),
+        "reason": result.get("reason"), "ok": bool(result.get("ok")), "errors": result.get("errors", []),
+    })
+    return result
+
+
+def _review_content(
+    *,
+    settings: dict[str, Any],
+    brain_input: dict[str, Any],
+    evidence_pack: dict[str, Any],
+    plan: dict[str, Any],
+    deterministic_quality: dict[str, Any] | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
     """Return a semantic review result for a BrainPlan.
 
     The result always carries an ``ok`` boolean for the caller. In shadow mode,
@@ -248,6 +297,11 @@ def review_brain_reply_semantics(
     catalog_required = bool(evidence_pack.get("catalog_protocol"))
     if catalog_required:
         evidence_pack.pop("_catalog_clearance", None)
+    if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        from apps.wechat_ai_customer_service.workflows.catalog_query import prepared_review_route
+        check = prepared_review_route(evidence_pack, plan)
+        if not check.get("needs_semantic_review"):
+            return check
     if catalog_required and (not cfg["enabled"] or cfg["mode"] == "shadow"):
         return {"ok": False, "status": "error", "verdict": "block", "enforced": True,
                 "errors": ["catalog_semantic_review_unavailable"], "unavailable": True,

@@ -115,10 +115,13 @@ def test_partial_candidates_preserve_new_customer_message_cancellation(monkeypat
 @pytest.mark.parametrize('change',['price','unlist','new_listing'])
 def test_partial_context_inventory_change_during_review_cannot_send(monkeypatch,actual_brain,change):
     state=actual_brain;configure_partial(monkeypatch,state,'facts_clarification')
-    original=llm_config.call_llm_request_once_with_wall_timeout
+    # Inject the change after the content decision and before the real final
+    # consumer. A routine draft no longer visits the model review transport.
+    import apps.wechat_ai_customer_service.workflows.customer_service_brain as brain
+    original=brain.guard_synthesized_reply
     changed=[]
-    def transport(**kw):
-        if kw['model']=='synthetic-reviewer' and not changed:
+    def consume(**kw):
+        if not changed:
             changed.append(True)
             key=state['receipt']['known_condition_facts'][0]['id'];api=pipeline.joined.api
             if change=='new_listing':listed('后来上架的合成车',4.8)
@@ -127,7 +130,7 @@ def test_partial_context_inventory_change_during_review_cannot_send(monkeypatch,
                           if change=='price' else api.client.post(f'/api/vehicles/{key}/unlist',headers=api.HEADERS))
                 assert response.status_code==200,response.text
         return original(**kw)
-    monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
+    monkeypatch.setattr(brain,'guard_synthesized_reply',consume)
     _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
     assert changed and result['decision']!='send_reply',result
     with SessionLocal() as db:

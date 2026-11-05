@@ -805,6 +805,82 @@ def aggregate_fact_ready(receipt, field):
     return aggregate_ready(receipt)
 
 
+def _source_statement_texts(content):
+    return [part.strip() for part in re.findall(r".+?(?:[。！？!?；;\n]+|$)", content, re.S) if part.strip()]
+
+
+def standard_source_refs(mapping):
+    """Only complete, contiguous published answers are controlled policy text."""
+    statements = list(mapping["statements"].items())
+    texts = [row["text"].strip() for _, row in statements]
+    refs = {}
+    for key, source in mapping["knowledge"].items():
+        if not source.get("release_id") or not source.get("revision_id"):
+            continue
+        parts = _source_statement_texts(source["content"])
+        for start in range(len(texts)):
+            if parts and texts[start:start + len(parts)] == parts:
+                for sid, _ in statements[start:start + len(parts)]:
+                    refs.setdefault(sid, []).append(key)
+    return refs
+
+
+def _bind_clearance(evidence, plan, kind, *, method, reason, refs):
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
+    from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
+    proof = {"reply": fingerprint(join_reply_segments(plan["reply_segments"]).strip()),
+             "protocol": fingerprint(evidence["catalog_protocol"]), "kind": kind}
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        proof.update(version=2, method=method, reason=reason, source_refs=deepcopy(refs),
+                     authority=fingerprint(reply_authority_snapshot(evidence)),
+                     plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]))
+    evidence["_catalog_clearance"] = proof
+
+
+def _content_rejection(errors):
+    return {"ok": False, "enforced": True, "invoked": False, "status": "program_checked",
+            "verdict": "repair", "reason": errors[0], "errors": list(dict.fromkeys(errors))}
+
+
+def prepared_review_route(evidence, plan):
+    """Return a content decision, or the concrete dependency needing a reviewer."""
+    from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import prepare_policy_reference_map, is_appointment_schedule_question
+    from apps.wechat_ai_customer_service.workflows.llm_reply_guard import extract_current_message_text, has_unqualified_commitment
+    from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts, validate_reviewed_reply_facts, derive_reviewed_fact_fields
+    from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import validate_brain_plan, validate_policy_refs
+
+    mapping = prepare_policy_reference_map(plan, evidence)
+    refs = standard_source_refs(mapping)
+    preliminary = validate_reply_public_facts(plan, evidence)
+    remaining = " ".join(row["text"] for sid, row in mapping["statements"].items() if sid not in refs)
+    errors = query_plan_errors(plan, evidence) + preliminary["errors"]
+    if has_unqualified_commitment(remaining):
+        errors.append("unsafe_commitment_without_caution")
+    if errors:
+        return _content_rejection(errors)
+    formal = validate_policy_refs(refs, segments=plan["reply_segments"], mapping=mapping,
+                                  customer_statements=preliminary["customer_statements"])
+    covered = {(n["segment_index"], n["start"], n["end"]) for n in formal["covered_numbers"]}
+    policy_amount = any(o.get("pending_policy_review") and (o["segment_index"], o["start"], o["end"]) not in covered
+                        for o in preliminary["occurrences"])
+    question = extract_current_message_text(evidence)
+    if (formal["errors"] or policy_amount or is_appointment_schedule_question(remaining)
+            or (not refs and is_appointment_schedule_question(question))):
+        return {"needs_semantic_review": True, "reason": "free_policy_explanation"}
+    validated = validate_reviewed_reply_facts(plan, evidence, refs=refs, mapping=mapping)
+    if not validated["ok"]:
+        return _content_rejection(validated["errors"])
+    derive_reviewed_fact_fields(plan, validated)
+    check = validate_brain_plan(plan, require_fact_claims=False)
+    if not check["ok"]:
+        return {"ok": False, "enforced": True, "invoked": False, "status": "program_checked",
+                "verdict": "repair", "reason": "invalid_final_plan", "errors": check["errors"]}
+    reason = "published_standard_answer" if refs else "routine_reply_checked"
+    _bind_clearance(evidence, plan, "program_checked", method="program", reason=reason, refs=refs)
+    return {"ok": True, "enforced": True, "invoked": False, "status": "program_checked",
+            "reason": reason, "errors": []}
+
+
 def record_semantic_clearance(evidence, plan, raw_review, review):
     """Semantic classification + mechanical authority; never accept model-issued proof."""
     evidence.pop("_catalog_clearance", None)
@@ -833,11 +909,11 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
         errors.append("catalog_claim_classification_required")
     if kind in {"vehicle_facts", "query_summary"} and not receipt.get("scan_complete"):
         errors.append("current_inventory_not_queried")
-    if kind == "query_summary":
+    if kind == "query_summary" and not prepared:
         aggregates = [f for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", [])) if f.get("fact_type") in AGGREGATES]
         if not aggregates or any(not aggregate_fact_ready(receipt, AGGREGATES[f["fact_type"]]) for f in aggregates):
             errors.append("catalog_summary_requires_complete_scoped_facts")
-    if kind == "vehicle_facts" and not any(f.get("source_level") == "product_master" for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", []))):
+    if kind == "vehicle_facts" and not prepared and not any(f.get("source_level") == "product_master" for f in (validated["facts_claimed"] if validated else plan.get("facts_claimed", []))):
         errors.append("catalog_vehicle_facts_must_be_declared")
     if errors:
         return {**review, "ok": False, "verdict": "repair", "enforced": True,
@@ -851,13 +927,8 @@ def record_semantic_clearance(evidence, plan, raw_review, review):
             if not final_validation["ok"]:
                 return {**review, "ok": False, "verdict": "repair", "enforced": True,
                         "errors": final_validation["errors"], "soft_pass_low_risk": False}
-        from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import join_reply_segments
-        evidence["_catalog_clearance"] = {"reply": fingerprint(join_reply_segments(plan.get("reply_segments") or []).strip()),
-                                           "protocol": fingerprint(evidence["catalog_protocol"]), "kind": kind}
-        if prepared:
-            from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import reply_authority_snapshot
-            evidence["_catalog_clearance"].update(authority=fingerprint(reply_authority_snapshot(evidence)),
-                                                 plan=fingerprint(plan), policy_map=fingerprint(evidence["policy_reference_map"]))
+        _bind_clearance(evidence, plan, kind, method="semantic", reason="required_semantic_review",
+                        refs=plan.get("policy_refs"))
     return review
 
 
@@ -886,7 +957,26 @@ def serialized_clearance_valid(result: dict) -> bool:
     snapshot = result.get("reply_authority_snapshot") or {}
     plan = result.get("brain_plan") or {}
     reply = str(result.get("reply_text") or "").strip()
-    return bool(reply and proof.get("kind") in {"non_inventory", "vehicle_facts", "query_summary"}
+    if not isinstance(proof, dict) or not isinstance(plan, dict) or not isinstance(snapshot, dict):
+        return False
+    checked_kind = proof.get("kind") in {"non_inventory", "vehicle_facts", "query_summary"}
+    if proof.get("version") == 2:
+        if not isinstance(proof.get("guard"), dict) or proof["guard"].get("allowed") is not True:
+            return False
+        if not isinstance(proof.get("content_result"), dict) or proof["content_result"].get("ok") is not True:
+            return False
+        mapping = result.get("policy_reference_map") or {}
+        if not isinstance(mapping, dict) or not isinstance(mapping.get("knowledge"), dict) or not isinstance(mapping.get("statements"), dict):
+            return False
+        if proof.get("method") == "program":
+            checked_kind = (proof.get("kind") == "program_checked" and
+                            proof.get("source_refs") == standard_source_refs(mapping) and
+                            proof.get("reason") in {"routine_reply_checked", "published_standard_answer"})
+        elif proof.get("method") == "semantic":
+            checked_kind = checked_kind and proof.get("source_refs") == plan.get("policy_refs")
+        else:
+            return False
+    return bool(reply and checked_kind
                 and reply == join_reply_segments(plan.get("reply_segments") or []).strip()
                 and proof.get("reply") == fingerprint(reply)
                 and proof.get("protocol") == fingerprint(protocol)

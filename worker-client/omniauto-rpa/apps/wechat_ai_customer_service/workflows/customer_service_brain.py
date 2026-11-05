@@ -942,7 +942,7 @@ def _maybe_run_customer_service_brain_within_time_budget(
         data["duration_seconds"] = total
         if (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
             # Protected backend attempt snapshots, never ordinary telemetry.
-            for key in ("catalog_protocol", "reply_authority_snapshot", "candidate_history", "review_history", "model_response_history", "policy_reference_map", "_catalog_clearance"):
+            for key in ("catalog_protocol", "reply_authority_snapshot", "candidate_history", "review_history", "model_response_history", "policy_reference_map", "_catalog_clearance", "reply_check_history"):
                 if key in evidence_pack:
                     data[key] = copy.deepcopy(evidence_pack[key])
         return data

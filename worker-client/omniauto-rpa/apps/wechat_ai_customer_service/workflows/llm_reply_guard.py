@@ -112,6 +112,36 @@ def guard_synthesized_reply(
     settings: dict[str, Any],
     reviewed_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not (evidence_pack.get("catalog_protocol") or {}).get("preparation"):
+        return evaluate_content_rules(candidate=candidate, evidence_pack=evidence_pack,
+                                      settings=settings, reviewed_plan=reviewed_plan)
+    from apps.wechat_ai_customer_service.workflows.catalog_query import clearance_kind, fingerprint, inventory_snapshot, snapshot_id
+    from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
+    proof = evidence_pack.get("_catalog_clearance") or {}
+    reply = str(candidate.get("reply") or "").strip()
+    guard = proof.get("guard") or {}
+    valid = (proof.get("version") == 2 and guard.get("allowed") and
+             proof.get("plan") == fingerprint(reviewed_plan) and clearance_kind(reply, evidence_pack))
+    receipt = evidence_pack["catalog_protocol"].get("receipt")
+    if valid and receipt:
+        try:
+            valid = snapshot_id(inventory_snapshot(KnowledgeRuntime())) == receipt.get("snapshot_id")
+        except Exception:
+            valid = False
+    evidence_pack.setdefault("reply_check_history", []).append({"stage": "consume_decision",
+        "reply": fingerprint(reply), "ok": bool(valid)})
+    if not valid:
+        return repair_decision("prepared_reply_decision_stale_or_missing", candidate)
+    return dict(guard)
+
+
+def evaluate_content_rules(
+    *,
+    candidate: dict[str, Any],
+    evidence_pack: dict[str, Any],
+    settings: dict[str, Any],
+    reviewed_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     platform_rules = load_platform_safety_rules(settings).get("item", {})
     enforce_identity_guard = identity_guard_enabled(settings)
     normalized = normalize_candidate(candidate)
@@ -132,7 +162,7 @@ def guard_synthesized_reply(
             return repair_decision("catalog_semantic_clearance_missing_or_stale", candidate,
                                    repair_instruction="当前正文必须通过同一库存需求和事实审核；不能复用其他草稿审核。")
         receipt = (evidence_pack.get("catalog_protocol") or {}).get("receipt")
-        if receipt:
+        if receipt and not evidence_pack["catalog_protocol"].get("preparation"):
             from apps.wechat_ai_customer_service.workflows.catalog_query import inventory_snapshot, snapshot_id
             from apps.wechat_ai_customer_service.workflows.reply_evidence_builder import KnowledgeRuntime
             try:
@@ -142,6 +172,7 @@ def guard_synthesized_reply(
             if current != receipt.get("snapshot_id"):
                 return repair_decision("catalog_changed_or_unavailable_before_guard", candidate,
                                        repair_instruction="库存版本已变或无法读取，旧查询不能授权发送。")
+    reviewed_finance_refusal = verified_finance_refusal(reply, reviewed_plan, evidence_pack)
     safety = evidence_pack.get("safety", {}) or {}
     if isinstance(safety, dict) and safety.get("must_handoff"):
         reasons = {str(item) for item in safety.get("reasons", []) or [] if str(item)}
@@ -152,7 +183,7 @@ def guard_synthesized_reply(
         ) and not candidate_declares_hard_boundary(candidate)
         soft_advisor_only = advisor_mode in {"clear_common_sense_recommendation", "soft_topic_redirect"} and soft_advisory_only
         if not soft_advisor_only:
-            if existing_safety_can_be_cleared_by_authoritative_reply(
+            if (reviewed_finance_refusal and reasons and reasons <= SOFT_ADVISORY_SAFETY_REASONS) or existing_safety_can_be_cleared_by_authoritative_reply(
                 candidate=candidate,
                 evidence_pack=evidence_pack,
                 reasons=reasons,
@@ -230,7 +261,7 @@ def guard_synthesized_reply(
     if enforce_identity_guard and has_identity_probe:
         return identity_probe_review_decision("identity_probe_requires_brain_reply", candidate, evidence_pack)
 
-    if request_has_hard_boundary_signal(evidence_pack):
+    if request_has_hard_boundary_signal(evidence_pack) and not reviewed_finance_refusal:
         return hard_boundary_review_decision(
             "customer_request_boundary_requires_brain_boundary_reply",
             candidate,
@@ -358,7 +389,8 @@ def guard_synthesized_reply(
     ):
         return handoff_decision("sales_followup_requires_handoff", candidate)
 
-    fact_authority = validate_reply_fact_authority(reply, evidence_pack, reviewed_plan=reviewed_plan)
+    prepared = bool((evidence_pack.get("catalog_protocol") or {}).get("preparation"))
+    fact_authority = {"ok": True} if prepared else validate_reply_fact_authority(reply, evidence_pack, reviewed_plan=reviewed_plan)
     if not fact_authority.get("ok"):
         return handoff_decision(
             str(fact_authority.get("reason") or "unsupported_product_fact_without_authority"),
@@ -841,7 +873,7 @@ def has_catalog_summary_authority(reply: str, evidence_pack: dict[str, Any]) -> 
     """A verified scoped query is authority even when its product set is empty."""
     from apps.wechat_ai_customer_service.workflows.catalog_query import aggregate_ready, clearance_kind
     receipt = (evidence_pack.get("catalog_protocol") or {}).get("receipt") or {}
-    return clearance_kind(reply, evidence_pack) == "query_summary" and aggregate_ready(receipt)
+    return clearance_kind(reply, evidence_pack) in {"query_summary", "program_checked"} and aggregate_ready(receipt)
 
 
 def has_structured_evidence(evidence_pack: dict[str, Any]) -> bool:
@@ -887,9 +919,11 @@ def validate_reply_fact_authority(reply: str, evidence_pack: dict[str, Any], *, 
                 or proof.get("policy_map") != fingerprint(mapping)):
             return {"ok": False, "reason": "catalog_semantic_clearance_missing_or_stale"}
         validation = validate_reviewed_reply_facts(reviewed_plan, evidence_pack,
-            refs=reviewed_plan.get("policy_refs"), mapping=mapping)
+            refs=proof.get("source_refs", reviewed_plan.get("policy_refs")), mapping=mapping)
         if not validation["ok"]:
             return {"ok": False, "reason": "reviewed_reply_fact_conflict", "errors": validation["errors"]}
+        if proof.get("version") == 2:
+            return {"ok": True, "reason": "final_reply_and_scope_checked"}
     else:
         # OCR/saved legacy candidates have no program-owned policy mapping.
         # Keep their existing authority checks, rather than inventing approval.
@@ -1969,21 +2003,38 @@ def normalize_risk_tags(raw_tags: list[Any]) -> set[str]:
     return normalized
 
 
-def request_has_hard_boundary_signal(evidence_pack: dict[str, Any]) -> bool:
-    text = re.sub(r"\s+", "", extract_current_message_text(evidence_pack))
-    if not text:
+def verified_finance_refusal(reply, plan, evidence):
+    """Only clear a finance request on the exact checked, sourced refusal."""
+    proof = evidence.get("_catalog_clearance") or {}
+    if proof.get("version") != 2 or not proof.get("source_refs") or not plan:
         return False
-    intent_tags = {str(item).strip().lower() for item in (evidence_pack.get("intent_tags") or []) if str(item).strip()}
-    patterns = (
-        r"最低价.{0,12}(保证|锁定|就是这个价|今天定)",
-        r"最低价.{0,16}(现在|马上|立刻)?(就)?(定|订|成交|付款|下定)",
-        r"(保证|包过).{0,10}(贷款|审批|通过|征信)",
-        r"(贷款|审批|通过|征信|能批).{0,16}(保证|包过|肯定|一定)",
-        r"绝对.{0,8}(无事故|无水泡|无火烧)",
-        r"(月结|账期|先发货|合同|赔偿|少开发票|虚开发票)",
-    )
-    if any(re.search(pattern, text, re.I) for pattern in patterns):
-        return True
-    if not (intent_tags & {"quote", "discount", "payment", "after_sales", "handoff"}):
+    from apps.wechat_ai_customer_service.workflows.catalog_query import clearance_kind, fingerprint
+    if not clearance_kind(reply, evidence) or proof.get("plan") != fingerprint(plan):
         return False
+    if hard_request_kinds(evidence) != {"finance_guarantee"} or has_unqualified_commitment(reply):
+        return False
+    mapping = evidence.get("policy_reference_map") or {}
+    for sid, keys in proof["source_refs"].items():
+        sources = [mapping["knowledge"][key]["content"] for key in keys]
+        statement = (mapping["statements"].get(sid) or {}).get("text", "")
+        if (any(re.search(r"(贷款|审批|征信)", source) for source in sources) and
+                re.search(r"(?:不能|不作|不做|没法|无法|不)[^，。；！？]{0,8}(?:承诺|保证|一定|打包票|包过|通过)", statement)):
+            return True
     return False
+
+
+_HARD_REQUEST_PATTERNS = {
+    "price_lock": r"最低价.{0,12}(保证|锁定|就是这个价|今天定)|最低价.{0,16}(现在|马上|立刻)?(就)?(定|订|成交|付款|下定)",
+    "finance_guarantee": r"(保证|包过).{0,10}(贷款|审批|通过|征信)|(贷款|审批|通过|征信|能批).{0,16}(保证|包过|肯定|一定)",
+    "condition_guarantee": r"绝对.{0,8}(无事故|无水泡|无火烧)",
+    "contract": r"(月结|账期|先发货|合同|赔偿|少开发票|虚开发票)",
+}
+
+
+def hard_request_kinds(evidence_pack):
+    text = re.sub(r"\s+", "", extract_current_message_text(evidence_pack))
+    return {kind for kind, pattern in _HARD_REQUEST_PATTERNS.items() if re.search(pattern, text, re.I)}
+
+
+def request_has_hard_boundary_signal(evidence_pack: dict[str, Any]) -> bool:
+    return bool(hard_request_kinds(evidence_pack))

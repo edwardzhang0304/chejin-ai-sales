@@ -51,6 +51,8 @@ def configure(monkeypatch,state,case,mutation,prices_override=None):
     else:
         prices=prices_override or [5.2,5.6,6.0,6.4,6.8,7.2]
         messages=['您好','5—8万有什么车？']
+    if mutation in {'timeout','review_capacity'}:
+        publish_policy('预约看车需提前一天联系，门店确认后安排。')
     ids=[listed(f'合成车{i}',price) for i,price in enumerate(prices,1)]
     def coverage(binding):
         value=original_coverage(binding)
@@ -82,6 +84,8 @@ def configure(monkeypatch,state,case,mutation,prices_override=None):
             value=pipeline.joined.fixtures.base_plan()
             value.update(answer_mode='recommend_from_catalog',reply_segments=[
                 '，'.join(f"{car['name']}报价{4.6 if mutation=='wrong_second_price' and index==1 else car['price']}万元" for index,car in enumerate(cars))+'。'])
+            if mutation in {'timeout','review_capacity'}:
+                value['reply_segments'].append('预约请提前一天联系，等门店确认再安排看车。')
             value.pop('facts_claimed',None);value.pop('evidence_used',None)
             if mutation=='degraded':value['reply_segments']=['有合适的车，您更喜欢什么类型呢？']
             state['drafts'].append(deepcopy(value))
@@ -96,7 +100,7 @@ def test_direct_program_preparation_reaches_actual_permit_history_and_ack(monkey
     state=actual_brain
     configure(monkeypatch,state,case,'normal')
     pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-    assert len(state['wire'])==2  # one generated draft + one semantic review
+    assert len(state['wire']) == 1 and not state['reviews']  # generation only
     receipt=state['receipts'][-1]
     expected=[3.98,3.78,3.58] if case=='F01' else [6.4,6.8,6.0,7.2,5.6,5.2]
     assert [p['price'] for p in receipt['recommendations']]==expected
@@ -104,13 +108,15 @@ def test_direct_program_preparation_reaches_actual_permit_history_and_ack(monkey
     with SessionLocal() as db:
         batch=db.scalar(select(MessageBatch));native=batch.ai_response_snapshot['raw_payload']['omniauto_brain_result']
         assert native['catalog_preparation']['route']=='direct'
-        assert native['candidate_history'] and native['review_history']
+        assert native['candidate_history'] and not native.get('review_history')
+        assert native['_catalog_clearance']['method'] == 'program'
+        assert [row['stage'] for row in native['reply_check_history']] == ['content_decision', 'consume_decision']
         assert len(native['model_response_history'])==1
         assert native['model_response_history'][0]['response']['response_text']==json.dumps(state['drafts'][0],ensure_ascii=False)
         assert 'api_key' not in native['model_response_history'][0]['request']
         assert native['brain_plan']['facts_claimed']
         assert len(native['brain_plan']['evidence_used']['product_ids'])==2
-        assert len(native['model_call_accounting']['http_attempts'])==2
+        assert len(native['model_call_accounting']['http_attempts'])==1
 
 
 @pytest.mark.parametrize('mutation',['wrong_second_price','degraded','timeout'])
@@ -236,7 +242,7 @@ def test_year_followup_retains_energy_and_repairs_format_before_final_clarificat
         n=db.scalar(select(MessageBatch)).ai_response_snapshot['raw_payload']['omniauto_brain_result']
         assert '哪一年之后的新能源车' in n['reply_text']
         assert n['catalog_stages']['understanding']['json_structure_repaired']
-        assert n['candidate_history'] and n['review_history']
+        assert n['candidate_history'] and not n.get('review_history') and not state['reviews']
 
 
 @pytest.mark.parametrize('separator',['comma','sentence','segment','same_vehicle_clause'])
@@ -371,7 +377,7 @@ def test_numeric_entity_assignment_through_review_guard_and_native_permit(monkey
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire'])==2
+        assert len(state['wire']) == 1 and not state['reviews']
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
@@ -407,7 +413,7 @@ def test_equal_price_entities_keep_independent_authority_in_final_pipeline(monke
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire'])==2
+        assert len(state['wire']) == 1 and not state['reviews']
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result
@@ -451,7 +457,7 @@ def test_budget_relation_integrity_reaches_final_consumers(monkeypatch,actual_br
     monkeypatch.setattr(llm_config,'call_llm_request_once_with_wall_timeout',transport)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
-        assert len(state['wire'])==2
+        assert len(state['wire']) == 1 and not state['reviews']
     else:
         _,_,_,bid=pipeline.created(monkeypatch);result=pipeline.generate(bid)
         assert result['decision']=='retry_later',result

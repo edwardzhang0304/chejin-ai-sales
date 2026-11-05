@@ -353,6 +353,24 @@ def _display_counts(segments: list[str], products: list[dict], receipt: dict | N
     return result
 
 
+def _inventory_assertion_errors(text, receipt):
+    """Check an explicit existence or resolved-condition assertion at its stated scope."""
+    from apps.wechat_ai_customer_service.workflows.catalog_query import receipt_state
+    partial = receipt_state(receipt) != "complete"
+    for clause in re.split(r"[。；;，,]", text):
+        if re.search(r"[？?]|是否|有没有|尚未|暂未|不能确认|待核实|需核实|还没", clause):
+            continue
+        if partial and re.search(r"(?:车|款|车型).{0,5}(?:都|均|已)?(?:符合|满足).{0,14}(?:年份|车龄|全部条件|所有条件)", clause):
+            yield "unverified_full_condition_match"
+        # A positive inventory assertion is distinct from speaking about
+        # missing records or asking about a customer's requirements.
+        claim = re.search(r"(?:有(?:在售|新能源|纯电|现){0,2}车(?:源|型)?|(?:新能源车?|纯电车?|在售车源).{0,7}(?:是有的|有现车|有车源))", clause)
+        if claim and not re.search(r"没|无|不|是否", clause[:claim.start()+1]):
+            count = receipt.get("known_condition_match_count") if partial else receipt.get("match_count")
+            if not receipt.get("scan_complete") or not isinstance(count,int) or count <= 0:
+                yield "inventory_presence_not_verified"
+
+
 def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation: dict | None = None) -> dict:
     """Inspect actual text, before/after semantic review; never trust claim IDs.
 
@@ -421,6 +439,12 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
     for segment_index, segment in enumerate(plan.get("reply_segments") or []):
         entities = _reply_references(segment, _reply_entities(segment, products), prior_entities)
         numbers = factual_number_spans(segment, excluded=[(e["start"], e["end"]) for e in entities])
+        # A customer preference question is not an assertion about a car's year.
+        preferences = list(re.finditer(
+            r"(?:您|你)(?:更)?(?:希望|想要|倾向于?|考虑)[^，,。！？!?；;]{0,48}?[？?]", segment))
+        numbers = [n for n in numbers if not (n["unit"] == "年" and any(
+            m.start() <= n["start"] < m.end() and not any(m.start() <= e["start"] < m.end() for e in entities)
+            for m in preferences))]
         owners = _number_entity_owners(segment, entities, numbers)
         budget_spans = _customer_budget_spans(segment, entities, (receipt.get("query") or {}).get("budget") or {})
         if entities:
@@ -485,8 +509,13 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
             for number in (n for n in numbers if entity_index in owners.get(n["start"], [])):
                 if number["start"] in customer_numbers or number["start"] in display_positions:
                     continue
+                # Once a named vehicle introduces its own amount, earlier
+                # budget wording is not the role of that vehicle's price.
+                local_role = amount_role(segment, number["start"])
+                if entity["end"] <= number["start"] and local_role == "预算":
+                    local_role = amount_role(segment[entity["end"]:], number["start"] - entity["end"])
                 if (number["start"] in customer_positions or
-                        (number["unit"] == "万元" and amount_role(segment, number["start"]) not in (None, "车价"))):
+                        (number["unit"] == "万元" and local_role not in (None, "车价"))):
                     valid = policy_number(number, segment_index)
                     if not valid:
                         errors.append("unverified_reply_monetary_role")
@@ -544,10 +573,11 @@ def validate_reply_public_facts(plan: dict, evidence: dict, *, formal_validation
                                 "role_candidates": [amount_role(segment, number["start"]), "catalog_aggregate"],
                                 "query_id": receipt.get("query_id"),
                                 "rejection_reason": None if valid else "no_matching_authority_for_role_and_scope"})
-            if not valid:
+            if not valid and (number["unit"] is not None or local_entities):
                 errors.append("unverified_reply_numeric_fact")
         # Negative inventory statements still assert a result, even with no
         # digits. Unknown conditions or nonzero results cannot authorize them.
+        errors.extend(_inventory_assertion_errors(segment, receipt))
         if any(_inventory_absences(segment)) and (not aggregate_ready(receipt) or receipt.get("match_count") != 0):
             errors.append("inventory_absence_not_verified")
         if (not entities and aggregate_ready(receipt) and receipt.get("match_count") == 0
