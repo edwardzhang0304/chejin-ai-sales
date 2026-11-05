@@ -535,8 +535,11 @@ def test_force_generation_cannot_revive_invalidated_batch_after_restore():
     assert client.post(f'/api/leads/{lead_id}/restore').status_code==200
     with SessionLocal() as db:
         before=db.scalar(select(func.count()).select_from(ReplyAction))
-        assert c3_service.claim_message_batch_generation(db,batch_id=batch_id,force=True)['run'] is False
-        assert c3_service.generate_for_batch(db,batch_id=batch_id,force=True).get('task_id') is None
+        for entry in (c3_service.claim_message_batch_generation, c3_service.generate_for_batch):
+            with pytest.raises(AppError) as rejected:
+                entry(db,batch_id=batch_id,force=True)
+            assert rejected.value.code == 'MESSAGE_BATCH_FORCE_GENERATION_DISABLED'
+            assert rejected.value.status_code == 400
         assert db.scalar(select(func.count()).select_from(ReplyAction))==before
 
 

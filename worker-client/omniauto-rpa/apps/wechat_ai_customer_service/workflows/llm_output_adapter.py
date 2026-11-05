@@ -6,7 +6,9 @@ format only; it must never author, replace, or decide customer-visible wording.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import Any
 
 
@@ -108,13 +110,90 @@ def llm_json_response_is_incomplete(response: dict[str, Any]) -> bool:
 
 
 def parse_complete_llm_json_response(response: dict[str, Any]) -> dict[str, Any] | None:
-    """Brain may normalize wrappers, but must not adopt a cutoff reply."""
+    """Require one unambiguous object; never select a fragment of a response."""
     if llm_json_response_is_incomplete(response):
         return None
-    return parse_llm_json_object(str(response.get("response_text") or ""))
+    try:
+        return decode_complete_json_object(str(response.get("response_text") or ""))
+    except (json.JSONDecodeError, JSONBoundaryError):
+        return None
 
 
-def parse_llm_json_object(text: str) -> dict[str, Any] | None:
+class JSONBoundaryError(ValueError):
+    """Controlled codes only; never include model keys or values in errors."""
+
+
+def decode_complete_json_object(text: str) -> dict[str, Any]:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise JSONBoundaryError("duplicate_key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_):
+        raise JSONBoundaryError("non_json_number")
+
+    raw = strip_markdown_code_fence(text).strip()
+    decoder = json.JSONDecoder(object_pairs_hook=unique_pairs, parse_constant=invalid_constant)
+    if not raw.startswith("{"):
+        # A complete array/scalar is not a wrapped object, even if it contains one.
+        try:
+            decoder.decode(raw)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise JSONBoundaryError("non_object")
+    start = max(0, raw.find("{"))
+    prefix = raw[:start].strip()
+    parsed, end = decoder.raw_decode(raw, start)
+    if not isinstance(parsed, dict):
+        raise JSONBoundaryError("non_object")
+    # Preserve plain explanatory wrappers, not JSON fragments, arrays, additional
+    # fences, numbers or literals. An introductory label may end with a colon.
+    for wrapper in (prefix.removesuffix(":"), raw[end:].strip()):
+        if (re.search(r'[{}\[\]"`\\,:0-9]', wrapper)
+                or re.search(r"\b(?:true|false|null|NaN|Infinity)\b", wrapper)):
+            raise JSONBoundaryError("ambiguous_structure")
+    return parsed
+
+
+def llm_json_parse_evidence(response: dict[str, Any]) -> dict[str, Any]:
+    """Bounded syntax evidence without retaining customer text or field values.
+
+    Offsets refer to the fence-stripped response; no conflicting suffix is dropped.
+    This is diagnostic only: it must never repair or authorize a response.
+    """
+    raw = str(response.get("response_text") or "")
+    stripped = strip_markdown_code_fence(raw)
+    candidate = stripped.strip()
+    evidence: dict[str, Any] = {
+        "response_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        "response_chars": len(raw),
+        "candidate_chars": len(candidate),
+        "incomplete": llm_json_response_is_incomplete(response),
+    }
+    try:
+        parsed = decode_complete_json_object(raw)
+    except JSONBoundaryError as exc:
+        evidence.update(kind="non_object" if str(exc) == "non_object" else "ambiguous_structure", error=str(exc))
+    except json.JSONDecodeError as exc:
+        start = max(0, exc.pos - 40)
+        evidence.update(
+            kind="invalid_json", error=exc.msg, position=exc.pos,
+            line=exc.lineno, column=exc.colno, window_start=start,
+            # Keep only JSON punctuation/whitespace, never names, numbers or prose.
+            syntax_window="".join(c if c in '{}[],:"\\ \t\r\n' else "x"
+                                  for c in candidate[start:exc.pos + 41]),
+        )
+    else:
+        evidence.update(kind="object" if isinstance(parsed, dict) else "non_object",
+                        top_level_type=type(parsed).__name__)
+    return evidence
+
+
+def parse_llm_json_object(text: str, *, allow_truncated_repair: bool = True) -> dict[str, Any] | None:
     candidates = []
     raw = str(text or "").strip()
     if raw:
@@ -132,6 +211,8 @@ def parse_llm_json_object(text: str) -> dict[str, Any] | None:
             continue
         if isinstance(payload, dict):
             return payload
+    if not allow_truncated_repair:
+        return None
     repaired = repair_truncated_json_object_text(fenced or raw)
     if repaired:
         try:

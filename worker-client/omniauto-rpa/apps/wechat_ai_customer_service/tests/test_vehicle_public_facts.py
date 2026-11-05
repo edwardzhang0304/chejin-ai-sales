@@ -27,15 +27,26 @@ def vehicle():
     }
 
 
+def inventory(monkeypatch, rows, *, unavailable=False):
+    class Runtime:
+        def list_items(self, kind):
+            assert kind == "products"
+            if unavailable:
+                raise OSError("synthetic inventory read failure")
+            return deepcopy(rows)
+    # Let the real catalog producer create its scan-completeness evidence;
+    # a candidate-list stub no longer represents its current contract.
+    monkeypatch.setattr(evidence, "KnowledgeRuntime", Runtime)
+
+
 @pytest.mark.parametrize("route", ["catalog", "retrieval", "merged"])
 @pytest.mark.parametrize("fast", [False, True])
 def test_all_public_details_survive_final_prompt_without_clipping(monkeypatch, route, fast):
     original = vehicle()
     before = deepcopy(original)
-    catalog = evidence.catalog_product_payload(original)
     snippet = legacy_product_snippet(original, {})
-    monkeypatch.setattr(evidence, "catalog_product_candidates", lambda *a, **kw: [] if route == "retrieval" else [catalog])
-    packed = evidence.compact_knowledge_pack("这台车的上牌日期和其他资料", {
+    inventory(monkeypatch, [original], unavailable=route == "retrieval")
+    packed = evidence.compact_knowledge_pack("2016款测试车的上牌日期和其他资料", {
         "evidence": {"products": [] if route == "catalog" else [snippet]},
     }, max_rag_hits=0, max_rag_text_chars=100, max_catalog_candidates=5)
     prompt = build_brain_prompt_pack(settings={"prompt_profile": "routine_product_fast" if fast else "normal",
@@ -72,9 +83,8 @@ def test_same_name_vehicle_facts_remain_bound_to_product_id(monkeypatch):
     a, b = vehicle(), vehicle()
     b["id"] = "vehicle-b"
     b["data"]["additional_details"]["first_registration"] = "2019-12"
-    candidates = [evidence.catalog_product_payload(item) for item in (a, b)]
-    monkeypatch.setattr(evidence, "catalog_product_candidates", lambda *a, **kw: candidates)
-    packed = evidence.compact_knowledge_pack("两台都说一下", {"evidence": {}},
+    inventory(monkeypatch, [a, b])
+    packed = evidence.compact_knowledge_pack("2016款测试车两台都说一下", {"evidence": {}},
         max_rag_hits=0, max_rag_text_chars=100, max_catalog_candidates=5)
     items = {item["id"]: item for item in packed["product_master"]["items"]}
     assert "2017-08" in items["vehicle-a"]["specs"] and "2019-12" not in items["vehicle-a"]["specs"]

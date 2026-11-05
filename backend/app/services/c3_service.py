@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services import reply_ownership
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 import hashlib
 import hmac
 import json
@@ -1649,6 +1650,7 @@ def create_control_message_batch(
     )
     if existing:
         return {"batch_id": existing.id, "batch_status": existing.status, "batch": _batch_to_dict(existing)}
+    binding = _binding_or_404(db, conversation_id)
     from types import SimpleNamespace
     reply_ownership.require_batch(conversation,SimpleNamespace(trigger_type=trigger_type,ownership_revision=reply_ownership.revision(conversation)))
     active = _active_batch(db, conversation_id)
@@ -1660,6 +1662,7 @@ def create_control_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -1681,6 +1684,11 @@ def create_control_message_batch(
     db.add(batch)
     db.flush()
     return {"batch_id": batch.id, "batch_status": batch.status, "batch": _batch_to_dict(batch)}
+
+
+def _new_model_query_snapshot(binding: WechatSessionBinding) -> dict:
+    """Freeze model wire identity only for NEW Hook batches; old/OCR stays v1."""
+    return {"model_query_contract": "vehicle_need_v2"} if binding.native_self_wxid else {}
 
 
 def collect_message_batch(
@@ -1762,6 +1770,7 @@ def collect_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -1926,6 +1935,7 @@ def collect_recovered_customer_message_batch(
 
     from app.services.reply_ownership import revision
     batch = MessageBatch(
+        ai_request_snapshot=_new_model_query_snapshot(binding),
         ownership_revision=revision(conversation),
         silence_revision=int(reply_ownership.state(conversation).get("silence_revision",0)),
         conversation_id=conversation_id,
@@ -2064,6 +2074,58 @@ def _brain_snapshot_message_is_semantic(item: dict[str, Any]) -> bool:
     )
 
 
+def _settled_segment_vehicle_ids(action):
+    """Unsent segments of the same Brain plan cannot introduce a vehicle."""
+    payload = action.ai_payload or {}
+    brain = (payload.get("raw_payload") or {}).get("omniauto_brain_result") or {}
+    plan = brain.get("brain_plan") or {}
+    segments = plan.get("reply_segments") or []
+    if not isinstance(segments, list) or not segments or not all(isinstance(s, str) for s in segments):
+        return []
+    units = [" ".join(s.split()) for s in segments]
+    recorded = (brain.get("_catalog_clearance") or {}).get("segment_vehicle_ids")
+    authorized = _brain_plan_vehicle_ids(payload)
+    # A Worker action can pack multiple complete semantic units into one
+    # message. Credit only the units that uniquely match its actual echo.
+    if not isinstance(recorded, list) or len(recorded) != len(units):
+        return authorized if action.segment_count == 1 and " ".join(units) == action.reply_text else []
+    matches = [(start, end) for start in range(len(units)) for end in range(start + 1, len(units) + 1)
+               if " ".join(units[start:end]) == action.reply_text]
+    if len(matches) != 1:
+        return []
+    start, end = matches[0]
+    groups = recorded[start:end]
+    if not all(isinstance(group, list) for group in groups):
+        return []
+    return [vehicle for vehicle in authorized if any(vehicle in group for group in groups)]
+
+
+def _confirmed_reply_history(db, binding, events):
+    """Allow historical vehicle IDs only from an action, its ACK, and its actual echo."""
+    links = {e.id: (e.raw_payload or {}).get("ai_reply_action_id") for e in events
+             if e.conversation_id == binding.conversation_id and e.sender_role == "self"
+             and (e.raw_payload or {}).get("native_source") == "native_history"}
+    links = {key:value for key,value in links.items() if isinstance(value,str) and value}
+    action_ids = set(links.values())
+    if not action_ids:
+        return {}
+    settled = {a.id:(a, ack) for a,ack in db.execute(
+        select(ReplyAction,SentAck).join(SentAck, SentAck.reply_action_id == ReplyAction.id)
+        .where(ReplyAction.id.in_(action_ids),ReplyAction.conversation_id==binding.conversation_id,
+               ReplyAction.status=="sent", SentAck.send_result=="sent"))}
+    confirmed = {}
+    for event in events:
+        pair = settled.get(links.get(event.id))
+        if pair:
+            action, ack = pair
+            native = (ack.evidence or {}).get("native_msg_id")
+            if (native and native == (event.raw_payload or {}).get("native_msg_id")
+                    and action.reply_text == event.content and action.claimed_task_id == ack.task_id):
+                confirmed[event.id] = {"action":action.id,"batch":action.batch_id,"native":native,
+                                       "vehicles":_settled_segment_vehicle_ids(action)}
+    return confirmed
+
+
 def _build_brain_context_snapshot(
     db: Session,
     *,
@@ -2107,6 +2169,11 @@ def _build_brain_context_snapshot(
     window_rows = all_history_rows[-50:]
     prior_messages = [_brain_snapshot_message(item) for item in comparison_views(db, window_rows)]
     # Only the frozen 50-event window can be rendered into history_text.
+    if binding.native_self_wxid:
+        verified = _confirmed_reply_history(db, binding, window_rows)
+        for row in prior_messages:
+            if row["message_event_id"] in verified:
+                row["confirmed_reply"] = verified[row["message_event_id"]]
     # Counting older, deliberately excluded rows would incorrectly report a
     # lost history when the retained window legitimately contains no semantic
     # fact.
@@ -2253,6 +2320,8 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         return result
 
     context = {
+        **({"model_query_contract": existing_request_snapshot["model_query_contract"]}
+           if "model_query_contract" in existing_request_snapshot else {}),
         "effective_context_digest": effective_context_digest(db, binding.conversation_id),
         # The immutable snapshot has one canonical storage location in
         # MessageBatch.ai_request_snapshot.  The Adapter receives it
@@ -2363,7 +2432,60 @@ def _preserve_generation_attempt_history(
     history = _generation_attempt_history(batch)
     if history:
         result["generation_attempt_history"] = history
+    totals = (batch.ai_response_snapshot or {}).get("generation_accounting_totals")
+    if isinstance(totals, dict):
+        result["generation_accounting_totals"] = dict(totals)
     return result
+
+
+def _accumulate_generation_accounting(batch: MessageBatch, attempt: int, response: dict) -> dict:
+    """Idempotent counters survive bounded raw history and late results; no retries here."""
+    previous = (batch.ai_response_snapshot or {}).get("generation_accounting_totals") or {}
+    totals = dict(previous)
+    ranges = [list(pair) for pair in previous.get("accounted_attempt_ranges", [])]
+    entries = [] if previous else _generation_attempt_history(batch)
+    # On upgrade, count the retained old attempts but mark missing old ledgers
+    # unknown. Never reinterpret unknown old cost as a complete zero baseline.
+    if not previous and entries:
+        totals["call_counts_complete"] = False
+    entries = [*entries, {"attempt":attempt, "response":response}]
+    for entry in entries:
+        number = _attempt_number(entry.get("attempt"))
+        if any(lo <= number <= hi for lo, hi in ranges):
+            continue
+        raw = (entry.get("response") or {}).get("raw_payload") or {}
+        native = raw.get("omniauto_brain_result") or {}
+        audit = native.get("model_call_accounting") or {}
+        progress = native.get("provider_progress") or (raw.get("provider_error") or {}).get("provider_progress") or []
+        starts = [event for event in progress if event.get("event") == "started" and event.get("call_id")]
+        measure = raw.get("generation_measurement") or {}
+        logical = audit.get("logical_call_count") if audit else len({e.get("parent_call_id") for e in starts if e.get("parent_call_id")})
+        http = audit.get("http_attempt_count") if audit else len({e["call_id"] for e in starts})
+        for key, value in {"recorded_attempt_count":1, "generation_duration_ms":measure.get("duration_ms",0),
+                           "logical_call_count":logical or 0, "http_attempt_count":http or 0}.items():
+            totals[key] = int(totals.get(key) or 0) + max(0,int(value))
+        totals["call_counts_complete"] = bool(totals.get("call_counts_complete",True) and audit
+                                              and not audit.get("omitted_logical_calls") and not audit.get("omitted_http_attempts")
+                                              and not audit.get("diagnostic_errors"))
+        ranges.append([number,number]); ranges.sort()
+        merged = []
+        for lo,hi in ranges:
+            if merged and lo <= merged[-1][1]+1: merged[-1][1]=max(merged[-1][1],hi)
+            else: merged.append([lo,hi])
+        ranges = merged
+    totals["accounted_attempt_ranges"] = ranges
+    totals["configured_max_attempts"] = get_settings().c3_batch_recovery_max_attempts
+    totals["retry_delay_seconds"] = get_settings().c3_batch_retry_delay_seconds
+    totals["provider_timeout_seconds"] = get_settings().c3_brain_provider_timeout_seconds
+    totals["config_source"] = "backend_settings:C3_BATCH_RECOVERY_MAX_ATTEMPTS/C3_BATCH_RETRY_DELAY_SECONDS/C3_BRAIN_PROVIDER_TIMEOUT_SECONDS"
+    totals["capacity_wait_count"] = int(batch.generation_capacity_wait_count or 0)
+    now = utcnow()
+    if now.tzinfo is None: now=now.replace(tzinfo=timezone.utc)
+    if batch.created_at is not None:
+        created = batch.created_at
+        if created.tzinfo is None: created=created.replace(tzinfo=timezone.utc)
+        totals["batch_wait_elapsed_ms"] = max(0,round((now-created).total_seconds()*1000))
+    return totals
 
 
 def _record_generation_attempt(
@@ -2382,6 +2504,7 @@ def _record_generation_attempt(
 
     response = dict(payload)
     response.pop("generation_attempt_history", None)
+    response.pop("generation_accounting_totals", None)
     history = [
         item
         for item in _generation_attempt_history(batch)
@@ -2397,6 +2520,7 @@ def _record_generation_attempt(
     history.sort(key=lambda item: _attempt_number(item.get("attempt")))
     result = dict(response)
     result["generation_attempt_history"] = history[-5:]
+    result["generation_accounting_totals"] = _accumulate_generation_accounting(batch, attempt, response)
     return result
 
 
@@ -2427,6 +2551,7 @@ def _record_stale_generation_attempt_diagnostics(
     current["generation_attempt_history"] = recorded[
         "generation_attempt_history"
     ]
+    current["generation_accounting_totals"] = recorded["generation_accounting_totals"]
     return current
 
 
@@ -2441,6 +2566,8 @@ def _stale_generation_diagnostics_payload(
         else {}
     )
     diagnostics: dict[str, Any] = {}
+    if isinstance(raw_payload.get("generation_measurement"), dict):
+        diagnostics["generation_measurement"] = dict(raw_payload["generation_measurement"])
     for container_name in ("provider_error", "omniauto_brain_result"):
         source = raw_payload.get(container_name)
         if not isinstance(source, dict):
@@ -2451,6 +2578,7 @@ def _stale_generation_diagnostics_payload(
                 "provider_progress_id",
                 "provider_progress",
                 "last_provider_progress",
+                "model_call_accounting",
             )
             if key in source
         }
@@ -3259,6 +3387,15 @@ def _schedule_retry_or_handoff(
     }
 
 
+def _require_normal_generation_request(force: bool) -> None:
+    if force:
+        raise AppError(
+            "MESSAGE_BATCH_FORCE_GENERATION_DISABLED",
+            "强制生成已禁用，请遵循正常生成与重试规则",
+            400,
+        )
+
+
 def claim_message_batch_generation(
     db: Session,
     *,
@@ -3268,6 +3405,7 @@ def claim_message_batch_generation(
     native_client_admitted: bool = False,
 ) -> dict[str, Any]:
     """Persist generation ownership before dispatching non-durable background work."""
+    _require_normal_generation_request(force)
     from app.services.followup_eligibility import require_conversation_followup
     followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
     if followup_conversation_id:
@@ -3287,7 +3425,7 @@ def claim_message_batch_generation(
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
     if batch.status == "cancelled" and batch.suggested_action == "LEAD_INVALID":
         return {"run": False, "terminal": True, "decision": "no_action", "error_code": "LEAD_INVALID"}
-    if batch.status not in ACTIVE_BATCH_STATUSES and not force:
+    if batch.status not in ACTIVE_BATCH_STATUSES:
         return {"run": False, "terminal": True, "batch": _batch_to_dict(batch)}
 
     native_binding=db.scalar(select(WechatSessionBinding).where(
@@ -3304,14 +3442,14 @@ def claim_message_batch_generation(
     retry_due = message_batch_retry_is_due(batch)
     if stale_only and not stale and not retry_due:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
-    if batch.status == "retry_wait" and not retry_due and not force:
+    if batch.status == "retry_wait" and not retry_due:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
-    if batch.status == "generating" and not stale and not force:
+    if batch.status == "generating" and not stale:
         return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
 
     max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
     attempts = int(batch.generation_attempt_count or 0)
-    if stale and attempts - int(batch.generation_capacity_wait_count or 0) >= max_attempts and not force:
+    if attempts - int(batch.generation_capacity_wait_count or 0) >= max_attempts:
         _handoff_exhausted_generation(
             db,
             batch=batch,
@@ -3372,6 +3510,7 @@ def generate_for_batch(
     expected_generation_attempt: int | None = None,
     native_client_admitted: bool = False,
 ) -> dict[str, Any]:
+    _require_normal_generation_request(force)
     from app.services.followup_eligibility import require_conversation_followup
     followup_conversation_id = db.scalar(select(MessageBatch.conversation_id).where(MessageBatch.id == batch_id))
     if followup_conversation_id:
@@ -3403,7 +3542,7 @@ def generate_for_batch(
 
     existing_action = db.scalar(select(ReplyAction).where(ReplyAction.batch_id == batch.id, ReplyAction.current.is_(True)))
     existing_handoff = db.scalar(select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None)))
-    if not force and batch.status in {"reply_action_created", "handoff_created", "no_action", "failed", "rejected"}:
+    if batch.status in {"reply_action_created", "handoff_created", "no_action", "failed", "rejected"}:
         existing_task = db.scalar(select(Task).where(Task.reply_action_id == existing_action.id, Task.deleted_at.is_(None))) if existing_action else None
         return {
             "decision": batch.decision,
@@ -3439,6 +3578,22 @@ def generate_for_batch(
             "error_code": exc.code,
             "suggested_action": "wait_for_business_gate",
         }
+
+    # Direct ordinary callers use the same durable attempt/eligibility gate as
+    # Worker/background dispatch. An executor already holding an expected
+    # attempt must not claim again.
+    if expected_generation_attempt is None:
+        claim = claim_message_batch_generation(
+            db, batch_id=batch.id, native_client_admitted=native_client_admitted,
+        )
+        if not claim.get("run"):
+            return {
+                "decision": batch.decision or ("retry_later" if batch.active else "no_action"),
+                "batch": _batch_to_dict(batch),
+                "error_code": claim.get("error_code", batch.error_code),
+                "suggested_action": claim.get("suggested_action", batch.suggested_action),
+            }
+        expected_generation_attempt = int(claim["attempt"])
 
     batch.status = "generating"
     try:
@@ -3558,6 +3713,7 @@ def generate_for_batch(
                 **context["conversation"],
                 "brain_context_snapshot": context["brain_context_snapshot"],
                 "knowledge_release_snapshot": context["knowledge_release_snapshot"],
+                **({"model_query_contract": context["model_query_contract"]} if "model_query_contract" in context else {}),
             },
             message_batch={
                 "id": prepared_batch_id,
@@ -3593,6 +3749,11 @@ def generate_for_batch(
     generation_duration_ms = int(
         round((time.perf_counter() - generation_started_monotonic) * 1000)
     )
+    decision = replace(decision, raw_payload={**(decision.raw_payload or {}), "generation_measurement": {
+        "duration_ms":generation_duration_ms, "batch_id":prepared_batch_id,
+        "conversation_id":followup_conversation_id, "generation_attempt":generation_attempt,
+        "recall_cycle_id":prepared_recall_cycle_id,
+    }})
 
     # The provider ran outside the transaction; serialize with invalidation again.
     try:

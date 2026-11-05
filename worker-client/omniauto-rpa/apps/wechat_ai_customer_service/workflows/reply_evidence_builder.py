@@ -9,6 +9,7 @@ that product master, formal knowledge and current conversation facts actually pa
 from __future__ import annotations
 
 from hashlib import sha256
+from copy import deepcopy
 import math
 import json
 import re
@@ -50,6 +51,94 @@ DEFAULT_HISTORY_CHAR_BUDGET = 12000
 DEFAULT_MAX_RAG_HITS = 5
 DEFAULT_MAX_TEXT_CHARS = 900
 CHEJIN_HISTORY_AUTHORITY = "chejin_message_events_v1"
+
+
+def formal_knowledge_source_table(evidence_pack: dict) -> dict[str, dict]:
+    """Canonical public citations from the already validated formal snapshot."""
+    formal = (evidence_pack.get("knowledge") or {}).get("formal_knowledge") or {}
+    release = evidence_pack.get("knowledge_release") or {}
+    rows = [*(formal.get("faq") or []), *(formal.get("product_scoped") or [])]
+    policies = formal.get("policies") or {}
+    if isinstance(policies, dict):
+        rows.extend({"id": key, **value} for key, value in policies.items() if isinstance(value, dict))
+    sources = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_id = row.get("source_id") or row.get("id") or row.get("knowledge_id") or row.get("policy_id")
+        content = row.get("answer") or row.get("content") or row.get("text")
+        if not isinstance(source_id, str) or not isinstance(content, str) or not content.strip():
+            continue
+        if release.get("release_id") and row.get("knowledge_release_id") != release["release_id"]:
+            continue
+        source = {"source_id": source_id, "content": content,
+                  "release_id": release.get("release_id"), "revision_id": row.get("knowledge_revision_id")}
+        if source_id in sources and sources[source_id] != source:
+            raise ValueError("conflicting_formal_knowledge_source")
+        sources[source_id] = source
+    return sources
+
+
+def reply_authority_snapshot(evidence_pack: dict[str, Any]) -> dict[str, Any]:
+    """One full public projection for generation, review, repair and Guard.
+
+    Selection occurs in catalog_query before this projection. A consumer must
+    never perform another top-N or text clipping operation on this block.
+    """
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint, message_sources, receipt_view, receipt_products
+    knowledge = evidence_pack.get("knowledge") or {}
+    protocol = evidence_pack.get("catalog_protocol") or {}
+    protocol = deepcopy(protocol)
+    receipt = protocol.get("receipt") or {}
+    if receipt:
+        receipt = protocol["receipt"] = receipt_view(receipt)
+    products = receipt_products(receipt) if receipt else deepcopy((knowledge.get("product_master") or {}).get("items") or [])
+    public_keys = {"id", "sku", "name", "category", "aliases", "specs", "price", "unit", "stock",
+                   "public_details", "version", "source_type", "authority_level", "selection_role", "within_budget"}
+    products = [{key: value for key, value in product.items() if key in public_keys} for product in products]
+    block = {
+        "product_master": {"items": products, "catalog_selection": deepcopy(receipt)},
+        "formal_knowledge": deepcopy(knowledge.get("formal_knowledge") or {}),
+        "formal_knowledge_sources": formal_knowledge_source_table(evidence_pack),
+        "catalog_protocol": deepcopy(protocol), "sources": message_sources(evidence_pack),
+        "knowledge_release": deepcopy(evidence_pack.get("knowledge_release") or {}),
+        "generation_identity": deepcopy(evidence_pack.get("generation_identity") or {}),
+    }
+    # Receipts are program-created but contain legacy product payloads. Project
+    # their selected objects with the same public allowlist, not a second rule.
+    for selection in (block["product_master"]["catalog_selection"], block["catalog_protocol"].get("receipt") or {}):
+        for key in ("recommendations", "references", "known_condition_facts"):
+            if key in selection:
+                selection[key] = [{k: v for k, v in p.items() if k in public_keys} for p in selection[key]]
+    digest = fingerprint(block)
+    previous = evidence_pack.get("reply_authority_snapshot")
+    if previous and previous.get("sha256") == digest:
+        return deepcopy(previous["content"])
+    if previous:
+        old_query = ((previous["content"].get("catalog_protocol") or {}).get("receipt") or {}).get("query_id")
+        if old_query == receipt.get("query_id"):
+            raise ValueError("reply_authority_changed_within_attempt")
+    evidence_pack["reply_authority_snapshot"] = {"sha256": digest, "content": deepcopy(block), "input_limit_known": False}
+    return block
+
+
+def prepare_policy_reference_map(plan: dict, evidence_pack: dict) -> dict:
+    """Program-owned locations/citations; sentence splitting never rewrites text."""
+    from apps.wechat_ai_customer_service.workflows.catalog_query import fingerprint
+    segments = plan.get("reply_segments") or []
+    sources = formal_knowledge_source_table(evidence_pack)
+    statements = {}
+    for index, text in enumerate(segments):
+        for match in re.finditer(r".+?(?:[。！？!?；;\n]+|$)", text, re.S):
+            if match.group().strip():
+                statements[f"S{len(statements)+1}"] = {
+                    "segment_index": index, "start": match.start(), "end": match.end(), "text": match.group(),
+                }
+    mapping = {"statements": statements,
+               "knowledge": {f"K{i}": deepcopy(sources[key]) for i, key in enumerate(sorted(sources), 1)},
+               "reply_sha256": fingerprint(segments), "knowledge_sha256": fingerprint(sources)}
+    evidence_pack["policy_reference_map"] = deepcopy(mapping)
+    return mapping
 _MANAGED_KNOWLEDGE_QUERY_STOP_TERMS = {
     # These terms are commonly present in the mechanical ``客户：`` history
     # prefix or in generic policy prose.  They must not make every managed
@@ -994,10 +1083,7 @@ def compact_message(message: dict[str, Any]) -> dict[str, Any]:
             or message.get("occurred_at")
             or ""
         ),
-        "content": truncate_text(
-            str(message.get("semantic_text") or message.get("content") or ""),
-            600,
-        ),
+        "content": str(message.get("semantic_text") or message.get("content") or ""),
     }
 
 
@@ -2364,6 +2450,7 @@ def flatten_text_values(value: Any) -> list[str]:
 
 
 def catalog_product_payload(item: dict[str, Any]) -> dict[str, Any]:
+    from apps.wechat_ai_customer_service.adapters.vehicle_fields import public_vehicle_details
     data = item.get("data", {}) or {}
     backend_vehicle = (item.get("source") or {}).get("type") == "chejin_backend"
     return {
@@ -2376,6 +2463,7 @@ def catalog_product_payload(item: dict[str, Any]) -> dict[str, Any]:
         "category": data.get("category"),
         "aliases": list(data.get("aliases", []) or [])[:10],
         "specs": vehicle_specs_for_evidence(item) if backend_vehicle else truncate_text(str(data.get("specs") or ""), 260),
+        **({"public_details": public_vehicle_details(data)} if backend_vehicle else {}),
         "price": data.get("price"),
         "unit": data.get("unit"),
         "stock": data.get("inventory"),

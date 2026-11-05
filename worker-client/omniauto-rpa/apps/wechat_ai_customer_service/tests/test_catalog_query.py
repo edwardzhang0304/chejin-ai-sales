@@ -53,14 +53,16 @@ def test_filters_before_any_limit_across_pages_and_old_references(reverse):
 @pytest.mark.parametrize('state',['unlimited','not_mentioned','uncertain'])
 def test_budget_states_are_distinct(state):
     r=execute(query(budget={'state':state,'unit':'万元','source_ids':['m1']}),[row('a',3),row('b',10)])
-    assert r['match_count']==(0 if state=='uncertain' else 2)
+    assert r['match_count']==(None if state=='uncertain' else 2)
+    assert r['evaluation_state']==('clarification_required' if state=='uncertain' else 'complete')
     assert r['requirement_uncertain']==(state=='uncertain')
 
 
 def test_unknown_fields_unsupported_conditions_and_empty_inventory_differ():
     q=query(filters=[{'field':'mileage_km','op':'lte','value':60000,'source_ids':['m1']}],unsupported_requirements=['无大修'])
     r=execute(q,[row('a',3),row('b',3,mileage_km=50000)])
-    assert r['unknown_fields']=={'a':['mileage_km']} and r['match_count']==1
+    assert r['unknown_fields']=={'a':['mileage_km']} and r['match_count'] is None
+    assert r['known_condition_match_count']==1 and r['evaluation_state']=='clarification_required'
     assert r['unsupported_requirements']==['无大修']
     empty=execute(q,[]);assert empty['scan_complete'] and empty['scanned_count']==0 and not empty['unknown_fields']
 
@@ -97,7 +99,12 @@ def test_storage_failure_not_empty_inventory_and_second_query_rejected():
     bad=cq.run_catalog_round(first_result=first,settings={},brain_input=inp,run_llm=lambda **_:pytest.fail('must not call'),runtime_factory=lambda:Broken([]))
     assert bad['error']=='catalog_query_unavailable' and not pack['catalog_protocol'].get('receipt')
     repeat=cq.run_catalog_round(first_result=first,settings={},brain_input=inp,run_llm=lambda **_:first,runtime_factory=lambda:Runtime([row('a',3)]))
-    assert repeat['error']=='catalog_second_query_or_forged_receipt'
+    # Completion HTTP succeeded; the actual content error must reach Brain's
+    # validator/finite repair path, never be mislabeled as provider failure.
+    rejection=brain.validate_plan_against_evidence(brain.normalize_brain_plan(repeat['brain_plan']),pack)
+    assert not rejection['ok'] and rejection['errors']==['catalog_intermediate_or_forged_receipt_not_sendable']
+    assert repeat['catalog_stages']['completion_validation']['error_codes']==rejection['errors']
+    assert repeat['catalog_stages']['completion_validation']['candidate']==first['brain_plan']
 
 
 def test_catalog_changed_during_reply_never_passes():

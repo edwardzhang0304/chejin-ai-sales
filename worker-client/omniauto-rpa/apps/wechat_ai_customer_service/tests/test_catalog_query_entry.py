@@ -11,7 +11,8 @@ import reply_evidence_builder as legacy_ev
 
 def review(kind='vehicle_facts', **changes):
     value={'verdict':'pass','catalog_claim_kind':kind,'confidence':0.95,'semantic_errors':[],
-           'hard_boundary_concerns':[],'customer_visible_risk':'low','repair_instruction':'','reason':'合成审核'}
+           'hard_boundary_concerns':[],'customer_visible_risk':'low','repair_instruction':'','reason':'合成审核',
+           'policy_refs':{}}
     value.update(changes);return value
 
 
@@ -178,7 +179,7 @@ def test_missing_empty_budget_source_normalizes_only_not_mentioned():
 
 
 @pytest.mark.parametrize('initial_failure',['confidence','price'])
-@pytest.mark.parametrize('final_review',['pass','reject','unavailable','changed_reply','changed_receipt'])
+@pytest.mark.parametrize('final_review',['pass','reject','unavailable','invalid_review','changed_reply','changed_receipt'])
 def test_second_guard_repair_gets_fresh_semantic_review(monkeypatch, initial_failure, final_review):
     runner=fixtures.brain_module
     original=runner.review_brain_reply_semantics
@@ -186,9 +187,10 @@ def test_second_guard_repair_gets_fresh_semantic_review(monkeypatch, initial_fai
     final_text='合成车fit报价3.58万，您可以先了解一下。'
     def audited(**kwargs):
         final=kwargs['plan']['reply_segments']==[final_text]
-        if final and final_review in ('reject','unavailable'):
+        if final and final_review in ('reject','unavailable','invalid_review'):
             kwargs['settings']={**kwargs['settings'],'semantic_reviewer_result':
-                review(verdict='repair',semantic_errors=['合成审核拒绝']) if final_review=='reject' else {'status':'error','error':'synthetic timeout'}}
+                review(verdict='repair',semantic_errors=['合成审核拒绝']) if final_review=='reject' else
+                {'status':'error','error':'synthetic invalid review','error_kind':'protocol'} if final_review=='invalid_review' else {'status':'error','error':'synthetic timeout'}}
         result=original(**kwargs)
         observed.append((kwargs['plan']['reply_segments'][:], result.get('ok')))
         if final and final_review=='changed_reply':
@@ -211,7 +213,21 @@ def test_second_guard_repair_gets_fresh_semantic_review(monkeypatch, initial_fai
     assert len(produced)==3 and len(calls)==4
     assert any(text==[final_text] for text,ok in observed),observed
     assert bool(result.get('adoptable')) is (final_review=='pass'),result
-    if final_review in ('reject','unavailable'):
+    category=result['model_call_accounting']['failure_category']
+    if final_review=='pass':assert category=='success'
+    elif final_review=='unavailable':assert category=='service_unavailable'
+    elif final_review=='invalid_review':assert category=='output_format'
+    else:assert category=='content_review'
+    if final_review in ('reject','unavailable','invalid_review'):
         assert result['post_guard_quality_gate_v2']['ok'] is False
     elif final_review.startswith('changed_'):
         assert result['guard_repaired_guard']['reason']=='catalog_semantic_clearance_missing_or_stale'
+
+
+@pytest.mark.parametrize('mode',['brain_first','shadow'])
+def test_successful_model_and_review_do_not_imply_adopted_turn(mode,monkeypatch):
+    result,calls=run_entry(monkeypatch,rows=[],make_plan=summary_plan,semantic=review('query_summary'),
+                           raw_query=query(),config_changes={'mode':mode})
+    assert calls and result['llm_status']['ok'] and result['quality_gate_v2']['ok']
+    assert result['adoptable']==(mode=='brain_first')
+    assert (result['model_call_accounting']['failure_category']=='success')==(mode=='brain_first')

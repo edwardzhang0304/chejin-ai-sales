@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import hashlib
 import json
 import os
 import shutil
@@ -28,6 +29,8 @@ _PROVIDER_PROGRESS_STRING_FIELDS = {
     "call_id",
     "result_class",
     "provider_request_id",
+    "parent_call_id",
+    "phase",
 }
 
 
@@ -109,6 +112,8 @@ def _read_provider_progress(path: Path, *, progress_id: str) -> list[dict]:
                 event[key] = max(0, int(raw[key]))
             except (TypeError, ValueError):
                 continue
+        if "remaining_budget_seconds" in raw and type(raw["remaining_budget_seconds"]) in {int, float}:
+            event["remaining_budget_seconds"] = max(0.0, float(raw["remaining_budget_seconds"]))
         if "timeout_seconds" in raw:
             try:
                 event["timeout_seconds"] = max(
@@ -366,6 +371,19 @@ def _brain_retry_instruction(message_batch: dict) -> str:
     if error_code == "REPLY_SEQUENCE_REWRITE_REQUIRED":
         from app.services.reply_sequence_policy import sequence_instruction
         return sequence_instruction()
+    if error_code == "AI_ENGINE_CATALOG_QUERY_INVALID":
+        native = (previous.get("raw_payload") or {}).get("omniauto_brain_result") or {}
+        failure = (native.get("catalog_stages") or {}).get("validation_error") or {}
+        # This is server-owned, bounded validator metadata, not a rejected draft
+        # or customer text. The normal query protocol remains the sole schema.
+        return (
+            "上轮模型已返回，但查车指令未通过本地协议校验，尚未查询库存。"
+            "请按本轮catalog_query协议重新生成完整指令，修正下列错误后由程序重新严格校验；"
+            "不要编造库存结果或改变客户条件与预算含义；不支持的条件按协议显式保留，必要时澄清。"
+            "校验信息："
+            + json.dumps({"code": failure.get("code"), "fields": failure.get("fields", [])}, ensure_ascii=False)[:1000]
+            + "\n" + str(failure.get("repair_instruction") or "")[:2500]
+        )
     if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
         return ""
     return NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION
@@ -494,6 +512,12 @@ class RealOmniAutoAIEngineAdapter:
         from app.services.reply_sequence_policy import sequence_policy
         brain.update(sequence_policy())
         config["customer_service_brain"] = brain
+        config["_brain_config_source"] = {"source":"C3_OMNIAUTO_CONFIG_PATH",
+                                          "effective_brain_sha256":hashlib.sha256(json.dumps(brain,sort_keys=True).encode()).hexdigest(),
+                                          "backend_overrides":[key for key,value in {
+                                              "C3_OMNIAUTO_PROVIDER":settings.c3_omniauto_provider,
+                                              "C3_OMNIAUTO_MODEL":settings.c3_omniauto_model,
+                                              "C3_OMNIAUTO_BASE_URL":settings.c3_omniauto_base_url}.items() if value]}
         return config
 
     @staticmethod
@@ -709,12 +733,23 @@ class RealOmniAutoAIEngineAdapter:
         # Brain runtime, configuration, credentials, or Provider path until
         # the frozen MessageEvent snapshot has passed the sole bridge.
         self._load_brain()
+        catalog = importlib.import_module("apps.wechat_ai_customer_service.workflows.catalog_query")
+        try:
+            catalog.model_contract(conversation_context)
+        except catalog.CatalogQueryError as exc:
+            raise AppError("AI_ENGINE_CATALOG_QUERY_INVALID", "冻结的模型查询合同无效", 503,
+                           {"code": str(exc), "fields": exc.fields}) from exc
         config = self._load_config()
         self._require_api_key(config)
         combined = "\n".join(str(item.get("content") or "").strip() for item in messages).strip()
         target_name = str(conversation_context.get("remark_code") or conversation_context.get("conversation_id") or "customer")
         target_state = {
+            **({"model_query_contract": conversation_context["model_query_contract"]}
+               if "model_query_contract" in conversation_context else {}),
             "conversation_id": conversation_context.get("conversation_id"),
+            "generation_identity": {"conversation_id":conversation_context.get("conversation_id"),
+                                    "batch_id":message_batch.get("id"), "generation_attempt":message_batch.get("generation_attempt"),
+                                    "recall_cycle_id":message_batch.get("recall_cycle_id")},
             # This marker is independent of the projected payload on purpose:
             # if a later refactor drops ``chejin_brain_context``, both normal
             # and fast Brain paths must fail closed instead of reading
@@ -778,6 +813,15 @@ class RealOmniAutoAIEngineAdapter:
         risk_flags = list(plan.get("risk_flags") or [])
         confidence = plan.get("confidence")
         raw_payload = {"omniauto_brain_result": result}
+
+        if result.get("adoptable") and result.get("reply_text") and target_state.get("model_query_contract") == "vehicle_need_v2":
+            from apps.wechat_ai_customer_service.workflows.catalog_query import serialized_clearance_valid
+            if not (result.get("catalog_protocol") or {}).get("preparation") or not serialized_clearance_valid(result, require_current=True):
+                return AIEngineDecision(
+                    decision="retry_later", guard_result="failed",
+                    error_code="AI_ENGINE_REVIEWED_CONTENT_CHANGED", suggested_action="retry_later",
+                    raw_payload=raw_payload,
+                )
 
         hard_opt_out = result.get("hard_opt_out") if isinstance(result.get("hard_opt_out"), dict) else {}
         if (
@@ -942,21 +986,30 @@ class RealOmniAutoAIEngineAdapter:
         no_visible_reply = result.get("no_visible_reply") if isinstance(result.get("no_visible_reply"), dict) else {}
         if rule_name == "customer_service_brain_no_visible_reply" or no_visible_reply:
             no_visible_class = str(no_visible_reply.get("class") or result.get("no_visible_reply_class") or "").strip().lower()
+            if no_visible_class == "input_capacity_exceeded":
+                # An unchanged over-limit prompt cannot recover through the
+                # ordinary retry queue. Use the existing single handoff path.
+                return AIEngineDecision(
+                    decision="handoff", confidence=confidence, risk_flags=risk_flags,
+                    evidence_refs=evidence_refs, guard_result="failed",
+                    error_code="AI_ENGINE_INPUT_CAPACITY_EXCEEDED",
+                    suggested_action="handoff", raw_payload=raw_payload,
+                )
             return AIEngineDecision(
                 decision="retry_later",
                 confidence=confidence,
                 risk_flags=risk_flags,
                 evidence_refs=evidence_refs,
                 guard_result="failed",
-                error_code=(
-                    "AI_ENGINE_PROVIDER_TIMEOUT"
-                    if no_visible_class == "llm_timeout"
-                    else (
-                        "AI_ENGINE_PROVIDER_FAILED"
-                        if no_visible_class == "llm_unavailable"
-                        else "AI_ENGINE_NO_VISIBLE_REPLY"
-                    )
-                ),
+                error_code={
+                    "llm_timeout": "AI_ENGINE_PROVIDER_TIMEOUT",
+                    "llm_unavailable": "AI_ENGINE_PROVIDER_FAILED",
+                    "llm_invalid_response": "AI_ENGINE_RESPONSE_INVALID",
+                    "review_timeout": "AI_ENGINE_REVIEW_TIMEOUT",
+                    "review_unavailable": "AI_ENGINE_REVIEW_UNAVAILABLE",
+                    "review_invalid_response": "AI_ENGINE_REVIEW_INVALID_RESPONSE",
+                    "catalog_query_invalid": "AI_ENGINE_CATALOG_QUERY_INVALID",
+                }.get(no_visible_class, "AI_ENGINE_NO_VISIBLE_REPLY"),
                 suggested_action="retry_later",
                 raw_payload=raw_payload,
             )

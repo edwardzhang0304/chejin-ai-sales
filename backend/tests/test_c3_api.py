@@ -328,17 +328,17 @@ def _create_lead(name: str = "王先生", phone: str = "13896676678", remark_cod
     return response.json()["data"]
 
 
-def _scan(worker: dict, remark_code: str = "C3TEST01") -> dict:
+def _scan(worker: dict, remark_code: str = "C3TEST01", *, rpa_session_key: str = "wx-c3-row-001", scan_id: str = "scan-c3-001") -> dict:
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
         json={
-            "scan_id": "scan-c3-001",
+            "scan_id": scan_id,
             "sidecar_run_id": "sidecar-c3-001",
             "started_at": "2026-06-23T10:00:00+08:00",
             "finished_at": "2026-06-23T10:00:02+08:00",
             "sessions": [
                 {
-                    "rpa_session_key": "wx-c3-row-001",
+                    "rpa_session_key": rpa_session_key,
                     "display_name": f"{remark_code} 王先生",
                     "remark_code_candidates": [remark_code],
                     "row_fingerprint": "wx-c3-row-fp-001",
@@ -351,7 +351,8 @@ def _scan(worker: dict, remark_code: str = "C3TEST01") -> dict:
         headers=_worker_headers(worker),
     )
     assert response.status_code == 200
-    return response.json()["data"]["bindings"][0]
+    return next(item for item in response.json()["data"]["bindings"]
+                if item["rpa_session_key"] == rpa_session_key)
 
 
 def _setup_bound_conversation() -> tuple[dict, dict]:
@@ -397,6 +398,7 @@ def _ingest_with_role(
     continuation: dict[str, str] = {}
     with SessionLocal() as db:
         binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
+        rpa_session_key = binding.rpa_session_key
         remark_code = binding.remark_code
         authorization_revision = _authorization_revision(binding)
         unread_generation = int(binding.unread_generation or 0)
@@ -510,7 +512,7 @@ def _ingest_with_role(
             "read_run_id": read_run_id,
             "conversation_id": conversation_id,
             "remark_code": remark_code,
-            "rpa_session_key": "wx-c3-row-001",
+            "rpa_session_key": rpa_session_key,
                 "authorization_revision": authorization_revision,
                 "unread_generation": unread_generation,
             "messages": [
@@ -3224,10 +3226,13 @@ def test_brain_retry_and_terminal_handoff_preserve_each_attempt_evidence(
     first = _generate(batch_id)
     assert first["decision"] == "retry_later"
     with SessionLocal() as db:
+        due = db.get(MessageBatch, batch_id).generated_at + timedelta(
+            seconds=c3_service.get_settings().c3_batch_retry_delay_seconds + 1
+        )
+        monkeypatch.setattr(c3_service, "utcnow", lambda: due)
         claim = c3_service.claim_message_batch_generation(
             db,
             batch_id=batch_id,
-            force=True,
         )
         assert claim["run"] is True
         assert claim["attempt"] == 2
@@ -4797,7 +4802,8 @@ def test_brain_provider_does_not_hold_batch_lock_and_stale_result_is_discarded(
         row = db.get(MessageBatch, batch["batch_id"])
         assert row.status == "superseded"
         history = row.ai_response_snapshot["generation_attempt_history"]
-        stale_attempts = [item for item in history if item["attempt"] == 0]
+        assert row.generation_attempt_count == 1
+        stale_attempts = [item for item in history if item["attempt"] == 1]
         assert len(stale_attempts) == 1
         assert stale_attempts[0]["response"]["decision"] == "discarded_stale"
         assert stale_attempts[0]["response"]["reply_text"] is None
@@ -4825,7 +4831,7 @@ def test_hard_timeout_and_concurrent_supersede_persist_progress_without_reply(
     _reset_batch_to_generation_state(
         batch["batch_id"],
         status="collecting",
-        generation_attempt_count=2,
+        generation_attempt_count=1,
     )
 
     sleeper = tmp_path / "semantic_reviewer_timeout.py"

@@ -54,7 +54,7 @@ def test_c3_only_complete_generation_creates_reply_task(monkeypatch, repair_firs
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             reviewer = payload["model"] == "isolated-reviewer"
             if reviewer:
-                content = json.dumps({"verdict": "pass", "confidence": 1.0, "semantic_errors": [], "hard_boundary_concerns": [], "customer_visible_risk": "low", "repair_instruction": "", "reason": "Complete synthetic review"})
+                content = json.dumps({"verdict": "pass", "catalog_claim_kind": "non_inventory", "confidence": 1.0, "semantic_errors": [], "hard_boundary_concerns": [], "customer_visible_risk": "low", "repair_instruction": "", "reason": "Complete synthetic review"})
                 finish = "stop"
             else:
                 calls.append(payload)

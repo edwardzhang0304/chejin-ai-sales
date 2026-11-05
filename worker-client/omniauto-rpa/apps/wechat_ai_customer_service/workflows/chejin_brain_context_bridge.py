@@ -62,7 +62,7 @@ def _clean_text(value: Any, limit: int = 4000) -> str:
 def canonical_prior_message(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ChejinBrainContextError("prior_message_not_object")
-    allowed = set(BASE_MESSAGE_FIELDS)
+    allowed = set(BASE_MESSAGE_FIELDS) | {"confirmed_reply"}
     if str(value.get("message_type") or "").strip().lower() == "image":
         allowed.update(IMAGE_MESSAGE_FIELDS)
     if set(value) - allowed:
@@ -81,6 +81,13 @@ def canonical_prior_message(value: dict[str, Any]) -> dict[str, Any]:
         raise ChejinBrainContextError("prior_message_identity_missing")
     if item["sender_role"] not in {"customer", "self", "system", "unknown"}:
         raise ChejinBrainContextError("prior_message_role_invalid")
+    if "confirmed_reply" in value:
+        proof = value["confirmed_reply"]
+        if (item["sender_role"] != "self" or not isinstance(proof,dict)
+                or any(not isinstance(proof.get(k),str) or not proof[k] for k in ("action","batch","native"))
+                or not isinstance(proof.get("vehicles"),list) or not all(isinstance(v,str) and v for v in proof["vehicles"])):
+            raise ChejinBrainContextError("invalid_confirmed_reply")
+        item["confirmed_reply"] = {k:proof[k] for k in ("action","batch","native","vehicles")}
     if item["message_type"] == "image":
         ocr = value.get("image_ocr_text")
         if ocr is None:

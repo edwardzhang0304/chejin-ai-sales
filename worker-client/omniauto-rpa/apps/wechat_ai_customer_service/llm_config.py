@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from functools import wraps
 import os
 import ssl
 import threading
@@ -76,16 +78,159 @@ _LLM_TOTAL_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
     default=None,
 )
 
+_LLM_AUDIT: ContextVar[dict | None] = ContextVar("llm_call_audit", default=None)
+_LLM_CALL: ContextVar[str | None] = ContextVar("llm_parent_call", default=None)
+_LLM_PHASE: ContextVar[str] = ContextVar("llm_phase", default="understanding")
+
+
+def ai_failure_category(result: dict) -> str:
+    """Shared diagnostic classification; it never grants retry/send permission."""
+    kind = result.get("error_kind")
+    kind = kind if isinstance(kind, str) else None
+    if kind == "input_capacity_exceeded":
+        return "input_capacity_exceeded"
+    # HTTPError is the real producer kind for provider refusal (including
+    # throttling/5xx); retain its status/reason, without granting any retry.
+    if kind in {"http", "transport", "configuration"} or result.get("wall_timeout"):
+        return "service_unavailable"
+    if kind in {"protocol", "brain_output_parse"}:
+        return "output_format"
+    if kind == "catalog_query_validation":
+        return "query_contract"
+    if result.get("error") == "catalog_changed_during_generation":
+        return "inventory_changed"
+    if kind in {"internal", "catalog_query_execution"}:
+        return "execution_failure"
+    if result.get("unavailable"):
+        return "service_unavailable"
+    if result.get("ok") is True:
+        return "success"
+    if result.get("verdict") in {"repair", "block", "handoff_suggest"}:
+        return "content_review"
+    if result.get("status") == "skipped":
+        return "skipped"
+    return "execution_failure"
+
+
+def requires_technical_recovery(result: dict) -> bool:
+    """A missing valid result cannot be repaired by rewriting customer content."""
+    return bool(not result.get("ok") and (result.get("unavailable") or result.get("error_kind"))
+                and ai_failure_category(result) in {"service_unavailable", "output_format", "query_contract", "execution_failure", "inventory_changed", "input_capacity_exceeded"})
+
 
 @contextmanager
-def llm_total_time_budget(total_seconds: int | float) -> Iterator[None]:
-    """Apply one shared wall-clock budget to every LLM call in this context."""
-
-    seconds = max(0.05, float(total_seconds))
-    token = _LLM_TOTAL_DEADLINE_MONOTONIC.set(time.monotonic() + seconds)
+def llm_stage_context(phase: str):
+    token = _LLM_PHASE.set(phase)
     try:
         yield
     finally:
+        _LLM_PHASE.reset(token)
+
+
+def _record_http_attempt(*, stage, route, event, provider, model, timeout_seconds,
+                         call_id, elapsed_ms=None, result=None):
+    audit = _LLM_AUDIT.get()
+    if audit is None:
+        return
+    if event == "started":
+        audit["http_attempt_count"] += 1
+        if len(audit["http_attempts"]) >= 256:
+            audit["omitted_http_attempts"] += 1
+            return
+        audit["http_attempts"].append({
+            "call_id": call_id, "parent_call_id": _LLM_CALL.get(),
+            "phase": _LLM_PHASE.get(), "stage": stage, "route": route,
+            "provider": str(provider), "model": str(model),
+            "started_at_unix_ms": int(time.time()*1000), "timeout_seconds": timeout_seconds,
+            "remaining_budget_seconds": llm_total_time_budget_remaining_seconds(), "status": "inflight",
+        })
+    elif event == "finished":
+        item = next((x for x in reversed(audit["http_attempts"]) if x["call_id"] == call_id), None)
+        if item is not None:
+            item.update(finished_at_unix_ms=int(time.time()*1000), elapsed_ms=elapsed_ms,
+                        status=(result or {}).get("status"), failure_category=ai_failure_category(result or {}),
+                        error_kind=(result or {}).get("error_kind"),
+                        remaining_budget_seconds=llm_total_time_budget_remaining_seconds())
+            usage = (result or {}).get("usage") or {}
+            item["usage"] = {k:v for k,v in usage.items() if k in {"prompt_tokens","completion_tokens","total_tokens"} and type(v) is int and v>=0} if isinstance(usage,dict) else {}
+
+
+def _account_llm_call(function):
+    @wraps(function)
+    def recorded(**kwargs):
+        audit = _LLM_AUDIT.get()
+        if audit is None:
+            return function(**kwargs)
+        audit["logical_call_count"] += 1
+        started = time.monotonic()
+        call_id = uuid.uuid4().hex
+        try:
+            wire = json.dumps(kwargs.get("messages", []), ensure_ascii=False, sort_keys=True)
+            input_hash = hashlib.sha256(wire.encode()).hexdigest()
+        except Exception:
+            # Observability must never alter a model result or retry opportunity.
+            audit["diagnostic_errors"] = audit.get("diagnostic_errors", 0) + 1
+            wire, input_hash = "", None
+        item = {"call_id": call_id, "parent_call_id": _LLM_CALL.get() or audit["turn_id"],
+                "phase": _LLM_PHASE.get(), "stage": kwargs.get("progress_stage") or "llm_request",
+                "started_at_unix_ms": int(time.time()*1000),
+                "input_sha256": input_hash, "input_chars": len(wire),
+                "max_tokens": kwargs.get("max_tokens"), "temperature": kwargs.get("temperature"),
+                "json_mode": kwargs.get("json_mode", False), "tier": kwargs.get("tier", "flash"),
+                "requested_timeout_seconds": kwargs.get("timeout"),
+                "requested_fallback_timeout_seconds": kwargs.get("fallback_timeout"),
+                "remaining_before_seconds": llm_total_time_budget_remaining_seconds()}
+        if len(audit["logical_calls"]) < 256:
+            audit["logical_calls"].append(item)
+        else:
+            audit["omitted_logical_calls"] += 1
+        stage = str(kwargs.get("progress_stage") or "")
+        phase = "review" if stage == "semantic_reviewer" else "content_repair" if stage.startswith(("brain_repair", "brain_quality_repair", "repair_llm")) else _LLM_PHASE.get()
+        item["phase"] = phase
+        phase_token = _LLM_PHASE.set(phase)
+        token = _LLM_CALL.set(call_id)
+        result = {}
+        try:
+            result = function(**kwargs)
+            return result
+        finally:
+            try:
+                item.update(finished_at_unix_ms=int(time.time()*1000), elapsed_ms=max(0,round((time.monotonic()-started)*1000)),
+                            remaining_after_seconds=llm_total_time_budget_remaining_seconds(),
+                            failure_category=ai_failure_category(result), status=result.get("status"),
+                            failover_reason=(result.get("failover") or {}).get("reason"))
+            except Exception:
+                audit["diagnostic_errors"] = audit.get("diagnostic_errors", 0) + 1
+            finally:
+                _LLM_CALL.reset(token)
+                _LLM_PHASE.reset(phase_token)
+    return recorded
+
+
+@contextmanager
+def llm_total_time_budget(total_seconds: int | float) -> Iterator[dict]:
+    """Apply one shared wall-clock budget to every LLM call in this context."""
+
+    seconds = max(0.05, float(total_seconds))
+    existing = _LLM_TOTAL_DEADLINE_MONOTONIC.get()
+    deadline = time.monotonic() + seconds
+    token = _LLM_TOTAL_DEADLINE_MONOTONIC.set(min(existing, deadline) if existing is not None else deadline)
+    parent = _LLM_AUDIT.get()
+    audit = parent if parent is not None else {
+        "schema_version": 1, "turn_id": uuid.uuid4().hex, "budget_seconds": seconds, "started_at_unix_ms": int(time.time()*1000),
+        "logical_call_count": 0, "http_attempt_count": 0,
+        "http_count_basis": "transport_entry_attempts_not_confirmed_provider_receipts",
+        "omitted_logical_calls": 0, "omitted_http_attempts": 0, "logical_calls": [], "http_attempts": [],
+    }
+    audit_token = _LLM_AUDIT.set(audit)
+    started = time.monotonic()
+    try:
+        yield audit
+    finally:
+        if parent is None:
+            audit.update(finished_at_unix_ms=int(time.time()*1000), elapsed_ms=max(0,round((time.monotonic()-started)*1000)),
+                         remaining_budget_seconds=llm_total_time_budget_remaining_seconds())
+        _LLM_AUDIT.reset(audit_token)
         _LLM_TOTAL_DEADLINE_MONOTONIC.reset(token)
 
 
@@ -181,6 +326,8 @@ def _emit_llm_progress_event(
         "model": _safe_progress_label(model, fallback="unknown"),
         "timeout_seconds": max(1.0, float(timeout_seconds)),
         "call_id": _safe_progress_label(call_id, fallback="unknown"),
+        "parent_call_id": _LLM_CALL.get(), "phase": _LLM_PHASE.get(),
+        "remaining_budget_seconds": llm_total_time_budget_remaining_seconds(),
         "occurred_at_unix_ms": int(round(time.time() * 1000)),
     }
     if elapsed_ms is not None:
@@ -218,6 +365,13 @@ def emit_llm_progress_event(
 ) -> None:
     """Best-effort wrapper: diagnostics can never change the LLM result."""
 
+    try:
+        _record_http_attempt(stage=stage, route=route, event=event, provider=provider, model=model,
+                             timeout_seconds=timeout_seconds, call_id=call_id, elapsed_ms=elapsed_ms, result=result)
+    except Exception:
+        audit = _LLM_AUDIT.get()
+        if audit is not None:
+            audit["diagnostic_errors"] = audit.get("diagnostic_errors", 0) + 1
     try:
         _emit_llm_progress_event(
             stage=stage,
@@ -910,7 +1064,7 @@ def is_transient_llm_failure(result: dict[str, Any] | None) -> bool:
 def is_failoverable_llm_failure(result: dict[str, Any] | None) -> bool:
     """Return True when a failed primary route is worth retrying on fallback."""
 
-    if (result or {}).get("error_kind") == "protocol":
+    if (result or {}).get("error_kind") in {"protocol", "input_capacity_exceeded"}:
         return False
     if is_transient_llm_failure(result):
         return True
@@ -922,6 +1076,15 @@ def is_failoverable_llm_failure(result: dict[str, Any] | None) -> bool:
     if any(marker in text for marker in MODEL_UNAVAILABLE_LLM_ERROR_MARKERS):
         return True
     return any(marker in text for marker in GATEWAY_FAILOVERABLE_LLM_ERROR_MARKERS)
+
+
+def provider_input_capacity_error(body: str) -> bool:
+    """Recognize an explicit provider limit, never estimate one from our output budget."""
+    text = body.lower()
+    return any(marker in text for marker in (
+        "context_length_exceeded", "max_input_tokens_exceeded", "prompt is too long",
+        "input is too long", "maximum context length", "exceeds the context window",
+    ))
 
 
 _MISSING_RESPONSE_FIELD = object()
@@ -1171,7 +1334,7 @@ def call_llm_request_once(
             "base_url": normalize_llm_base_url(base_url),
             "status": int(getattr(exc, "code", 0) or 0),
             "error": body[:1000],
-            "error_kind": "http",
+            "error_kind": "input_capacity_exceeded" if provider_input_capacity_error(body) else "http",
             "response_diagnostics": diagnostics,
             "request_style": request_style,
         }
@@ -1230,6 +1393,7 @@ def call_llm_request_once_with_wall_timeout(
     }
 
 
+@_account_llm_call
 def call_llm_request_with_failover(
     *,
     provider: Any,
