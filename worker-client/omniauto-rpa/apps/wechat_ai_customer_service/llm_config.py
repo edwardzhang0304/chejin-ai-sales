@@ -1366,10 +1366,16 @@ def call_llm_request_once(
         trace.mark("reading_error_body", http_status=int(getattr(exc, "code", 0) or 0),
                    headers_received_ms=trace.snapshot()["request_elapsed_ms"],
                    provider_request_id=_provider_request_id_from_response(exc))
-        raw_error = exc.read()
-        body = raw_error.decode("utf-8", errors="replace")
+        try:
+            with exc:
+                raw_error = exc.read()
+        except Exception:  # noqa: BLE001 - a failed body cannot erase the known HTTP error
+            body = "http_error_body_read_failed"
+        else:
+            body = raw_error.decode("utf-8", errors="replace")
+            trace.mark("reading_error_body", body_bytes=len(raw_error), body_read_complete=True,
+                       body_completed_ms=trace.snapshot()["request_elapsed_ms"])
         diagnostics.update(trace.snapshot())
-        diagnostics.update(http_status=int(getattr(exc, "code", 0) or 0), body_bytes=len(raw_error), body_read_complete=True)
         result = {
             "ok": False,
             "provider": provider_id,
