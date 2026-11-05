@@ -682,17 +682,17 @@
     "chejin_same_review_policy_refs_and_serialized_clearance"
   ],
   "current_release": {
-    "version": "0.10.31",
-    "source_commit": "68cf55eec8122db27c61bc561e74560694a90dd0",
+    "version": "0.10.32",
+    "source_commit": "745c58465c9e200fc92ddcd8f9d7f5cfe4350495",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.31",
-    "contract_sha256": "151e28dc4e812e2b0274c8d7dce718547b382fe4f527c81016ad7d93c7c2ea16",
+    "contract_revision": "0.10.32",
+    "contract_sha256": "0cc8aebe9e00d0989122e5c048db2d8590db33e2310d76038619f93b0a85e0ca",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "0.10.31 five-branch reviewed candidate plus reviewed bounded friend discovery 68cf55ee; preserve-data manual installation."
+    "note": "Reviewed semantic fact routing and customer-scoped file isolation; preserve-data manual installation."
   },
   "historical_integrations": [
     {
