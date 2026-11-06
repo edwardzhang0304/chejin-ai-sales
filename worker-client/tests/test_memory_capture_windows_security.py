@@ -195,7 +195,20 @@ def test_request_failure_exports_fixed_security_facts_only(tmp_path, security, m
 @pytest.mark.skipif(os.name != 'nt', reason='requires native Windows owner/DACL APIs')
 def test_native_windows_created_channel_survives_restart(tmp_path):
     channel = cp.Channel(tmp_path)
-    channel.initialize()
+    try:
+        channel.initialize()
+    except cp.ChannelSecurityError as exc:
+        import win32api, win32con, win32security
+        token=win32security.OpenProcessToken(win32api.GetCurrentProcess(),win32con.TOKEN_QUERY)
+        try:
+            user=win32security.GetTokenInformation(token,win32security.TokenUser)[0]
+        finally:token.Close()
+        principals={str(user):'current_user'}
+        for kind,label in ((win32security.WinLocalSystemSid,'system'),(win32security.WinBuiltinAdministratorsSid,'admins')):
+            principals[str(win32security.CreateWellKnownSid(kind,None))]=label
+        acl=win32security.GetFileSecurity(str(channel.folder),win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+        entries=[{'kind':a[0][0],'flags':a[0][1],'mask':a[1],'principal':principals.get(str(a[-1]),'other')} for a in (acl.GetAce(i) for i in range(acl.GetAceCount()))]
+        pytest.fail(json.dumps({'security_facts':exc.security_facts,'acl_categories':entries}))
     channel.write(channel.requests / ('a'*32+'.json'), {'synthetic': 'preserved'})
     cp.Channel(tmp_path).initialize()
     assert channel.read(channel.requests / ('a'*32+'.json')) == {'synthetic': 'preserved'}
