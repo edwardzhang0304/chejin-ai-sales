@@ -20,25 +20,52 @@ def security(monkeypatch):
         def GetAce(self, index): return self.entries[index]
         def AddAccessAllowedAceEx(self, revision, flags, mask, sid):
             self.entries.append(((0, flags), mask, sid))
-    state = SimpleNamespace(owners={}, acls={}, writes=[], no_effect=False)
-    def descriptor(path, *_args):
+    state = SimpleNamespace(owners={}, acls={}, writes=[], no_effect=False, handles=[], calls=[])
+    class Handle:
+        def __init__(self, path):
+            self.path = path
+            self.fd = os.open(path, os.O_RDONLY)
+            self.closed = False
+        def Close(self):
+            if not self.closed: os.close(self.fd); self.closed = True
+    def open_directory(path, access, share, sa, disposition, flags, template):
+        assert share == 1 and flags == 0x02200000
+        assert disposition == 3
+        state.calls.append(('open', path, access))
+        h = Handle(path); state.handles.append(h); return h
+    def descriptor(handle, *_args):
+        path = handle.path
         return SimpleNamespace(GetSecurityDescriptorOwner=lambda: state.owners.get(path, 'admins'),
-            GetSecurityDescriptorDacl=lambda: state.acls.get(path, ACL([((0, 0), 0xffff, 'everyone')])))
-    def set_info(path, kind, flags, owner, group, acl, sacl):
+            GetSecurityDescriptorDacl=lambda: state.acls.get(path, ACL([
+                ((0, 0), 0xffff, 'user'), ((0, 0), 0xffff, 'system'), ((0, 0), 0xffff, 'admins')])))
+    def set_info(handle, kind, flags, owner, group, acl, sacl):
+        assert isinstance(handle, Handle), 'permission mutation must be handle-based'
+        path = handle.path
         state.writes.append(path)
+        state.calls.append(('set_owner' if owner else 'set_dacl', path))
         if not state.no_effect:
-            state.owners[path], state.acls[path] = owner, acl
-            Path(path).chmod(0o700)
+            if owner is not None: state.owners[path] = owner
+            if acl is not None:
+                assert all(a[0][1] == 0 for a in acl.entries), 'must not propagate to old child records'
+                state.acls[path] = acl
+                os.fchmod(handle.fd, 0o700)
     api = SimpleNamespace(ACL=ACL, OpenProcessToken=lambda *_: SimpleNamespace(Close=lambda: None),
         GetTokenInformation=lambda _, kind: ('user', 0) if kind == 1 else 'admins',
-        CreateWellKnownSid=lambda *_: 'system', GetNamedSecurityInfo=descriptor,
-        SetNamedSecurityInfo=set_info, TokenUser=1, TokenOwner=4, WinLocalSystemSid=22,
+        CreateWellKnownSid=lambda kind, _: 'system' if kind == 22 else 'admins', GetSecurityInfo=descriptor,
+        SetSecurityInfo=set_info, TokenUser=1, TokenOwner=4, WinLocalSystemSid=22,
+        WinBuiltinAdministratorsSid=26,
         SE_FILE_OBJECT=1, OWNER_SECURITY_INFORMATION=1, DACL_SECURITY_INFORMATION=4,
         PROTECTED_DACL_SECURITY_INFORMATION=0x80000000, ACL_REVISION=2, ACCESS_ALLOWED_ACE_TYPE=0)
     monkeypatch.setitem(sys.modules, 'win32api', SimpleNamespace(GetCurrentProcess=lambda: 1))
     monkeypatch.setitem(sys.modules, 'win32security', api)
+    monkeypatch.setitem(sys.modules, 'win32file', SimpleNamespace(CreateFile=open_directory,
+        GetFileInformationByHandle=lambda h: (0x400 if Path(h.path).is_symlink() else 0x10,)))
     monkeypatch.setitem(sys.modules, 'win32con', SimpleNamespace(TOKEN_QUERY=8,
-        OBJECT_INHERIT_ACE=1, CONTAINER_INHERIT_ACE=2, INHERIT_ONLY_ACE=8, FILE_ALL_ACCESS=0xffff))
+        OBJECT_INHERIT_ACE=1, CONTAINER_INHERIT_ACE=2, INHERIT_ONLY_ACE=8, FILE_ALL_ACCESS=0xffff,
+        FILE_READ_ATTRIBUTES=0x80, READ_CONTROL=0x20000, WRITE_DAC=0x40000, WRITE_OWNER=0x80000,
+        FILE_SHARE_READ=1, OPEN_EXISTING=3, FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
+        FILE_FLAG_OPEN_REPARSE_POINT=0x00200000, FILE_ATTRIBUTE_REPARSE_POINT=0x400,
+        FILE_ATTRIBUTE_DIRECTORY=0x10))
     state.ACL = ACL
     return state
 
@@ -55,7 +82,8 @@ def test_default_owner_startup_recovery_preserves_records(tmp_path, security, ex
     cp.windows_security(folder)
     assert security.owners[str(folder)] == 'user'
     assert original == {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()}
-    assert security.writes == [str(folder)]
+    assert security.writes.count(str(folder)) == 2
+    assert all(h.closed for h in security.handles)
 
 
 @pytest.mark.parametrize('case', ['foreign_owner', 'public_records', 'foreign_acl', 'requester'])
@@ -66,11 +94,11 @@ def test_no_ownership_takeover_or_untrusted_records(tmp_path, security, case):
         (folder / 'endpoint.json').write_bytes(b'untrusted original')
     if case == 'foreign_acl':
         security.acls[str(folder)] = security.ACL([((0, 0), 0xffff, 'foreign-user')])
-    with pytest.raises(cp.ChannelSecurityError, match='channel_owner_mismatch') as err:
+    with pytest.raises(cp.ChannelSecurityError, match=('channel_permissions_invalid' if case in ('public_records', 'foreign_acl') else 'channel_owner_mismatch')) as err:
         cp.windows_security(folder, initialize=case != 'requester')
     assert not security.writes
-    assert set(err.value.security_facts) == {'phase', 'owner_matches_user', 'owner_matches_default',
-                                           'private_acl', 'user_full_access'}
+    assert {'phase', 'owner_matches_user', 'owner_matches_default',
+            'private_acl', 'user_full_access'} <= set(err.value.security_facts)
 
 
 @pytest.mark.parametrize('entries', [[], [((0, 0), 1, 'user')], [((0, 8), 0xffff, 'user')],
@@ -85,12 +113,13 @@ def test_requester_requires_effective_private_user_access(tmp_path, security, en
 
 def test_failed_owner_update_cannot_publish_endpoint(tmp_path, security, monkeypatch):
     security.no_effect = True
-    monkeypatch.setattr(cp, 'restrict', lambda folder, created=False: cp.windows_security(folder, create=created, initialize=True))
+    monkeypatch.setattr(cp, 'WINDOWS', True)
     assert mc.install(tmp_path) is None
     assert not (tmp_path / 'runtime/memory-capture/endpoint.json').exists()
     gap = json.loads((tmp_path / 'artifacts/runtime/memory-capture-gap.json').read_text())
     assert gap['reason'] == 'channel_owner_mismatch'
-    assert gap['security_facts']['phase'] == 'validate'
+    assert gap['security_facts']['phase'] == 'initialize'
+    assert gap['security_facts']['stage'] == 'verify_security'
 
 
 def test_recovered_channel_to_actual_profile_and_export(tmp_path, security, monkeypatch):
@@ -102,7 +131,7 @@ def test_recovered_channel_to_actual_profile_and_export(tmp_path, security, monk
         'pid': os.getpid(), 'status': 'running'}))
     proof = root / 'transactions/original.json'; proof.parent.mkdir()
     proof.write_bytes(b'original unknown-send evidence')
-    monkeypatch.setattr(cp, 'restrict', lambda folder, created=False: cp.windows_security(folder, create=created, initialize=True))
+    monkeypatch.setattr(cp, 'WINDOWS', True)
     original_endpoint = cp.Channel.endpoint
     def endpoint(channel):
         for path in (channel.folder, channel.requests): cp.windows_security(path)
@@ -182,3 +211,29 @@ def test_native_windows_interrupted_empty_default_owner_bootstrap(tmp_path):
     channel = cp.Channel(tmp_path); channel.requests.mkdir(parents=True)
     cp.Channel(tmp_path).initialize()
     for folder in (channel.folder, channel.requests): cp.windows_security(folder)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='requires native Windows sharing and junction behavior')
+def test_native_windows_pins_hold_namespace_through_publication(tmp_path):
+    import subprocess
+    folder = tmp_path / 'runtime/memory-capture'
+    folder.mkdir(parents=True)
+    outside = tmp_path / 'outside'; outside.mkdir()
+    channel = cp.Channel(tmp_path)
+    with channel.initialization():
+        # Directory/ancestor rename must be denied while initialization holds pins.
+        for target in (folder, folder.parent):
+            with pytest.raises(OSError): target.rename(target.with_name(target.name + '-moved'))
+        value = {'schema': cp.SCHEMA, 'operation': 'memory_capture', 'target': {'synthetic': True}}
+        channel.publish(value)
+    assert channel.read(folder / 'endpoint.json') == value
+    # Existing reparse points must be rejected before any security mutation.
+    linkroot = tmp_path / 'junction-home'; (linkroot / 'runtime').mkdir(parents=True)
+    junction = linkroot / 'runtime/memory-capture'
+    subprocess.run(['cmd', '/d', '/c', 'mklink', '/J', str(junction), str(outside)], check=True, capture_output=True)
+    try:
+        with pytest.raises(ValueError, match='channel_link_boundary'):
+            cp.Channel(linkroot).initialize()
+        assert list(outside.iterdir()) == []
+    finally:
+        junction.rmdir()

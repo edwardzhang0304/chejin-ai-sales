@@ -35,13 +35,13 @@ class Coordinator:
         except Exception as exc:self.profile.gap(type(exc).__name__)
 
     def start(self, engineering_seconds=0):
-        self.channel.initialize()
-        marker = self.channel.read(self.channel.root / 'runtime/session.json')
-        self.target = {**protocol.identity(), 'runtime_session': marker.get('session_id')}
-        if marker.get('pid') != os.getpid() or marker.get('status') != 'running' or not self.target['runtime_session']:
-            raise ValueError('runtime_session_unavailable')
-        self.channel.write(self.channel.folder / 'endpoint.json', {
-            'schema': protocol.SCHEMA, 'operation': 'memory_capture', 'target': self.target})
+        with self.channel.initialization():
+            marker = self.channel.read(self.channel.root / 'runtime/session.json')
+            self.target = {**protocol.identity(), 'runtime_session': marker.get('session_id')}
+            if marker.get('pid') != os.getpid() or marker.get('status') != 'running' or not self.target['runtime_session']:
+                raise ValueError('runtime_session_unavailable')
+            self.channel.publish({
+                'schema': protocol.SCHEMA, 'operation': 'memory_capture', 'target': self.target})
         start_profile(self.channel.root, 0)  # unified explicit disabled marker, no tracer
         if engineering_seconds:self._begin(uuid.uuid4().hex, engineering_seconds)
         self.thread = threading.Thread(target=self._run, name='memory-capture-coordinator', daemon=True)
