@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from .hook_inbox import HookReceiveScope, decode_callback
+from .hook_voice_payload import has_voice_audio, voice_audio_bytes
 from .shared_rules import hook_contract_rules as rules
 
 ORDER_FIELDS = ("localId", "CreateTime", "Sequence", "MsgServerSeq", "MsgSequence")
@@ -126,20 +127,20 @@ def _project(message: dict[str, Any], *, scope: HookReceiveScope, event_uuid: st
             raise ValueError("HOOK_GROUP_EXCLUDED")
         if message_type == "unsupported":
             raise ValueError("HOOK_MESSAGE_TYPE_UNSUPPORTED")
-        if not history and message_type == "voice" and message.get("voice_data"):
+        if not history and message_type == "voice" and has_voice_audio(message):
             # Real audio supplements can have empty from/to. Resolve exclusively
             # through an already verified parent ID; never guess current peer.
-            audio_hex = message["voice_data"]
-            if not isinstance(audio_hex, str) or not re.fullmatch(r"(?:[0-9A-Fa-f]{2})+", audio_hex):
-                raise ValueError("HOOK_VOICE_AUDIO_INVALID")
-            audio = bytes.fromhex(audio_hex)
-            length = _decimal(message.get("voice_len"))
-            if length != str(len(audio)) or not audio.startswith(b"\x02#!SILK_V3"):
-                raise ValueError("HOOK_VOICE_AUDIO_INVALID")
+            audio = voice_audio_bytes(message)
             if mid is None:
                 raise ValueError("HOOK_MESSAGE_ID_REQUIRED")
             media_stage, audio_hash, audio_size = "audio_observed", hashlib.sha256(audio).hexdigest(), len(audio)
             disposition, reason = "parent_lookup_required", None
+            if body:
+                # Inline audio also carries the original parent. Do not discard
+                # its identity and wait for a second callback to create it.
+                if peer is None or direction == "unknown":
+                    raise ValueError("HOOK_PRIVATE_IDENTITY_REQUIRED")
+                disposition = "message_candidate"
         else:
             if peer is None or direction == "unknown":
                 raise ValueError("HOOK_PRIVATE_IDENTITY_REQUIRED")

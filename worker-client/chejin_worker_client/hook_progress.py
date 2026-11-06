@@ -45,6 +45,8 @@ NOTES = {
  'already_friend': '对方已是好友，沿原任务规则处理。',
  'history_wait': '消息尚未核对完整，核对完成后继续。',
  'voice_wait': '语音结果尚未确认，保留原记录。',
+ 'voice_audio_wait': '正在等待语音音频，尚未开始转文字。',
+ 'handoff_voice_audio_missing': '未能读取语音音频，等待已到上限，已转人工处理。',
  'model_wait': '等待后台处理结果。', 'no_reply': '本次消息无需发送回复。',
  'handoff': '此客户的 AI 自动回复已暂停，等待销售处理。',
  'friend_verification_hold': '好友验证限制尚未处理，AI 不会自动回复。原发送结果和凭证保留，不会自动补发。',

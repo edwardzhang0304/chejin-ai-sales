@@ -89,11 +89,14 @@ class HookNativeSendSettlement(HookAccountAction):
     local_call_window: dict | None = None
 
 
-class HookVoiceResult(HookAccountAction):
+class HookVoiceParent(HookAccountAction):
     binding_id: str = Field(min_length=36,max_length=36)
     binding_revision: int = Field(ge=1)
     peer_wxid: NativeWechatIdentity
     native_msg_id: str = Field(pattern=r"^[1-9][0-9]{0,19}$")
+
+
+class HookVoiceResult(HookVoiceParent):
     attempt_process_generation: str | None = Field(default=None,min_length=1,max_length=128)
     state: Literal['transcribed','failed','uncertain']
     audio_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")

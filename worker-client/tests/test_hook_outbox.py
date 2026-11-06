@@ -82,6 +82,20 @@ def test_unknown_peer_audio_stays_local(setup):
     assert HookDeliveryOutbox(max_storage_bytes=1048576).enqueue_projection(p['receive_seq'],scope,now=NOW) is None
 
 
+def test_inline_voice_uploads_parent_metadata_without_audio(setup):
+    _,scope,receive=setup
+    audio=b'\x02#!SILK_V3'+b'synthetic'
+    p=project(receive,[message(receive,msgtype='34',msg=f'<msg><voicemsg length="{len(audio)}"/></msg>',
+                               voice_hex=audio.hex(),voice_len=str(len(audio)))])
+    outbox=HookDeliveryOutbox(max_storage_bytes=1048576)
+    assert outbox.enqueue_projection(p['receive_seq'],scope,now=NOW)
+    claim=outbox.claim_next(scope,now=NOW,lease_seconds=10)
+    assert claim.envelope['messages'][0]['message_type']=='voice'
+    assert claim.envelope['messages'][0]['media_stage']=='metadata_observed'
+    assert claim.envelope['messages'][0]['content'] is None
+    assert audio.hex() not in claim.payload_json and 'voice_hex' not in claim.payload_json
+
+
 def test_one_lease_retry_after_loss_and_old_attempt_cannot_overwrite_new_attempt(setup):
     _,scope,receive=setup
     p=project(receive); outbox=HookDeliveryOutbox(max_storage_bytes=1048576)

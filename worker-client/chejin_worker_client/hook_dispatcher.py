@@ -143,6 +143,8 @@ class HookBusinessDispatcher:
                 historical=prior.get('historical',True))
         if reason=='HOOK_VOICE_RESULT_UNCONFIRMED':
             emit_progress(runner,context,'voice','error','handoff_voice_unknown',occurred_at=occurred_at)
+        elif reason=='HOOK_VOICE_AUDIO_MISSING':
+            emit_progress(runner,context,'voice','error','handoff_voice_audio_missing',occurred_at=occurred_at)
         elif reason=='AI_ENGINE_RETRY_EXHAUSTED':
             emit_progress(runner,context,'decision','error','handoff_ai_failure',occurred_at=occurred_at)
         elif context in self._presented_batches:
@@ -741,7 +743,11 @@ class HookBusinessDispatcher:
                         audio=capture_voice_audio(scope,binding['peer_wxid'],job['native_msg_id'],
                             max_audio_bytes=self.voice.max_audio_bytes,verified_metadata_xml=job.get('voice_metadata_xml'))
                         if audio is None:
-                            emit_progress(runner,job['native_msg_id'],'voice','waiting','voice_wait')
+                            waiting=self.client.voice_audio_wait(rt.credentials,rt.account,binding,job['native_msg_id'])
+                            if waiting['state']=='handed_off':
+                                emit_progress(runner,job['native_msg_id'],'voice','error','handoff_voice_audio_missing')
+                            elif waiting['state']=='waiting':
+                                emit_progress(runner,job['native_msg_id'],'voice','waiting','voice_audio_wait')
                             pending_work=True;continue
                         admission_lock = getattr(runner, '_new_work_admission_lock', None)
                         with admission_lock if admission_lock is not None else nullcontext():

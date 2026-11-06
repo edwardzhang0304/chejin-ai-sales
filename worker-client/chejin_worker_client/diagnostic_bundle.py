@@ -225,7 +225,7 @@ class Collector:
                     sha256=hashlib.sha256(data).hexdigest(),
                     collected_at=datetime.now(timezone.utc).isoformat())
 
-    def source_allowed(self, path, allowed_root=None):
+    def source_allowed(self, path, allowed_root=None, *, allow_missing=False):
         """Reject linked descendants (including Windows junctions) before reading."""
         boundary = Path(allowed_root or self.root)
         path = Path(path)
@@ -240,7 +240,12 @@ class Collector:
             for part in (None, *relative.parts):
                 if part is not None:
                     current /= part
-                info = current.lstat()
+                try:
+                    info = current.lstat()
+                except FileNotFoundError:
+                    if allow_missing:
+                        continue
+                    raise
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
                     return False
             return path.resolve().is_relative_to(boundary.resolve())
@@ -770,7 +775,7 @@ class Collector:
                                            used_seconds+time.monotonic()-started)
 
     def file(self, path, member, archive, *, allowed_root=None, ocr=False):
-        if not self.source_allowed(path, allowed_root):
+        if not self.source_allowed(path, allowed_root, allow_missing=True):
             self.record(member, "omitted", reason="source_boundary")
             return
         if _FORBIDDEN_FILE_RE.search(path.name) or path.suffix.lower() not in TEXT_SUFFIXES | IMAGE_SUFFIXES | {".zip"}:
@@ -785,6 +790,9 @@ class Collector:
                 return
             if path.suffix.lower() in TEXT_SUFFIXES:
                 data = self.text_bytes(data, path.suffix.lower(), ocr=ocr, source=member)
+        except FileNotFoundError:
+            self.record(member, "missing", reason="file_not_found")
+            return
         except (OSError, ValueError, RuntimeError, RecursionError) as exc:
             self.record(member, "read_failed", error_type=type(exc).__name__)
             return
