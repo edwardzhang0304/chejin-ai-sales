@@ -148,6 +148,22 @@ def reconcile_pending(conn, root):
     return pending
 
 
+def defer_pending(conn, root, attempt):
+    """Move the actual upload attempt behind its peers before network I/O.
+
+    Reconciliation only observes files. It cannot stand in for a delivery turn:
+    one failed upload must not keep winning just because all files were checked.
+    This changes scheduling only, never evidence or completion state.
+    """
+    if not _index_ready(conn):
+        return  # A newly recovered result remains unindexed and blocks install.
+    key = _root_key(root)
+    conn.execute('UPDATE '+_INDEX+' SET checked_seq=(SELECT COALESCE(MAX(checked_seq),0)+1 '
+        'FROM '+_INDEX+' WHERE root=?) WHERE root=? AND self_wxid=? AND account_epoch=? '
+        "AND native_msg_id=? AND status IN ('unchecked','pending')",
+        (key,key,attempt['self_wxid'],attempt['account_epoch'],attempt['native_msg_id']))
+
+
 def publish(client, credentials, account, binding, attempt, root):
     from .hook_formal_c1 import _save
     # Retain the original authorization before the HTTP call. If its response

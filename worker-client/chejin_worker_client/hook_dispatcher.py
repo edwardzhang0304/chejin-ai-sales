@@ -299,9 +299,14 @@ class HookBusinessDispatcher:
             pending = hook_voice_receipts.reconcile_pending(conn, self.private_root)
             conn.commit()
         retained_by_binding = hook_voice_receipts.retained_job_map(pending, self.private_root, rt.scope)
-        for binding in bindings:
-            retained = retained_by_binding.get((binding['binding_id'],binding['binding_revision'],binding['peer_wxid']), [])
-            for job in [*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[]), *retained]:
+        binding_key = lambda b: (b['binding_id'],b['binding_revision'],b['peer_wxid'])
+        pending_order = {key:i for i,key in enumerate(retained_by_binding)}
+        for binding in sorted(bindings,key=lambda b:pending_order.get(binding_key(b),len(pending_order))):
+            retained = retained_by_binding.get(binding_key(binding), [])
+            seen = set()
+            for job in [*retained,*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[])]:
+                if job['native_msg_id'] in seen:continue
+                seen.add(job['native_msg_id'])
                 saved=self.voice.saved_parent(rt.scope,binding['peer_wxid'],job['native_msg_id'])
                 if not saved:continue
                 result=self.voice.recover_interrupted(rt.scope,binding['peer_wxid'],job['native_msg_id'],
@@ -310,6 +315,9 @@ class HookBusinessDispatcher:
                     raise ValueError('HOOK_VOICE_RESULT_UNCONFIRMED')
                 if hook_voice_receipts.acknowledged(self.private_root, result):
                     continue
+                with storage.db_connection() as conn:
+                    hook_voice_receipts.defer_pending(conn, self.private_root, result)
+                    conn.commit()
                 hook_voice_receipts.publish(self.client, rt.credentials, rt.account, binding, result, self.private_root)
                 self._invalidate_history_cache((rt.scope.process_generation,binding['binding_id'],binding['binding_revision']))
                 return True
