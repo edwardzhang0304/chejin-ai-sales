@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from . import storage
 from .hook_inbox import HookReceiveScope, decode_callback
 from .hook_gateway import HookLocalError
+from .hook_voice_payload import has_voice_audio, voice_audio_bytes
 from .models import utc_now_iso
 from .shared_rules import hook_contract_rules as rules
 
@@ -96,23 +97,17 @@ def capture_voice_audio(scope: HookReceiveScope, peer_wxid: str, native_msg_id: 
                         raise ValueError("HOOK_VOICE_METADATA_INVALID") from None
                     if length>max_audio_bytes:raise ValueError("HOOK_VOICE_AUDIO_TOO_LARGE")
                     lengths.add(length)
-                if message.get('voice_data'):
+                if has_voice_audio(message):
                     # The tested audio supplement has empty from/to/fromtype. Its
                     # authority comes from this exact scoped parent metadata, never
                     # from an empty field or the currently selected conversation.
-                    encoded=message['voice_data']
                     if (message.get('fromid') not in (None,'',peer_wxid)
                             or message.get('toid') not in (None,'',scope.self_wxid)
                             or (message.get('fromtype') not in (None,'') and str(message['fromtype'])!='1')
                             or any(isinstance(message.get(field),str) and message[field].endswith('@chatroom')
                                 for field in ('fromid','toid','fromgid'))):
                         raise ValueError("HOOK_VOICE_AUDIO_IDENTITY_CONFLICT")
-                    if (not isinstance(encoded,str) or len(encoded)>max_audio_bytes*2
-                            or not re.fullmatch(r'(?:[0-9a-fA-F]{2})+',encoded)):
-                        raise ValueError("HOOK_VOICE_AUDIO_INVALID")
-                    audio=bytes.fromhex(encoded)
-                    if str(message.get('voice_len'))!=str(len(audio)) or not audio.startswith(b"\x02#!SILK_V3"):
-                        raise ValueError("HOOK_VOICE_AUDIO_INVALID")
+                    audio=voice_audio_bytes(message,max_audio_bytes=max_audio_bytes)
                     audios[hashlib.sha256(audio).hexdigest()]=audio
     if len(lengths)>1 or len(audios)>1:raise ValueError("HOOK_VOICE_AUDIO_AMBIGUOUS")
     if not lengths or not audios:return None

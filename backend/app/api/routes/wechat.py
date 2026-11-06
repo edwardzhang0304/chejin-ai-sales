@@ -674,7 +674,19 @@ def native_reply_settle(worker_id: str,action_id: str,payload: HookNativeSendSet
     return _native_send_call('settle',worker_id,action_id,payload,db,worker_token,instance,flow,token)
 
 
-from app.schemas.hook_business import HookVoiceResult
+from app.schemas.hook_business import HookVoiceResult, HookVoiceParent
+
+@router.post('/workers/{worker_id}/wechat/native-voice/audio-wait')
+def native_voice_audio_wait(worker_id: str,payload: HookVoiceParent,db: Session=Depends(get_db),
+        x_worker_token: str | None=Header(default=None,alias='X-Worker-Token'),
+        x_client_instance_id: str | None=Header(default=None,alias='X-Client-Instance-Id')):
+    from app.services.hook_media_service import wait_for_voice_audio
+    try:
+        worker=worker_service.authenticate_worker_client(db,worker_id,x_worker_token,x_client_instance_id)
+        data=wait_for_voice_audio(db,worker,x_client_instance_id,payload)
+        db.commit();return ok(data)
+    except Exception:
+        db.rollback();raise
 
 @router.post('/workers/{worker_id}/wechat/native-voice/result')
 def native_voice_result(worker_id: str,payload: HookVoiceResult,db: Session=Depends(get_db),

@@ -33,6 +33,30 @@ def capture(lab,scope=None):
     return capture_voice_audio(scope or lab[3],PEER,MID,max_audio_bytes=4096)
 
 
+def test_inline_audio_transcribes_once_before_and_after_duplicate_supplement(lab):
+    server,gateway,process,scope,*_=lab
+    persist(lab,metadata=True,fields={'voice_hex':AUDIO.hex(),'voice_len':str(len(AUDIO))})
+    audio=capture(lab)
+    assert audio.audio==AUDIO
+    server.voice_response={'status':1,'text':'合成语音，预算五万元'}
+    worker=transcriber()
+    first=worker.transcribe_once(gateway,process,audio,automatic_transcription_disabled=lambda:True)
+    assert first['state']=='transcribed'
+    persist(lab,audio=True)
+    # Recreated handler must reuse the durable result as well.
+    again=transcriber().transcribe_once(gateway,process,capture(lab),automatic_transcription_disabled=lambda:True)
+    assert again==first
+    assert len([r for r in server.requests if r[0]=='/Voice2Text'])==1
+
+
+def test_inline_audio_and_later_disagreeing_supplement_are_rejected(lab):
+    persist(lab,metadata=True,fields={'voice_hex':AUDIO.hex(),'voice_len':str(len(AUDIO))})
+    persist(lab,audio=True,data=AUDIO[:-1]+b'x')
+    with pytest.raises(ValueError,match='HOOK_VOICE_AUDIO_AMBIGUOUS'):
+        capture(lab)
+    assert not lab[0].requests
+
+
 def voice(lab):
     return HookVoiceAudio(lab[3],PEER,MID,AUDIO)
 

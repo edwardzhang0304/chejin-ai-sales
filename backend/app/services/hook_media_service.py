@@ -13,7 +13,7 @@ from app.services.hook_business_service import account
 from app.services.hook_message_service import message_key
 
 
-def finish_voice(db,authenticated,instance,payload):
+def _voice_parent(db,authenticated,instance,payload):
     hint=db.get(WechatSessionBinding,payload.binding_id)
     lock_leads(db,[hint.lead_id] if hint else [])
     w=account(db,authenticated,instance,payload)
@@ -38,6 +38,11 @@ def finish_voice(db,authenticated,instance,payload):
             or parent.id not in ctx.get('history_message_event_ids',[])
             or (parent.raw_payload or {}).get('account_epoch')!=payload.account_epoch):
         raise AppError('HOOK_VOICE_PARENT_NOT_FOUND','没有已核验的客户语音父消息',409)
+    return w,binding,parent,ctx,retired
+
+
+def finish_voice(db,authenticated,instance,payload):
+    w,binding,parent,ctx,retired=_voice_parent(db,authenticated,instance,payload)
     from app.services.hook_history_review import needs_review
     rules=shared_adapter('hook_contract_rules')
     saved={key:getattr(payload,key) for key in ('self_wxid','account_epoch','native_msg_id','peer_wxid',
@@ -67,6 +72,10 @@ def finish_voice(db,authenticated,instance,payload):
         'attempt_digest':payload.attempt_digest,'response_sha256':payload.response_sha256,
         **({'human_covered_history_state':prior_history_state} if covered else {})}}
     parent.evidence={**(parent.evidence or {}),'native_voice_receipt_id':receipt.id}
+    audio_wait=dict(parent.evidence.get('native_audio_wait') or {})
+    if audio_wait.get('state')=='waiting':
+        audio_wait.update(state='audio_received',completed_at=utcnow().isoformat())
+        parent.evidence={**parent.evidence,'native_audio_wait':audio_wait}
     if archived:
         from app.services.hook_history_review import record_archived_change
         record_archived_change(db,parent,evidence_key='latest_voice_receipt_id',receipt_id=receipt.id)
@@ -86,6 +95,42 @@ def finish_voice(db,authenticated,instance,payload):
     receipt.result_json=result
     if not retired and not needs_review(parent) and parent.item_state=='uncertain':_handoff_uncertain_voice(db,binding,parent)
     db.flush();return result
+
+
+VOICE_AUDIO_WAIT_SECONDS = 60
+
+
+def wait_for_voice_audio(db,authenticated,instance,payload):
+    """Bound missing bytes separately from an attempted/unknown native call.
+
+    First observation and terminal disposition survive Worker restarts. Neither
+    caller timestamps nor polling frequency can shorten or restart the budget.
+    This endpoint never creates a transcription receipt or marks a voice read.
+    """
+    w,binding,parent,ctx,retired=_voice_parent(db,authenticated,instance,payload)
+    from app.services.hook_history_review import needs_review
+    from app.services.hook_history_service import human_covered_voice_ids
+    from app.services.reply_ownership import aware, human_owned
+    conversation=db.get(Conversation,binding.conversation_id)
+    saved=dict((parent.evidence or {}).get('native_audio_wait') or {})
+    if saved.get('state')=='handed_off':return saved
+    if (retired or needs_review(parent) or parent.item_state!='metadata_observed'
+            or conversation is None or human_owned(conversation)
+            or parent.id in human_covered_voice_ids(db,binding)):
+        return {'state':'settled','native_msg_id':payload.native_msg_id}
+    now=utcnow()
+    if not saved:
+        saved={'state':'waiting','native_msg_id':payload.native_msg_id,
+               'started_at':now.isoformat(),'wait_seconds':VOICE_AUDIO_WAIT_SECONDS,
+               'error_code':'HOOK_VOICE_AUDIO_PENDING','native_call_started':False}
+    if (now-aware(saved['started_at'])).total_seconds() >= VOICE_AUDIO_WAIT_SECONDS:
+        event_id=handoff_native_media(db,binding,parent,'HOOK_VOICE_AUDIO_MISSING')
+        if event_id:
+            saved.update(state='handed_off',completed_at=now.isoformat(),
+                         handoff_event_id=event_id,error_code='HOOK_VOICE_AUDIO_MISSING')
+    parent.evidence={**(parent.evidence or {}),'native_audio_wait':saved}
+    db.flush()
+    return saved
 
 
 
@@ -118,6 +163,7 @@ def handoff_native_media(db,binding,message,reason):
         return None
     event,created=c3_service._create_or_reuse_open_handoff(db,conversation=conversation,batch_id=None,
         handoff_reason_code=reason,reason_detail=('客户语音转写结果未确认，需要销售人工处理；原语音不会自动重试' if reason=='HOOK_VOICE_RESULT_UNCONFIRMED'
+            else '客户语音音频未能读取，等待已到上限，需要销售人工处理；尚未调用转文字' if reason=='HOOK_VOICE_AUDIO_MISSING'
             else '客户发来图片，需要销售人工处理' if message.message_type=='image'
             else '客户发来文件，需要销售人工处理' if reason=='HOOK_CUSTOMER_FILE_HANDOFF'
             else '客户发来暂不支持的富内容消息，需要销售人工处理' if reason=='HOOK_CUSTOMER_APP_HANDOFF'

@@ -36,7 +36,7 @@ def test_default_ocr_selection_and_explicit_bad_setting_do_not_fallback(lab):
         create_hook_services(SimpleNamespace(base_url='http://127.0.0.1:12345/api'))
 
 
-@pytest.mark.parametrize("pending_review", [None, "inventory", "fresh", "file"], ids=["model_wait", "pending_inventory", "pending_fresh", "file_content_hold"])
+@pytest.mark.parametrize("pending_review", [None, "inventory", "fresh", "file", "voice"], ids=["model_wait", "pending_inventory", "pending_fresh", "file_content_hold", "voice_audio_missing"])
 @pytest.mark.parametrize("run_status", ["running", "paused"])
 @pytest.mark.parametrize("pending_friend", [False, True, "conflict"])
 def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,tmp_path,pending_friend,run_status,pending_review):
@@ -48,8 +48,10 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
         'remark_code':'CJTEST1','conversation_id':str(uuid.uuid4()),'history_since_create_time':'1','voice_jobs':[],
         'batch_ids':[str(uuid.uuid4())]} for i in range(2)]
     bindings[0]['relationship_confirmation_pending'] = pending_review=='inventory'
+    if pending_review=='voice':bindings[0]['voice_jobs']=[{'native_msg_id':'123'}]
     calls=[];sends=[]
     class Client:
+        def voice_audio_wait(self,*args):return {'state':'handed_off'}
         def call(self,credentials,method,path,body=None,**kwargs):
             calls.append(path)
             if path.endswith('native-work'):
@@ -67,6 +69,8 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
             raise ApiError('HOOK_BINDING_CONFLICT' if pending_friend=='conflict' else 'HOOK_FRIEND_NOT_FOUND','synthetic waiting',409)
         def barrier(self,b):return (0,0)
         def sync(self,b):
+            if pending_review=='voice' and b is bindings[0]:
+                return {'history_ready':False,'reason_code':'HOOK_VOICE_PENDING'}
             if pending_review=='file' and b is bindings[0]:
                 return {'history_ready':False,'content_isolated':True,'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED'}
             return {'history_ready':True}
@@ -81,7 +85,7 @@ def test_one_customer_model_wait_does_not_block_other_customer(lab,backend_peer,
         assert ('pending-friend' in calls)==bool(pending_friend)
         assert sends==([bindings[1]['binding_id']] if run_status=='running' else [])
         assert runner.binding.run_status==run_status
-        if run_status=='running' and pending_review!='file':assert any(bindings[0]['batch_ids'][0] in path for path in calls)
+        if run_status=='running' and pending_review not in {'file','voice'}:assert any(bindings[0]['batch_ids'][0] in path for path in calls)
     finally:manager.close()
 
 
@@ -337,6 +341,9 @@ def test_history_owner_supersedes_stale_voice_inventory(lab,backend_peer,tmp_pat
     captured=[]
     monkeypatch.setattr('chejin_worker_client.hook_dispatcher.capture_voice_audio',lambda *a,**kw:captured.append(True))
     class Client:
+        def voice_audio_wait(self,*args):
+            assert current_owner=='ai'
+            return {'state':'waiting'}
         def call(self,credentials,method,path,body=None,**kwargs):
             if path.endswith('native-work'):
                 return {'schema_version':'hook-native-work-v1','observation_query_version':1,**account,

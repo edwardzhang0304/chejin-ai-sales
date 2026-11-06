@@ -14,6 +14,7 @@ import time
 import uuid
 from .api import ApiError
 from .hook_gateway import HookLocalError
+from .hook_voice_payload import has_voice_audio
 from .c1_receipts import clear_confirmed_add_friend_receipt
 from . import storage,ui_lock
 from .models import Binding,Task,utc_now_iso
@@ -537,7 +538,7 @@ class HookFormalRuntime:
                             mid=str(message.get('msgsvrid') or '')
                             if matches and mid:known.add(mid)
                             items.append({'peer_wxid':peer if matches else None,'native_msg_id':mid,
-                                'media_stage':'audio_observed' if message.get('voice_data') else None})
+                                'media_stage':'audio_observed' if has_voice_audio(message) else None})
                         pending,bad=True,False
                     matches=any(o.get('peer_wxid')==peer for o in items)
                     audio_ids={o.get('native_msg_id') for o in items if o.get('media_stage')=='audio_observed'}

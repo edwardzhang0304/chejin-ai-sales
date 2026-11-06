@@ -134,6 +134,10 @@ class HookDeliveryOutbox:
             message = {key: observation[key] for key in rules.MESSAGE_FIELDS if key != 'source_time_raw'}
             message['source_time_raw'] = observation['provider_time']
             message['ordering_fields'] = dict(observation['ordering_fields'])
+            if observation['message_type']=='voice' and observation['media_stage']=='audio_observed':
+                # Audio stays local. The backend receives the parent metadata;
+                # only a separate confirmed transcript can complete that parent.
+                message['media_stage']='metadata_observed'
             messages.append(message)
         if projection['status'] != 'projected' or not messages:
             return None

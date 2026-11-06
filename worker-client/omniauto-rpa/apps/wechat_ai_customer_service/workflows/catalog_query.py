@@ -56,11 +56,14 @@ name_queries每项为{"text":"客户点名的完整车型称呼","kind":"referen
 指定区间预算对象示例：{"state":"specified","unit":"万元","mode":"range","lower":3,"upper":5,"source_ids":["消息ID"]}。金额必须来自真实预算，不照抄示例。
 当前未提但历史有可靠预算时应解析成 specified 并引用该历史消息；未设预算询问品牌允许 not_mentioned。
 unlimited 只用于客户明确取消预算，uncertain 用于含糊或矛盾。首付/月供不等于总价，不用最近出现的数字覆盖总预算。
-支持 brand/series/model/energy_type/drive_type/location/displacement 的 eq（或多值 in），以及 mileage_km（公里）/battery_capacity_kwh（kWh）的 lte/gte。排量如1.5T是文字，不能数值比较。
-其他条件如无大修、低油耗先列 unsupported_requirements，不能假装已核验；车源数据缺字段也不能当满足。
+先把客户需求对应到已有筛选能力：品牌用 brand（如大众）；车系分类用 series（如德系车）；车身类型用 model（如轿车、SUV、MPV）；能源用 energy_type；驱动方式用 drive_type；车辆所在地用 location；排量用 displacement（如1.5T）。这些文字条件要某一个值时用 eq，接受多个值时用 in。
+这里的 model 是车身类型，不是具体车名。客户要轿车，可以直接按 model 筛选，不要误写成不支持；合法条件示例为 {"field":"model","op":"eq","value":"轿车","source_ids":["客户提出该需求的消息ID"]}。客户点名宝马320Li等具体车辆名称，使用 name_queries；示例不是默认需求，不能替客户补条件。
+表显里程用 mileage_km，单位公里；电池容量用 battery_capacity_kwh，单位kWh。这两个数字条件“不超过”用 lte，“至少”用 gte。排量是文字，不能据此作数值大小比较。
+确实无法用现有条件表达的需求放在 unsupported_requirements，这里只能填文字列表，例如 ["低油耗"]，不能填带text或source_ids的对象；没有这类要求就填 []。文字筛选只支持等于或多选，不支持不等于；客户只说不要SUV时，不能擅自改成只要轿车而漏掉MPV等其他类型，应保留未核实的排除要求。车源缺少字段也不能当作满足，不能为了完成查询丢掉客户条件。
 name_queries可为空；首次点名车型用name_queries，程序按全库公开名称/型号/别名字面匹配；不要编造ID。品牌找车用filters，不是name_queries。多义或未找到须澄清，不等于没有库存。reference_ids/exclude_ids只允许known_ids中有可信来源的ID；历史仅有名称则按名称查，不自造ID。
 所有条件先查全库再限制展示。拒绝旧推荐用 exclude_ids；点名旧车问价比较用 reference_ids。
 引用ID必须来自附带的消息来源表/历史推荐记录，不得编造。query_id/tenant/snapshot/统计由程序生成，不要输出。
+查车输出最外层只有 catalog_query 一个字段；写完它的内容后直接结束整个对象，外层不能再加第二个字段，也不能附加回复或格式说明。
 around只表示客户说的目标金额，程序按统一已批准范围换算，不自行发明范围。
 第二轮收到程序查询回执后，只输出原BrainPlan；不得再次查询或改变需求。保持不确定条件说明；
 推荐依据recommendations中的ID及product_master对应车源，references中的ID仅用于点名事实，不能用超预算references挤掉预算内推荐。

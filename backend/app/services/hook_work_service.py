@@ -40,6 +40,7 @@ def inventory(db,authenticated,instance,payload):
             if message.id not in history_ids:continue
             from app.services.hook_history_review import needs_review
             if needs_review(message):continue
+            if (message.evidence or {}).get('native_audio_wait',{}).get('state')=='handed_off':continue
             # An admitted unknown result already handed to sales is terminal
             # for automation, not a transcription job to re-advertise forever.
             if message.item_state=='uncertain' and message.id in ctx.get('media_handoff_applied_ids',[]):continue

@@ -102,6 +102,11 @@ class HookFormalClient:
         return self._send_receipt(credentials, permit, outcome, 'settle')
 
 
+    def voice_audio_wait(self,credentials,account,binding,native_id):
+        body={**account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
+              'peer_wxid':binding['peer_wxid'],'native_msg_id':native_id}
+        return self.call(credentials,'POST',f'/workers/{credentials.worker_id}/wechat/native-voice/audio-wait',body)
+
     def voice_result(self,credentials,account,binding,saved):
         body={**account,'binding_id':binding['binding_id'],'binding_revision':binding['binding_revision'],
             'peer_wxid':binding['peer_wxid'],'attempt_process_generation':saved['process_generation'],**{name:saved[name] for name in ('native_msg_id','state','audio_sha256',
