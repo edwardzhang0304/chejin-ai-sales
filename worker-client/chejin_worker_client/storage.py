@@ -3106,13 +3106,17 @@ def update_install_business_blockers() -> dict[str, int]:
     return counts
 
 
-def hook_update_business_blockers(process_generation: str | None) -> dict[str, int]:
+def hook_update_business_blockers(process_generation: str | None, *, private_root=None) -> dict[str, int]:
     """Count Hook facts; historical isolated calls remain preserved across updates.
 
     A verified new process supersedes the old DLL process, not its records.
     Without a verified process, unknown calls cannot be assumed historical.
     """
     counts = {'hook_unresolved_calls': 0, 'hook_pending_delivery': 0}
+    from .hook_voice_receipts import pending_results
+    if private_root is None:
+        from .config import CONFIG
+        private_root = CONFIG.app_dir / 'transactions/hook'
     with db_connection() as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table, states in (('hook_active_calls', ('calling', 'uncertain')),
@@ -3142,6 +3146,7 @@ def hook_update_business_blockers(process_generation: str | None) -> dict[str, i
                     AND length(proof.verified_at)>0))'''
                 args.extend(read_kinds)
             counts['hook_unresolved_calls'] += int(conn.execute(sql, args).fetchone()[0])
+        counts['hook_pending_voice_results'] = len(pending_results(conn, private_root))
         if 'hook_delivery_outbox' in tables:
             from .hook_delivery_lifecycle import terminal_delivery
             counts['hook_pending_delivery'] = sum(not terminal_delivery(row) for row in conn.execute(

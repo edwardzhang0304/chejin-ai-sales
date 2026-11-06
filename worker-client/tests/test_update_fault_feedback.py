@@ -117,7 +117,7 @@ def test_old_read_proof_does_not_exempt_new_calls_voice_or_delivery(data):
         db.execute("INSERT INTO hook_voice_attempts VALUES ('old','uncertain')")
         db.execute('CREATE TABLE hook_delivery_outbox(status TEXT)')
         db.execute("INSERT INTO hook_delivery_outbox VALUES ('retry_wait')");db.commit()
-    assert storage.hook_update_business_blockers(None)=={'hook_unresolved_calls':2,'hook_pending_delivery':1}
+    assert storage.hook_update_business_blockers(None)=={'hook_unresolved_calls':2,'hook_pending_delivery':1,'hook_pending_voice_results':0}
 
 
 def test_real_web_model_projects_shared_admission(environment):

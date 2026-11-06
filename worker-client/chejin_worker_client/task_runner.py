@@ -4673,7 +4673,7 @@ class TaskRunner:
             hook_state = services.connection.update_safety_snapshot()
             durable['hook_connection_checking'] = hook_state['checking']
             if not hook_state['checking']:
-                durable.update(hook_update_business_blockers(hook_state['process_generation']))
+                durable.update(hook_update_business_blockers(hook_state['process_generation'], private_root=getattr(getattr(services, 'dispatcher', None), 'private_root', None)))
         local_lock = lock_summary()
         sidecar_active = bool(
             getattr(self.bridge, "sidecar_active", lambda: True)()
@@ -4747,7 +4747,7 @@ class TaskRunner:
                     'background_cycles_active', 'current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
                     'pending_sqlite_action_journal', 'pending_file_action_journal',
                     'pending_sent_ack', 'action_journal_state_unavailable',
-                    'hook_unresolved_calls', 'hook_pending_delivery', 'hook_connection_checking'))):
+                    'hook_unresolved_calls', 'hook_pending_delivery', 'hook_pending_voice_results', 'hook_connection_checking'))):
             return None
         try:
             return inspect_pending_read(CONFIG.app_dir)
@@ -4791,7 +4791,7 @@ class TaskRunner:
             from .storage import hook_update_business_blockers
             prepared = services.connection.prepared
             generation = prepared.registration.scope.process_generation if prepared else None
-            return any(hook_update_business_blockers(generation).values())
+            return any(hook_update_business_blockers(generation, private_root=getattr(getattr(services, 'dispatcher', None), 'private_root', None)).values())
         return False
 
     def update_flow_continuation_allowed(self, flow_id: str | None) -> bool:

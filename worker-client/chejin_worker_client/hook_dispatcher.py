@@ -19,6 +19,7 @@ from .hook_formal_c1 import _save
 from .hook_formal_runtime import HookFormalRuntime, publish_current_task,read_batch_view
 from .hook_sender import RetainedNativeSendPermit,send_observation_can_settle
 from .hook_voice import HookVoiceTranscriber, capture_voice_audio
+from . import hook_voice_receipts
 from .shared_rules import hook_contract_rules as rules
 from .hook_timing import timed_call
 from .performance_evidence import emit, measurement
@@ -295,23 +296,18 @@ class HookBusinessDispatcher:
         from .hook_process import inspect_windows_generation_exited
         rt=self.runtime
         for binding in bindings:
-            for job in [*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[])]:
+            with storage.db_connection() as conn:
+                retained = hook_voice_receipts.retained_jobs(conn, self.private_root, rt.scope, binding)
+            for job in [*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[]), *retained]:
                 saved=self.voice.saved_parent(rt.scope,binding['peer_wxid'],job['native_msg_id'])
                 if not saved:continue
                 result=self.voice.recover_interrupted(rt.scope,binding['peer_wxid'],job['native_msg_id'],
                     generation_exited=inspect_windows_generation_exited)
                 if result['state'] not in {'transcribed','failed','uncertain'}:
                     raise ValueError('HOOK_VOICE_RESULT_UNCONFIRMED')
-                path=self.private_root/'voice-receipts'/rt.scope.self_wxid/rt.scope.account_epoch/f"{job['native_msg_id']}.json"
-                if path.exists():
-                    if rules.loads(path.read_bytes()).get('attempt_digest')!=rules.digest(result):
-                        raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
+                if hook_voice_receipts.acknowledged(self.private_root, result):
                     continue
-                receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
-                value={'attempt_digest':rules.digest(result),'receipt':receipt}
-                if path.exists():
-                    if rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
-                else:_save(path,value)
+                hook_voice_receipts.publish(self.client, rt.credentials, rt.account, binding, result, self.private_root)
                 self._invalidate_history_cache((rt.scope.process_generation,binding['binding_id'],binding['binding_revision']))
                 return True
         return False
@@ -771,11 +767,7 @@ class HookBusinessDispatcher:
                     # Publishing a transcript changes the admitted history even
                     # when no additional WeChat callback arrives.
                     self._invalidate_history_cache(key)
-                    receipt=self.client.voice_result(rt.credentials,rt.account,binding,result)
-                    path=self.private_root/'voice-receipts'/scope.self_wxid/scope.account_epoch/f"{job['native_msg_id']}.json"
-                    value={'attempt_digest':rules.digest(result),'receipt':receipt}
-                    if not path.exists():_save(path,value)
-                    elif rules.loads(path.read_bytes())!=value:raise ValueError('HOOK_VOICE_RECEIPT_CONFLICT')
+                    hook_voice_receipts.publish(self.client, rt.credentials, rt.account, binding, result, self.private_root)
                     synced=self._read_history(binding)
                 if not synced['history_ready']:
                     all_history_ready=False;pending_work=True;continue

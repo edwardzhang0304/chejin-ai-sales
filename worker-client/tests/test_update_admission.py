@@ -312,7 +312,7 @@ def test_connection_check_in_another_thread_does_not_block_update_button(environ
         with manager._operation_lock:
             entered.set();assert release.wait(3)
     t=threading.Thread(target=slow_heartbeat);t.start();assert entered.wait(2)
-    monkeypatch.setattr(storage, 'hook_update_business_blockers', lambda generation: {})
+    monkeypatch.setattr(storage, 'hook_update_business_blockers', lambda generation, **kwargs: {})
     try:
         c=create()
         assert c.check_admission()['allowed']

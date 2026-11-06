@@ -13,7 +13,7 @@ def business_wait_reason(snapshot: dict) -> tuple[str, str]:
         (("action_journal_state_unavailable",), "UPDATE_WAITING_DURABLE_SETTLEMENT", "无法确认本地操作记录，请先检查本机存储"),
         (("pending_sqlite_action_journal", "pending_file_action_journal"), "UPDATE_WAITING_DURABLE_SETTLEMENT", "上次操作结果尚未确认，正在等待核对"),
         (("pending_sent_ack",), "UPDATE_WAITING_DURABLE_SETTLEMENT", "发送结果尚未回传确认，正在等待结算"),
-        (("waiting_ledger", "pending_c2_outbox", "hook_pending_delivery"), "UPDATE_WAITING_DURABLE_SETTLEMENT", "本地消息尚未回传或结算，正在等待处理"),
+        (("waiting_ledger", "pending_c2_outbox", "hook_pending_delivery", "hook_pending_voice_results"), "UPDATE_WAITING_DURABLE_SETTLEMENT", "本地消息尚未回传或结算，正在等待处理"),
     )
     for keys, code, text in checks:
         if any(snapshot.get(key) for key in keys):
