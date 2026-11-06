@@ -682,17 +682,17 @@
     "chejin_same_review_policy_refs_and_serialized_clearance"
   ],
   "current_release": {
-    "version": "0.10.33",
-    "source_commit": "26d6285ea93ca699aec46c7e6098d0ae223eef0b",
+    "version": "0.10.34",
+    "source_commit": "1c63a055",
     "source_state": "gray_release_candidate",
     "published": false,
-    "contract_revision": "0.10.33",
-    "contract_sha256": "65021fdc399e530397836435f16471b08c122f206ee788856d659154ae3cf4e9",
+    "contract_revision": "0.10.34",
+    "contract_sha256": "a59afce79f280ea1267a782a5fb4f5d361e30eff1ee8c70b42b85109d4c09bdf",
     "scope": [
       "native_hook_state_and_release_preparation",
       "schema_revision_sync"
     ],
-    "note": "Reviewed AI input cleaning, sixty-second review limit and HTTP failure evidence; original 0.10.32 settings-button upgrade."
+    "note": "Merged reviewed update quiescence, memory capture security and voice field/query fixes; preserve-data manual installation."
   },
   "historical_integrations": [
     {
