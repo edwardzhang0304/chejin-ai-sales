@@ -76,7 +76,13 @@ class FakeRunner:
     def update_check_safety_snapshot(self):
         return {'allowed': True, 'reason_code': '', 'reason_text': ''}
 
+    def preserve_update_stop(self):
+        if self.binding and self.binding.run_status != 'faulted':
+            self.binding.run_status = 'paused'
+        return True
+
     def begin_update_check(self, begin_request):
+        self.preserve_update_stop()
         state = begin_request()
         coordinator_module.set_update_new_work_gate(True, update_request_id=state['update_request_id'])
         return self.update_check_safety_snapshot(), state
@@ -87,6 +93,10 @@ class FakeRunner:
         if self.binding:
             self.binding.run_status = status  # type: ignore[assignment]
         return True
+
+    def sync_update_stop(self):
+        if self.binding:
+            self.set_run_status(self.binding.run_status)
 
     def update_install_safety_snapshot(self):
         self.events.append("safety")
@@ -132,7 +142,7 @@ def test_independent_updater_ready_timeout_matches_packaged_startup_budget() -> 
     assert coordinator_module.UPDATER_READY_TIMEOUT_SECONDS == 120.0
 
 
-def test_manual_first_hop_response_does_not_pause_download_or_install(tmp_path):
+def test_manual_first_hop_response_keeps_stopped_without_download_or_install(tmp_path):
     from chejin_worker_client.api import ApiError
     class OldUpdaterApi:
         def latest_client_release(self, **kwargs):
@@ -148,7 +158,7 @@ def test_manual_first_hop_response_does_not_pause_download_or_install(tmp_path):
     assert coordinator.check_for_updates() is True
     _wait(coordinator)
     assert coordinator.state()["result_code"] == "UPDATE_MANUAL_UPGRADE_REQUIRED"
-    assert runner.statuses == [] and binding.run_status == "running"
+    assert runner.statuses == ["paused"] and binding.run_status == "paused"
     assert exits == []
     assert not list(tmp_path.rglob("*.zip"))
     assert not list(tmp_path.rglob("update-plan.json"))
@@ -178,7 +188,7 @@ def test_updater_launcher_injects_bounded_startup_diagnostic_path(
     assert "secret-token" not in environment["CHEJIN_UPDATER_DIAGNOSTIC_PATH"]
 
 
-def test_no_update_does_not_pause_or_close_new_work_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_update_releases_own_gate_but_keeps_paused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     binding = Binding(
         "w", "worker-secret-token-must-not-enter-update-plan", "instance", run_status="running"
     )
@@ -203,7 +213,7 @@ def test_no_update_does_not_pause_or_close_new_work_gate(tmp_path: Path, monkeyp
     _wait(coordinator)
     assert [blocked for blocked, _ in gates] == [True, False]
     assert gates[0][1] == gates[1][1]
-    assert runner.statuses == []
+    assert runner.statuses == ["paused"]
     assert "exit" not in events
     assert coordinator.state()["status_text"] == "当前已是最新版本"
 
@@ -481,10 +491,10 @@ def test_faulted_client_with_clear_boundary_can_install_without_becoming_paused(
     assert plan["pre_update_run_status"] == "faulted"
     assert plan["safe_boundary"]["confirmed_run_status"] == "faulted"
     assert binding.run_status == "faulted"
-    assert runner.statuses == []
+    assert runner.statuses == ["faulted"]
 
 
-def test_prepare_failure_restores_running_only_without_new_operator_pause(
+def test_prepare_failure_keeps_paused_until_manual_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -513,7 +523,7 @@ def test_prepare_failure_restores_running_only_without_new_operator_pause(
     )
     assert coordinator.check_for_updates() is True
     _wait(coordinator)
-    assert runner.statuses == ["paused", "running"]
+    assert runner.statuses == ["paused"]
     assert gates == [True, False]
 
 
@@ -591,7 +601,7 @@ def test_invalid_updater_ready_marker_terminates_updater_before_restoring_intake
 
     assert process.terminated is True
     assert gates == [True, False]
-    assert runner.statuses == ["paused", "running"]
+    assert runner.statuses == ["paused"]
     assert "exit" not in events
     assert coordinator.state()["result_code"] == "UPDATE_INSTALL_FAILED"
 

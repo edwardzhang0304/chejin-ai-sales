@@ -35,8 +35,16 @@ def _runner() -> TaskRunner:
     runner.current_ui_lock = None
     runner.task_lock = threading.Lock()
     runner._new_work_admission_lock = threading.RLock()
+    runner._update_cycle_lock = threading.RLock()
+    runner._update_active_cycles = 0
+    runner._update_quiescing_request_id = None
+    runner._update_original_flow_id = None
+    runner._update_original_revision = runner._update_stop_revision = None
+    runner._run_status_intent_lock = threading.RLock()
+    runner._run_status_revision = 0
     runner.stop_event = threading.Event()
     runner._restart_backend_probe_pending = False
+    runner.hook_services = None
     return runner
 
 

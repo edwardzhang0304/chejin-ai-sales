@@ -18,6 +18,13 @@ from test_update_coordinator import FakeApi, _release, _wait
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     runner = _runner()
+    def preserve_stop():
+        if runner.binding and runner.binding.run_status != 'faulted':
+            runner.binding.run_status = 'paused'
+        return True
+    runner.preserve_update_stop = preserve_stop
+    runner.set_run_status = lambda value: setattr(runner.binding, 'run_status', value)
+    runner.sync_update_stop = lambda: runner.set_run_status(runner.binding.run_status)
     control = {'update_no_new_work': False, 'inflight_flow_id': None}
     durable = dict(ZERO_DURABLE)
     monkeypatch.setattr(runner_module, 'load_runtime_control', lambda: dict(control))
@@ -49,7 +56,7 @@ def test_idle_paused_faulted_and_offline_can_check_without_backend_confirmation(
     assert c.check_for_updates() is True
     _wait(c)
     assert c.api.calls
-    assert runner.binding.run_status == status
+    assert runner.binding.run_status == ('faulted' if status == 'faulted' else 'paused')
     assert control['update_no_new_work'] is False
 
 
@@ -61,18 +68,20 @@ def test_idle_paused_faulted_and_offline_can_check_without_backend_confirmation(
     ('waiting_ledger', '尚未回传'),
     ('action_journal_state_unavailable', '本地操作记录'),
 ])
-def test_fault_does_not_hide_durable_blocker_or_allow_direct_call(environment, field, reason):
+def test_discovery_allowed_but_durable_blocker_still_prevents_install(environment, field, reason):
     runner, control, durable, create = environment
     runner.binding.run_status = 'faulted'
     durable[field] = 1
     c = create()
-    assert reason in c.check_admission()['reason_text']
-    assert c.check_for_updates() is False
-    assert not c.api.calls and not control['update_no_new_work']
+    assert c.check_admission()['allowed']
+    assert c.check_for_updates() is True
+    _wait(c)
+    assert c.api.calls and not control['update_no_new_work']
+    assert reason in runner.update_install_safety_snapshot()['business_reason_text']
     assert durable[field] == 1
 
 
-def test_ui_snapshot_can_be_stale_but_atomic_entry_rechecks(environment):
+def test_existing_task_does_not_prevent_request_but_still_blocks_install(environment):
     runner, control, _, create = environment
     c = create()
     assert c.check_admission()['allowed']
@@ -81,8 +90,11 @@ def test_ui_snapshot_can_be_stale_but_atomic_entry_rechecks(environment):
         runner.current_task = SimpleNamespace(id='synthetic-inflight')
         return original(begin)
     runner.begin_update_check = race
-    assert c.check_for_updates() is False
-    assert c.api.calls == [] and not control['update_no_new_work']
+    assert c.check_for_updates() is True
+    _wait(c)
+    assert c.api.calls and not control['update_no_new_work']
+    assert runner.update_install_safety_snapshot()['business_reason_code'] == 'UPDATE_WAITING_ACTIVE_FLOW'
+    assert runner.current_task.id == 'synthetic-inflight'
     assert c.store.load()['state'] == 'idle'
 
 
@@ -106,11 +118,11 @@ def test_accepted_check_closes_admission_before_release_request_and_duplicate(en
     finally:
         finish.set()
     _wait(c)
-    assert not control['update_no_new_work'] and runner.binding.run_status == 'running'
+    assert not control['update_no_new_work'] and runner.binding.run_status == 'paused'
     assert len(c.api.calls) == 1
 
 
-def test_task_admission_owner_blocks_check_without_waiting_for_http(environment):
+def test_task_admission_owner_does_not_reject_update_intent(environment):
     runner, _, _, create = environment
     entered, finish = threading.Event(), threading.Event()
     def owner():
@@ -119,8 +131,13 @@ def test_task_admission_owner_blocks_check_without_waiting_for_http(environment)
     t = threading.Thread(target=owner);t.start();assert entered.wait(2)
     try:
         c = create()
-        assert c.check_admission()['reason_code'] == 'UPDATE_ADMISSION_BUSY'
-        assert not c.check_for_updates() and not c.api.calls
+        assert c.check_admission()['allowed']
+        assert c.check_for_updates()
+        # Intent is accepted without waiting for this network operation.
+        assert not finish.is_set()
+        finish.set()
+        _wait(c)
+        assert c.api.calls
     finally:
         finish.set();t.join()
 
@@ -144,7 +161,7 @@ def test_failure_and_cancel_release_only_own_gate_preserving_status(environment,
             raise ApiError('NETWORK_ERROR', 'synthetic unavailable', 0)
         c.api.latest_client_release = failed
     assert c.check_for_updates(); _wait(c)
-    assert runner.binding.run_status == status
+    assert runner.binding.run_status == ('faulted' if status == 'faulted' else 'paused')
     assert not control['update_no_new_work']
     expected = {'download_failure':'UPDATE_DOWNLOAD_FAILED', 'cancel':'UPDATE_CANCELLED', 'network_failure':'NETWORK_ERROR'}[outcome]
     assert c.store.load()['result_code'] == expected
@@ -165,12 +182,15 @@ def test_fault_or_manual_pause_during_download_is_never_resumed(environment, mon
     assert runner.binding.run_status == operator_action and not control['update_no_new_work']
 
 
-def test_storage_check_failure_is_visible_and_cannot_start(environment, monkeypatch):
+def test_business_storage_failure_still_blocks_install_not_discovery(environment, monkeypatch):
     _, _, _, create = environment
     monkeypatch.setattr(runner_module, 'update_install_business_blockers', lambda: (_ for _ in ()).throw(OSError()))
     c = create()
-    assert c.check_admission()['reason_code'] == 'UPDATE_SAFETY_STATE_UNAVAILABLE'
-    assert not c.check_for_updates() and not c.api.calls
+    assert c.check_admission()['allowed']
+    assert c.check_for_updates(); _wait(c)
+    assert c.api.calls
+    with pytest.raises(OSError):
+        runner_module.TaskRunner.update_install_safety_snapshot(environment[0])
 
 
 def test_widget_uses_coordinator_decision_and_visible_reason():
@@ -227,7 +247,8 @@ def test_stopped_read_can_discover_but_target_must_still_prove_handoff(environme
     assert storage.load_runtime_control()['inflight_flow_id'] == handoff['flow_id']
     durable['pending_sent_ack'] = 1
     control['update_no_new_work'] = False
-    assert not create().check_admission()['allowed']
+    assert create().check_admission()['allowed']
+    assert not runner.update_pending_read_handoff_snapshot({'pending_read_recovery':package_recovery_capability()})['safe']
 
 
 def test_model_query_after_update_reservation_cannot_start_generation(environment, monkeypatch):
@@ -294,8 +315,11 @@ def test_connection_check_in_another_thread_does_not_block_update_button(environ
     monkeypatch.setattr(storage, 'hook_update_business_blockers', lambda generation: {})
     try:
         c=create()
-        assert c.check_admission()['reason_code']=='UPDATE_WAITING_HOOK_CONNECTION'
-        assert not c.check_for_updates() and not c.api.calls
+        assert c.check_admission()['allowed']
+        assert c.check_for_updates()
+        _wait(c)
+        assert c.api.calls
+        assert not runner.update_install_safety_snapshot()['safe']
         assert not release.is_set()
     finally:release.set();t.join()
     assert c.check_admission()['allowed']

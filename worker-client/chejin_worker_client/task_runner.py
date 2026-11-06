@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 from itertools import product
 import json
@@ -4049,6 +4050,12 @@ class TaskRunner:
         self.c2_manual_scan_requested = threading.Event()
         self.task_lock = threading.Lock()
         self._new_work_admission_lock = threading.RLock()
+        self._update_cycle_lock = threading.RLock()
+        self._update_active_cycles = 0
+        self._update_quiescing_request_id: str | None = None
+        self._update_original_flow_id: str | None = None
+        self._update_original_revision: int | None = None
+        self._update_stop_revision: int | None = None
         self.reply_send_ack_lock = threading.Lock()
         self.c2_outbox_lock = threading.RLock()
         self.heartbeat_interval_seconds = CONFIG.heartbeat_interval_seconds
@@ -4129,6 +4136,7 @@ class TaskRunner:
                  "bound_at": binding.bound_at} if binding else {})
 
     def _observe_layout_result(self, scope: str, payload: dict[str, Any]) -> None:
+        stopped = False
         with self._run_status_intent_lock:
             previous = load_c2_state("layout_recovery")
             identity = self._layout_binding_identity()
@@ -4140,9 +4148,13 @@ class TaskRunner:
                 return
             view = layout_recovery_view(state)
             if view["blocked"] and self.binding and self.binding.run_status == "running":
-                # Diagnostic persistence cannot be a prerequisite for stopping.
-                self.set_run_status("paused")
+                # Save the stop here; its network acknowledgement belongs
+                # outside this local intent transaction, like update admission.
+                self._preserve_stopped_run_status("paused")
+                stopped = True
             save_c2_state("layout_recovery", state)
+        if stopped:
+            self._sync_pending_run_status(force=True)
         if not payload.get("ok") and view["attempts"]:
             append_log(
                 "WARN", "wechat_layout_retry_limited", view["message"],
@@ -4621,11 +4633,16 @@ class TaskRunner:
     ) -> dict[str, Any]:
         """Serialize updater admission with task pull and Flow registration."""
 
-        with self._new_work_admission_lock:
-            return set_update_new_work_gate(
+        with self._new_work_admission_lock, self._update_cycle_lock:
+            control = set_update_new_work_gate(
                 blocked,
                 update_request_id=update_request_id,
             )
+            if not control.get("update_no_new_work"):
+                self._update_quiescing_request_id = None
+                self._update_original_flow_id = None
+                self._update_original_revision = self._update_stop_revision = None
+            return control
 
     def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
         if self.stop_event.is_set() or emergency_stop_requested():
@@ -4671,7 +4688,11 @@ class TaskRunner:
                 and backend_status == binding.run_status
             )
         )
+        with self._update_cycle_lock:
+            background_cycles = (self._update_active_cycles
+                                 if self.update_checks_suspended() else 0)
         snapshot = {
+            "background_cycles_active": background_cycles,
             "new_work_blocked": control.get("update_no_new_work") is True,
             "backend_stopped_confirmed_or_unbound": backend_stopped_confirmed,
             "confirmed_run_status": "unbound" if not bound else backend_status,
@@ -4723,7 +4744,7 @@ class TaskRunner:
         if (not self.binding or self.binding.run_status != 'faulted'
                 or self._run_status_persistence_pending or self._fault_recovery_processing
                 or any(snapshot.get(k) for k in (
-                    'current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
+                    'background_cycles_active', 'current_task', 'task_lease_active', 'ui_lock_active', 'sidecar_active',
                     'pending_sqlite_action_journal', 'pending_file_action_journal',
                     'pending_sent_ack', 'action_journal_state_unavailable',
                     'hook_unresolved_calls', 'hook_pending_delivery', 'hook_connection_checking'))):
@@ -4733,33 +4754,82 @@ class TaskRunner:
         except Exception:
             return None
 
-    def _update_check_safety_snapshot(self) -> dict[str, Any]:
-        snapshot = self.update_install_safety_snapshot()
-        code, text = snapshot['business_reason_code'], snapshot['business_reason_text']
-        if snapshot['new_work_blocked']:
-            code, text = 'UPDATE_ALREADY_IN_PROGRESS', '已有更新或恢复交接正在进行'
-        elif code and self._pending_read_update_candidate(snapshot) is not None:
-            # This permits discovery only. Installation still requires the signed
-            # target capability, backend proof and final stopped-writer recheck.
-            code, text = '', '旧读取记录已保留，更新前仍需核验目标版本能否接续'
-        return {**snapshot, 'allowed': not code, 'reason_code': code, 'reason_text': text}
+    @contextmanager
+    def update_background_cycle(self, *, settlement_only: bool = False):
+        """Reserve a background iteration before update intent can close intake.
+
+        This lock covers only registration, never network/WeChat work. An
+        already admitted iteration may save its outcome; final installation
+        waits for its counter as well as all original durable boundaries.
+        """
+        with self._update_cycle_lock:
+            allowed = (not self.update_checks_suspended()
+                       or (settlement_only and self._update_settlement_pending()))
+            if allowed:
+                self._update_active_cycles += 1
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self._update_cycle_lock:
+                    self._update_active_cycles -= 1
+
+    def update_checks_suspended(self) -> bool:
+        # Only the old process drains. The newly launched process still needs
+        # startup health checks while the persisted no-new-business gate stays
+        # closed until the authenticated update result is reconciled.
+        return self._update_quiescing_request_id is not None
+
+    def _update_settlement_pending(self) -> bool:
+        """Only persisted work can keep a settlement consumer alive."""
+        if load_runtime_control().get('inflight_flow_id') or self._pending_flow_finish:
+            return True
+        if any(update_install_business_blockers().values()):
+            return True
+        services = self.hook_services
+        if services is not None:
+            from .storage import hook_update_business_blockers
+            prepared = services.connection.prepared
+            generation = prepared.registration.scope.process_generation if prepared else None
+            return any(hook_update_business_blockers(generation).values())
+        return False
+
+    def update_flow_continuation_allowed(self, flow_id: str | None) -> bool:
+        """Update may finish this original reply; it never grants a new Flow."""
+        return bool(self.update_checks_suspended() and flow_id
+                    and flow_id == self._update_original_flow_id
+                    and self._run_status_revision == self._update_stop_revision
+                    and load_runtime_control().get('update_no_new_work')
+                    and self.binding and self.binding.run_status == 'paused'
+                    and self._can_continue_inflight_flow(flow_id))
+
+    def update_read_retry_revision(self) -> int:
+        # Update's own pause must not reset/cancel the original reply's proven
+        # unsent-read budget. A subsequent operator/fault intent still fences it.
+        if (self._run_status_revision == self._update_stop_revision
+                and self.update_flow_continuation_allowed(self._update_original_flow_id)):
+            return self._update_original_revision
+        return self._run_status_revision
+
+    def sync_update_stop(self) -> None:
+        """Acknowledge the already-persisted stop, without creating a new intent."""
+        if self._pending_run_status_sync in {'paused', 'faulted'}:
+            self._sync_pending_run_status(force=True)
 
     def update_check_safety_snapshot(self) -> dict[str, Any]:
-        # Do not freeze Qt while task admission owns the lock during an HTTP call.
-        if not self._new_work_admission_lock.acquire(blocking=False):
-            return {'allowed': False, 'reason_code': 'UPDATE_ADMISSION_BUSY',
-                    'reason_text': '正在登记或执行受保护操作，请稍后检查更新'}
-        try:
-            return self._update_check_safety_snapshot()
-        finally:
-            self._new_work_admission_lock.release()
+        # Request admission is independent of WeChat readiness/activity.
+        # Physical and durable evidence is checked only before installation.
+        blocked = load_runtime_control().get("update_no_new_work") is True
+        return {'allowed': not blocked,
+                'reason_code': 'UPDATE_ALREADY_IN_PROGRESS' if blocked else '',
+                'reason_text': '已有更新或恢复交接正在进行' if blocked else ''}
 
     def begin_clock_sync(self, operation_id: str) -> str | None:
         """Reserve the same admission gate; clock repair never settles a Flow."""
         from .clock_sync_ticket import valid_operation
         if not valid_operation(operation_id):
             raise ValueError("CLOCK_OPERATION_INVALID")
-        with self._new_work_admission_lock:
+        with self._new_work_admission_lock, self._update_cycle_lock:
             if self.binding is None or self.hook_services is None:
                 return None
             control = load_runtime_control()
@@ -4773,19 +4843,38 @@ class TaskRunner:
             return operation_id
 
     def begin_update_check(self, begin_request: Callable[[], dict]) -> tuple[dict, dict | None]:
-        """Check and reserve intake under the SAME lock used by new Flow admission."""
-        if not self._new_work_admission_lock.acquire(blocking=False):
-            return ({'allowed': False, 'reason_code': 'UPDATE_ADMISSION_BUSY',
-                     'reason_text': '正在登记或执行受保护操作，请稍后检查更新'}, None)
-        try:
-            snapshot = self._update_check_safety_snapshot()
+        """Accept intent without waiting for a routine check's network lock.
+
+        Existing task/Flow admission still tests the persisted gate. A task
+        already past that check is an admitted writer, never an idle boundary:
+        its registered background cycle and original Flow/lease must drain.
+        """
+        # Global order: status intent before the short cycle-registration lock.
+        # Neither lock may enclose a network call or an admission-lock wait.
+        with self._run_status_intent_lock, self._update_cycle_lock:
+            snapshot = self.update_check_safety_snapshot()
             if not snapshot['allowed']:
                 return snapshot, None
+            # Persist the stop before writing the request or starting a thread.
+            # A crash at any later boundary must restart stopped, even if no
+            # update gate/result has been written yet. This performs no I/O to
+            # WeChat or the backend; the usual status ACK runs asynchronously.
+            original_revision = self._run_status_revision
+            original_flow_id = load_runtime_control().get('inflight_flow_id')
+            if not self.preserve_update_stop():
+                raise RuntimeError('UPDATE_STOP_PERSISTENCE_FAILED')
+            self._update_original_revision = original_revision
+            self._update_stop_revision = self._run_status_revision
+            self._update_original_flow_id = original_flow_id
             state = begin_request()
             set_update_new_work_gate(True, update_request_id=state['update_request_id'])
+            self._update_quiescing_request_id = state['update_request_id']
             return snapshot, state
-        finally:
-            self._new_work_admission_lock.release()
+
+    def preserve_update_stop(self) -> bool:
+        """Keep update intent stopped through the existing durable stop path."""
+        return self.binding is None or self._preserve_stopped_run_status(
+            'paused', repeated_observation=True)
 
     def update_pending_read_handoff_snapshot(self, package_manifest: dict[str, Any]) -> dict[str, Any]:
         """Preserve one stopped read for a proven compatible target."""
@@ -7066,14 +7155,18 @@ class TaskRunner:
                 binding = self.binding
                 if self.hook_services is None and not self._refresh_vision_credential(binding):
                     return
+                ready = self._check_fault_recovery()["ready"]
                 with self._run_status_intent_lock:
-                    if revision != self._run_status_revision or not self._check_fault_recovery()["ready"]:
+                    if revision != self._run_status_revision or not ready:
                         return
                 attempted = True
                 profile = self.api.set_run_status(binding, "running", recover_from_fault=True)
+                # Full readiness may wait for connection/installation snapshots.
+                # Inspect outside the intent lock, then fence the local commit.
+                ready = self._check_fault_recovery()["ready"]
                 with self._run_status_intent_lock:
                     if (profile.run_status != "running" or revision != self._run_status_revision
-                            or not self._check_fault_recovery()["ready"]):
+                            or not ready or load_runtime_control().get("update_no_new_work")):
                         raise RuntimeError("恢复期间状态发生变化，继续停止接单")
                     self._backend_confirmed_run_status = "running"
                     previous_layout_state = load_c2_state("layout_recovery")
@@ -7132,10 +7225,12 @@ class TaskRunner:
                     self._pending_run_status_sync = binding.run_status
                     return
                 self._backend_confirmed_run_status = str(profile.run_status or "") or None
-                self._apply_local_run_status(profile.run_status)
+                self._apply_local_run_status(profile.run_status, new_intent=False)
                 self._pending_run_status_sync = None
                 self.run_status_sync_error = None
                 self.on_profile(profile)
+                self._backend_inflight_flow_state = dict(profile.inflight_flow_state or {})
+                self._backend_pending_read_recovery = dict(getattr(profile, 'pending_read_recovery', {}) or {})
         except Exception as exc:
             if self._handle_binding_invalid(exc, binding):
                 return
@@ -7352,14 +7447,37 @@ class TaskRunner:
                 self.stop_event.wait(self.poll_interval_seconds)
 
     def tick_once(self) -> None:
-        try:
-            self._tick_once()
-            if self.hook_services is None:
-                from .pre_send_read_recovery import observe_pending_input
-                observe_pending_input(self)
-            self._process_fault_recovery()
-        finally:
-            self._publish_fault_recovery()
+        with self.update_background_cycle(settlement_only=self.hook_services is None) as admitted:
+            if self.update_checks_suspended():
+                if self._pending_run_status_sync in {"paused", "faulted"}:
+                    self._sync_pending_run_status()
+                if admitted and self.hook_services is None and self.binding:
+                    # OCR's existing outboxes and original sequence are also
+                    # consumers. Never enter the probe/pull/scan tick here.
+                    try:
+                        self._replay_reply_send_ack_outbox(self.binding)
+                        self._replay_c2_outbox(self.binding)
+                        self._reconcile_restart_inflight_flow(self.binding)
+                        from .reply_sequence_runtime import resume_reply_sequence
+                        resume_reply_sequence(self, self.binding)
+                    except Exception as exc:
+                        self._handle_restart_recovery_exception(self.binding, exc)
+                return
+            if not admitted:
+                # Stop acknowledgement is a backend-only operation; it must
+                # not depend on a live/logged-in WeChat or perform recovery UI.
+                if self._pending_run_status_sync in {"paused", "faulted"}:
+                    self._sync_pending_run_status()
+                return
+            try:
+                self._tick_once()
+                if not load_runtime_control().get("update_no_new_work"):
+                    if self.hook_services is None:
+                        from .pre_send_read_recovery import observe_pending_input
+                        observe_pending_input(self)
+                    self._process_fault_recovery()
+            finally:
+                self._publish_fault_recovery()
 
     def _tick_once(self) -> None:
         if self.hook_services is not None:
@@ -9527,11 +9645,13 @@ class TaskRunner:
         def cancelled() -> bool:
             active = self.binding
             runtime = load_runtime_control()
-            return bool(cancel_check() or not active or active.run_status != "running"
+            update_continuation = self.update_flow_continuation_allowed(runtime.get('inflight_flow_id'))
+            return bool(cancel_check() or not active
+                        or (not update_continuation and (active.run_status != "running"
+                            or runtime.get("pause_requested") or runtime.get("update_no_new_work")))
                         or self._run_status_revision != revision
                         or (active.worker_id, active.client_instance_id, active.bound_at) != binding_identity
                         or (target.conversation_id, target.remark_code, target.authorization_revision) != authorization
-                        or runtime.get("pause_requested") or runtime.get("update_no_new_work")
                         or self._fault_recovery_processing)
 
         def still_authorized() -> bool:
@@ -11431,75 +11551,82 @@ class TaskRunner:
         append_log("INFO", "c2_listener_started", "C2 微信监听循环启动。")
         self._mark_background_loop_entered("c2_listener")
         while not self.stop_event.is_set():
-            binding = self.binding
-            if not binding or not CONFIG.c2_enabled or not self._c2_dependencies_ready():
-                self.stop_event.wait(1.0)
-                continue
-            if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
-                self.stop_event.wait(0.5)
-                continue
-            runtime_control = load_runtime_control()
-            inflight_flow_id = str(
-                runtime_control.get("inflight_flow_id") or ""
-            ).strip()
-            if inflight_flow_id:
-                if self._retry_pending_flow_finish(binding):
-                    self.stop_event.wait(1.0)
-                    continue
-                if self._can_continue_inflight_flow(inflight_flow_id):
-                    # A persisted flow is recovery-only in this listener.  Its
-                    # live owner (if any) continues the customer chain; after
-                    # restart only durable Journal/Outbox/sent_ack settlement
-                    # is allowed.  Never scan or select another conversation.
-                    self._worker_transaction_barrier_ready(
-                        binding,
-                        reason="c2_inflight_recovery",
-                    )
-                    self._finish_restart_recovery_flow_if_settled(binding)
-                self.stop_event.wait(1.0)
-                continue
-            if not self._can_start_new_flow(binding):
-                self.stop_event.wait(1.0)
-                continue
-            # A reply already exists in WeChat once its bubble is confirmed.
-            # Its durable sent_ack must reach the backend before C2 is allowed
-            # to scan that bubble and classify its source.
-            if not self._worker_transaction_barrier_ready(
-                binding,
-                reason="c2_loop",
-            ):
-                # A settled image fact may still be waiting for its backend
-                # acknowledgement after a crash.  This is durable recovery,
-                # not a new scan: only the oldest affected conversation may
-                # proceed, and _recover_pending_image_transaction performs
-                # its own authorization and identity checks before any UI
-                # action.  Do not leave the listener waiting forever on the
-                # very barrier that this recovery is responsible for clearing.
-                if (
-                    self._pending_image_recovery_conversation_ids()
-                    and self._can_start_new_flow(binding)
-                    and self._wechat_ready_for_c2()
-                ):
-                    self._recover_pending_image_transaction(binding)
-                self.stop_event.wait(1.0)
-                continue
-            if not self._wechat_ready_for_c2():
-                self.stop_event.wait(1.0)
-                continue
-            if not self._c2_vision_ready_before_scan():
-                self.stop_event.wait(1.0)
-                continue
-            now = time.monotonic()
-            if self.c2_manual_scan_requested.is_set():
-                self.c2_manual_scan_requested.clear()
-                self._run_c2_scan_round(binding, reason="manual_immediate_scan")
-            if now - self.last_c2_scan_at >= CONFIG.c2_session_scan_interval_seconds:
-                self._run_c2_scan_round(binding, reason="visible_sessions")
-                self.last_c2_scan_at = now
-            if now - self.last_c2_read_at >= CONFIG.c2_message_read_interval_seconds:
-                self._read_state_target_queue(binding)
-                self.last_c2_read_at = now
+            with self.update_background_cycle() as admitted:
+                if admitted:
+                    self._c2_tick_once()
+                else:
+                    self.stop_event.wait(0.25)
+
+    def _c2_tick_once(self) -> None:
+        binding = self.binding
+        if not binding or not CONFIG.c2_enabled or not self._c2_dependencies_ready():
             self.stop_event.wait(1.0)
+            return
+        if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
+            self.stop_event.wait(0.5)
+            return
+        runtime_control = load_runtime_control()
+        inflight_flow_id = str(
+            runtime_control.get("inflight_flow_id") or ""
+        ).strip()
+        if inflight_flow_id:
+            if self._retry_pending_flow_finish(binding):
+                self.stop_event.wait(1.0)
+                return
+            if self._can_continue_inflight_flow(inflight_flow_id):
+                # A persisted flow is recovery-only in this listener.  Its
+                # live owner (if any) continues the customer chain; after
+                # restart only durable Journal/Outbox/sent_ack settlement
+                # is allowed.  Never scan or select another conversation.
+                self._worker_transaction_barrier_ready(
+                    binding,
+                    reason="c2_inflight_recovery",
+                )
+                self._finish_restart_recovery_flow_if_settled(binding)
+            self.stop_event.wait(1.0)
+            return
+        if not self._can_start_new_flow(binding):
+            self.stop_event.wait(1.0)
+            return
+        # A reply already exists in WeChat once its bubble is confirmed.
+        # Its durable sent_ack must reach the backend before C2 is allowed
+        # to scan that bubble and classify its source.
+        if not self._worker_transaction_barrier_ready(
+            binding,
+            reason="c2_loop",
+        ):
+            # A settled image fact may still be waiting for its backend
+            # acknowledgement after a crash.  This is durable recovery,
+            # not a new scan: only the oldest affected conversation may
+            # proceed, and _recover_pending_image_transaction performs
+            # its own authorization and identity checks before any UI
+            # action.  Do not leave the listener waiting forever on the
+            # very barrier that this recovery is responsible for clearing.
+            if (
+                self._pending_image_recovery_conversation_ids()
+                and self._can_start_new_flow(binding)
+                and self._wechat_ready_for_c2()
+            ):
+                self._recover_pending_image_transaction(binding)
+            self.stop_event.wait(1.0)
+            return
+        if not self._wechat_ready_for_c2():
+            self.stop_event.wait(1.0)
+            return
+        if not self._c2_vision_ready_before_scan():
+            self.stop_event.wait(1.0)
+            return
+        now = time.monotonic()
+        if self.c2_manual_scan_requested.is_set():
+            self.c2_manual_scan_requested.clear()
+            self._run_c2_scan_round(binding, reason="manual_immediate_scan")
+        if now - self.last_c2_scan_at >= CONFIG.c2_session_scan_interval_seconds:
+            self._run_c2_scan_round(binding, reason="visible_sessions")
+            self.last_c2_scan_at = now
+        if now - self.last_c2_read_at >= CONFIG.c2_message_read_interval_seconds:
+            self._read_state_target_queue(binding)
+            self.last_c2_read_at = now
+        self.stop_event.wait(1.0)
 
     def _recover_pending_image_transaction(
         self,
@@ -18988,7 +19115,8 @@ class TaskRunner:
             sequence_action = status.get("reply_action") or {}
             if (int(sequence_action.get("segment_index") or 1) > 1
                     and (binding.run_status != "running" or load_runtime_control().get("pause_requested")
-                         or load_runtime_control().get("update_no_new_work"))):
+                         or load_runtime_control().get("update_no_new_work"))
+                    and not self.update_flow_continuation_allowed(flow_id)):
                 return {"ok": True, "batch": status, "sent": False, "reason": "reply_sequence_paused"}
             if not self._batch_authorization_allows_target(status, target):
                 return {

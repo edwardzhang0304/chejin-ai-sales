@@ -171,16 +171,25 @@ class HookFormalRuntime:
         runner=getattr(self,'lifecycle_runner',None)
         lock=getattr(runner,'_new_work_admission_lock',None)
         intent_lock=getattr(runner,'_run_status_intent_lock',None)
-        with (lock if lock is not None else nullcontext()), (intent_lock if intent_lock is not None else nullcontext()):
-            if runner and not runner._can_start_new_flow():raise ValueError('HOOK_RUNTIME_NOT_RUNNING')
+        cycle = runner.update_background_cycle() if runner else nullcontext(True)
+        # The counter covers pending network admissions before a Flow exists.
+        # Updates never wait for this admission lock, only installation drains it.
+        with cycle as admitted, (lock if lock is not None else nullcontext()):
+            if not admitted:raise ValueError('HOOK_RUNTIME_NOT_RUNNING')
+            with (intent_lock if intent_lock is not None else nullcontext()):
+                if runner and not runner._can_start_new_flow():raise ValueError('HOOK_RUNTIME_NOT_RUNNING')
+                revision = runner._run_status_revision if runner else None
             self.heartbeat(new_work=True)
-            state={'flow_id':task['id'],'flow_kind':'chat_reply' if conversation_id else 'task'}
-            if conversation_id:state['conversation_id']=conversation_id
-            saved=self.private_root/'flows'/f"{task['id']}.json"
-            if saved.exists():
-                if rules.loads(saved.read_bytes())!=state:raise ValueError('HOOK_FLOW_INTENT_CONFLICT')
-            else:_save(saved,state)
-            storage.begin_runtime_flow(task['id'],state['flow_kind'])
+            with (intent_lock if intent_lock is not None else nullcontext()):
+                if runner and (revision != runner._run_status_revision or not runner._can_start_new_flow()):
+                    raise ValueError('HOOK_RUNTIME_NOT_RUNNING')
+                state={'flow_id':task['id'],'flow_kind':'chat_reply' if conversation_id else 'task'}
+                if conversation_id:state['conversation_id']=conversation_id
+                saved=self.private_root/'flows'/f"{task['id']}.json"
+                if saved.exists():
+                    if rules.loads(saved.read_bytes())!=state:raise ValueError('HOOK_FLOW_INTENT_CONFLICT')
+                else:_save(saved,state)
+                storage.begin_runtime_flow(task['id'],state['flow_kind'])
             try:
                 acknowledged=self.client.call(self.credentials,'POST',f'/workers/{self.credentials.worker_id}/inflight-flow/start',state)
             except ApiError as exc:
@@ -257,7 +266,10 @@ class HookFormalRuntime:
         def check():
             runner=getattr(self,'lifecycle_runner',None)
             if runner and runner.binding.run_status=='faulted':raise ValueError('HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED')
-            if runner and hasattr(runner,'_can_continue_inflight_flow') and not runner._can_continue_inflight_flow():
+            if (runner and runner.update_checks_suspended()
+                    and not runner.update_flow_continuation_allowed(flow_id)):
+                raise ValueError('HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED')
+            if runner and hasattr(runner,'_can_continue_inflight_flow') and not runner._can_continue_inflight_flow(flow_id):
                 raise ValueError('HOOK_ORIGINAL_FLOW_CONTINUATION_BLOCKED')
             if guard.cancel_requested():raise ValueError(guard.error_code or 'HOOK_TASK_LEASE_LOST')
             self._check_lifecycle()
@@ -922,7 +934,11 @@ class HookFormalRuntime:
             else:_save(permit_file,native_permit)
             runtime=self
             class Refresh:
-                def barrier(self):check();return runtime.barrier(binding)
+                def barrier(self):
+                    check()
+                    value = runtime.barrier(binding)
+                    check()  # Revoke even if intent changed during the local read.
+                    return value
                 def __call__(self,p):
                     value=runtime.sync(binding,show_progress=False)
                     if not value['history_ready'] or value['history_state_digest']!=p.history_state_digest:

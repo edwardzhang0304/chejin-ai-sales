@@ -146,7 +146,8 @@ class UpdateStateStore:
             _atomic_json_write(self.state_path, saved)
         return saved
 
-    def begin(self, *, pre_update_run_status: str, client_instance_id: str) -> dict[str, Any]:
+    def begin(self, *, pre_update_run_status: str, client_instance_id: str,
+              keep_stopped_after_update: bool = False) -> dict[str, Any]:
         with self._lock:
             current = self.load()
             if current.get("state") not in {"idle", "succeeded", "failed", "rolled_back"}:
@@ -157,6 +158,7 @@ class UpdateStateStore:
                     "update_request_id": f"update-{uuid.uuid4()}",
                     "client_instance_id": client_instance_id,
                     "pre_update_run_status": pre_update_run_status,
+                    "keep_stopped_after_update": keep_stopped_after_update,
                     "operator_pause_after_request": False,
                     "fault_after_request": False,
                     "created_at": utc_now_iso(),
@@ -456,6 +458,15 @@ def update_status_text(state: dict[str, Any]) -> str:
         return "当前更新器不支持此版本，请联系管理员保留数据安装"
     if code == "UPDATE_ALREADY_LATEST":
         return "当前已是最新版本"
+    if code == "UPDATE_SAFE_STOP_TIMEOUT":
+        # Only locally generated boundary labels, never raw exception/network text.
+        diagnostic = state.get("prepare_diagnostic") or {}
+        snapshot = diagnostic.get("waiting_safety_snapshot") or {}
+        from .update_safety import business_wait_reason
+        _, reason = business_wait_reason(snapshot)
+        if not reason and not snapshot.get("backend_stopped_confirmed_or_unbound"):
+            reason = "后端尚未确认停止接单"
+        return f"暂不能安装：{reason or '原操作尚未安全结束'}；原程序及记录保留，已停止接单"
     if current_state == "checking":
         return "正在检查更新"
     if current_state == "downloading":

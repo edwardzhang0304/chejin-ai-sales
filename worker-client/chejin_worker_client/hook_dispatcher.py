@@ -617,6 +617,16 @@ class HookBusinessDispatcher:
             self._observe_clock(rt,prepared.account)
             self.resolve_wait('business',phase='clock_wait')
         self._adopt_flow(runner,inventory)
+        def update_continuation(binding=None, batch_id=None):
+            # Only the original persisted Flow and its original batch may
+            # continue after update intent. Latest inventory is still required
+            # and the normal lease/history/permission guards remain in force.
+            flow=inventory['inflight_flow']
+            fid=flow.get('flow_id')
+            return bool(fid and fid==rt.active_flow_id
+                and runner.update_flow_continuation_allowed(fid)
+                and (binding is None or flow.get('conversation_id')==binding['conversation_id'])
+                and (batch_id is None or inventory.get('inflight_batch_id')==batch_id))
         byid={b['binding_id']:b for b in inventory['bindings']}
         for metadata in inventory['retained_sends']:
             binding=metadata.get('reconciliation_binding') or byid.get(metadata['binding_id'])
@@ -656,15 +666,23 @@ class HookBusinessDispatcher:
             if not more or inventory['run_status']=='faulted':
                 rt.finish(current['id'],rt.active_flow_id,current['lease_fencing_token'],inventory['inflight_flow'].get('conversation_id'))
                 runner.api.inflight_flow_id=None;publish_current_task(runner,None);return
+        if storage.load_runtime_control().get('update_no_new_work'):
+            # Replay only already-enqueued deliveries; do not ingest another
+            # customer's history or create a new task while draining.
+            for binding in inventory['bindings']:
+                rt.drain_pending(binding)
         for binding in inventory.get('retired_evidence',[]):
             rt.drain_pending(binding)
         if self._recover_voice_attempts([*inventory['bindings'],*inventory.get('retired_evidence',[])]):return
+        if storage.load_runtime_control().get('update_no_new_work') and not update_continuation():
+            return
         if inventory['run_status']=='faulted' or runner.binding.run_status=='faulted':return
         if not services.startup_window_ready_for(prepared):
             self._report_wait('HOOK_STARTUP_WINDOW_PENDING');return
         self._business_cycle_verified=True
-        self._discover_invitations(runner,inventory['invitations'],inventory['bindings'],
-            inventory.get('relationship_bindings',[]) if inventory.get('relationship_query_version')==1 else [])
+        if not storage.load_runtime_control().get('update_no_new_work'):
+            self._discover_invitations(runner,inventory['invitations'],inventory['bindings'],
+                inventory.get('relationship_bindings',[]) if inventory.get('relationship_query_version')==1 else [])
         if not rt.active_flow_id and time.monotonic()>=self._housekeeping_due:
             from .hook_retention import retire_inbox,retire_c1_roi,retire_history_artifacts
             from .config import CONFIG
@@ -687,6 +705,8 @@ class HookBusinessDispatcher:
         all_history_ready=bool(bindings)
         pending_work=bool(inventory['invitations'] or inventory['retained_sends'] or rt.active_flow_id)
         for binding in bindings:
+            if storage.load_runtime_control().get('update_no_new_work') and not update_continuation(binding):
+                continue
             self.diagnostic_context={'conversation_id':binding['conversation_id'],
                 'hook_account_scope_sha256':hashlib.sha256((rt.scope.self_wxid+rt.scope.account_epoch).encode()).hexdigest(),
                 'hook_process_generation':rt.scope.process_generation,'hook_operation':'native_customer_sync'}
@@ -702,7 +722,11 @@ class HookBusinessDispatcher:
                     synced=self._read_history(binding,barrier=barrier)
                 if not self.history_storage_ready():
                     raise ValueError('HOOK_HISTORY_STORAGE_CAPACITY_EXCEEDED')
+                if storage.load_runtime_control().get('update_no_new_work') and not update_continuation(binding):
+                    return  # The completed history receipt is already durable.
                 for job in binding.get('voice_jobs',[]):
+                    if storage.load_runtime_control().get('update_no_new_work'):
+                        break  # No new transcription, even for this customer.
                     context=f"{binding['binding_id']}:{job['native_msg_id']}"
                     if hasattr(rt,'register_binding_progress'):
                         rt.register_binding_progress(binding,context,aliases=[job['native_msg_id']])
@@ -758,6 +782,8 @@ class HookBusinessDispatcher:
                     if synced['message_batch'].get('next_step')=='generate':self._mark_batch_presented(bid)
                 # Keep polling all customers while any model is generating.
                 for bid in batches:
+                    if storage.load_runtime_control().get('update_no_new_work') and not update_continuation(binding,bid):
+                        continue
                     data = read_batch_view(
                         self.client, rt.credentials, runner, bid,
                         observation_query_version=self._observation_query_version,
