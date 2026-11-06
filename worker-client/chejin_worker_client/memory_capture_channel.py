@@ -244,6 +244,33 @@ def windows_security(folder, *, initialize=False, pins=None):
     return recovery
 
 
+def _create_windows_private_directory(folder):
+    """Publish a new namespace with private ownership/DACL from its first instant."""
+    import ntsecuritycon, pywintypes, win32api, win32con, win32file, win32security
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    try:
+        user = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+    finally:
+        token.Close()
+    acl = win32security.ACL()
+    system = win32security.CreateWellKnownSid(win32security.WinLocalSystemSid, None)
+    for principal in (user, system):
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, principal)
+    descriptor = win32security.SECURITY_DESCRIPTOR()
+    descriptor.SetSecurityDescriptorOwner(user, False)
+    descriptor.SetSecurityDescriptorDacl(True, acl, False)
+    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    try:
+        win32file.CreateDirectory(str(folder), attributes)
+    except pywintypes.error as exc:
+        if exc.winerror != 183:
+            raise
+        # A competing/existing directory is not ours to repair blindly.
+        # The pinned owner/DACL/reparse validation below remains mandatory.
+
+
 def restrict(folder, *, pins=None):
     """Only this user and SYSTEM; no inherited cross-account writes."""
     if WINDOWS:
@@ -274,7 +301,11 @@ class Channel:
                             lambda: self.root.joinpath('runtime').mkdir(exist_ok=True))
                         pins.pin(folder.parent, {'phase': 'initialize'})
                     def create_folder():
-                        folder.mkdir(parents=True, exist_ok=True)
+                        if pins:
+                            if not folder.exists():
+                                _create_windows_private_directory(folder)
+                        else:
+                            folder.mkdir(parents=True, exist_ok=True)
                     if pins:_security_call({'phase': 'initialize'}, 'create_directory', create_folder)
                     else:create_folder()
                     safe(folder, self.root)

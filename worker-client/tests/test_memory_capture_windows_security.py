@@ -69,6 +69,7 @@ def security(monkeypatch):
         FILE_SHARE_READ=1, OPEN_EXISTING=3, FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
         FILE_ATTRIBUTE_REPARSE_POINT=0x400,
         FILE_ATTRIBUTE_DIRECTORY=0x10))
+    monkeypatch.setattr(cp, '_create_windows_private_directory', lambda folder: folder.mkdir())
     state.ACL = ACL
     return state
 
@@ -225,6 +226,16 @@ def test_native_windows_interrupted_empty_default_owner_bootstrap(tmp_path):
     finally: token.Close()
     if user == owner: pytest.skip('default owner equals user; elevated-token case not present')
     channel = cp.Channel(tmp_path); channel.requests.mkdir(parents=True)
+    # Reproduce an interrupted private bootstrap, not an inherited foreign ACL.
+    # The default administrator owner is retained; only the known allowed ACL
+    # is prepared, as required by the existing recovery policy.
+    import ntsecuritycon
+    acl=win32security.ACL()
+    for principal in (user,win32security.CreateWellKnownSid(win32security.WinLocalSystemSid,None),owner):
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION,0,ntsecuritycon.FILE_ALL_ACCESS,principal)
+    for folder in (channel.folder,channel.requests):
+        win32security.SetNamedSecurityInfo(str(folder),win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION|win32security.PROTECTED_DACL_SECURITY_INFORMATION,None,None,acl,None)
     cp.Channel(tmp_path).initialize()
     for folder in (channel.folder, channel.requests): cp.windows_security(folder)
 
@@ -233,7 +244,7 @@ def test_native_windows_interrupted_empty_default_owner_bootstrap(tmp_path):
 def test_native_windows_pins_hold_namespace_through_publication(tmp_path):
     import subprocess
     folder = tmp_path / 'runtime/memory-capture'
-    folder.mkdir(parents=True)
+    folder.parent.mkdir(parents=True)
     outside = tmp_path / 'outside'; outside.mkdir()
     channel = cp.Channel(tmp_path)
     with channel.initialization():
