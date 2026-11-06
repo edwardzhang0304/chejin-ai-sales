@@ -11,6 +11,7 @@ from .log_evidence_rules import stored_fault_evidence
 CHAIN = ('hook_raw_inbox', 'hook_observation_projection', 'hook_delivery_outbox')
 STATE_COLUMNS = {
     'hook_voice_attempts': ('state', ('transcribed', 'failed')),
+    'hook_voice_result_delivery': ('status', ('confirmed',)),
     'hook_active_calls': ('state', ('completed',)),
     'hook_read_retry': ('state', ('resolved','operator_recheck')),
 }

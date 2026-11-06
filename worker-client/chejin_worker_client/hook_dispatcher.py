@@ -295,9 +295,12 @@ class HookBusinessDispatcher:
     def _recover_voice_attempts(self,bindings):
         from .hook_process import inspect_windows_generation_exited
         rt=self.runtime
+        with storage.db_connection() as conn:
+            pending = hook_voice_receipts.reconcile_pending(conn, self.private_root)
+            conn.commit()
+        retained_by_binding = hook_voice_receipts.retained_job_map(pending, self.private_root, rt.scope)
         for binding in bindings:
-            with storage.db_connection() as conn:
-                retained = hook_voice_receipts.retained_jobs(conn, self.private_root, rt.scope, binding)
+            retained = retained_by_binding.get((binding['binding_id'],binding['binding_revision'],binding['peer_wxid']), [])
             for job in [*binding.get('voice_jobs',[]),*binding.get('retained_voice_jobs',[]), *retained]:
                 saved=self.voice.saved_parent(rt.scope,binding['peer_wxid'],job['native_msg_id'])
                 if not saved:continue
