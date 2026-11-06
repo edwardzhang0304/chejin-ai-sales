@@ -37,7 +37,7 @@ def security(monkeypatch):
         path = handle.path
         return SimpleNamespace(GetSecurityDescriptorOwner=lambda: state.owners.get(path, 'admins'),
             GetSecurityDescriptorDacl=lambda: state.acls.get(path, ACL([
-                ((0, 0), 0xffff, 'user'), ((0, 0), 0xffff, 'system'), ((0, 0), 0xffff, 'admins')])))
+                ((0, 0), 0x1f01ff, 'user'), ((0, 0), 0x1f01ff, 'system'), ((0, 0), 0x1f01ff, 'admins')])))
     def set_info(handle, kind, flags, owner, group, acl, sacl):
         assert isinstance(handle, Handle), 'permission mutation must be handle-based'
         path = handle.path
@@ -58,13 +58,16 @@ def security(monkeypatch):
         PROTECTED_DACL_SECURITY_INFORMATION=0x80000000, ACL_REVISION=2, ACCESS_ALLOWED_ACE_TYPE=0)
     monkeypatch.setitem(sys.modules, 'win32api', SimpleNamespace(GetCurrentProcess=lambda: 1))
     monkeypatch.setitem(sys.modules, 'win32security', api)
+    monkeypatch.setitem(sys.modules, 'ntsecuritycon', SimpleNamespace(
+        FILE_READ_ATTRIBUTES=0x80, FILE_ALL_ACCESS=0x1f01ff))
     monkeypatch.setitem(sys.modules, 'win32file', SimpleNamespace(CreateFile=open_directory,
+        FILE_FLAG_OPEN_REPARSE_POINT=0x00200000,
         GetFileInformationByHandle=lambda h: (0x400 if Path(h.path).is_symlink() else 0x10,)))
     monkeypatch.setitem(sys.modules, 'win32con', SimpleNamespace(TOKEN_QUERY=8,
-        OBJECT_INHERIT_ACE=1, CONTAINER_INHERIT_ACE=2, INHERIT_ONLY_ACE=8, FILE_ALL_ACCESS=0xffff,
-        FILE_READ_ATTRIBUTES=0x80, READ_CONTROL=0x20000, WRITE_DAC=0x40000, WRITE_OWNER=0x80000,
+        OBJECT_INHERIT_ACE=1, CONTAINER_INHERIT_ACE=2, INHERIT_ONLY_ACE=8,
+        READ_CONTROL=0x20000, WRITE_DAC=0x40000, WRITE_OWNER=0x80000,
         FILE_SHARE_READ=1, OPEN_EXISTING=3, FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
-        FILE_FLAG_OPEN_REPARSE_POINT=0x00200000, FILE_ATTRIBUTE_REPARSE_POINT=0x400,
+        FILE_ATTRIBUTE_REPARSE_POINT=0x400,
         FILE_ATTRIBUTE_DIRECTORY=0x10))
     state.ACL = ACL
     return state
@@ -76,7 +79,7 @@ def test_default_owner_startup_recovery_preserves_records(tmp_path, security, ex
     if existing == 'empty_requests': (folder / 'requests').mkdir()
     if existing == 'private_records':
         (folder / 'endpoint.json').write_bytes(b'original diagnostic record')
-        security.acls[str(folder)] = security.ACL([((0, 0), 0xffff, 'user'), ((0, 0), 0xffff, 'system')])
+        security.acls[str(folder)] = security.ACL([((0, 0), 0x1f01ff, 'user'), ((0, 0), 0x1f01ff, 'system')])
     original = {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()}
     cp.windows_security(folder, initialize=True)
     cp.windows_security(folder)
@@ -93,7 +96,7 @@ def test_no_ownership_takeover_or_untrusted_records(tmp_path, security, case):
     if case in ('public_records', 'foreign_acl'):
         (folder / 'endpoint.json').write_bytes(b'untrusted original')
     if case == 'foreign_acl':
-        security.acls[str(folder)] = security.ACL([((0, 0), 0xffff, 'foreign-user')])
+        security.acls[str(folder)] = security.ACL([((0, 0), 0x1f01ff, 'foreign-user')])
     with pytest.raises(cp.ChannelSecurityError, match=('channel_permissions_invalid' if case in ('public_records', 'foreign_acl') else 'channel_owner_mismatch')) as err:
         cp.windows_security(folder, initialize=case != 'requester')
     assert not security.writes
@@ -101,8 +104,8 @@ def test_no_ownership_takeover_or_untrusted_records(tmp_path, security, case):
             'private_acl', 'user_full_access'} <= set(err.value.security_facts)
 
 
-@pytest.mark.parametrize('entries', [[], [((0, 0), 1, 'user')], [((0, 8), 0xffff, 'user')],
-                                   [((0, 0), 0xffff, 'user'), ((0, 0), 1, 'everyone')]])
+@pytest.mark.parametrize('entries', [[], [((0, 0), 1, 'user')], [((0, 8), 0x1f01ff, 'user')],
+                                   [((0, 0), 0x1f01ff, 'user'), ((0, 0), 1, 'everyone')]])
 def test_requester_requires_effective_private_user_access(tmp_path, security, entries):
     security.owners[str(tmp_path)] = 'user'
     security.acls[str(tmp_path)] = security.ACL(entries)

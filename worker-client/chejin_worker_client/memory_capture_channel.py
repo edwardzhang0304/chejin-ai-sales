@@ -118,18 +118,18 @@ class _WindowsPins:
         if failure is not None and exc_type is None:raise failure
 
     def pin(self, path, facts, *, modify=False):
-        import win32con, win32file
+        import ntsecuritycon, win32con, win32file
         path = Path(path).absolute()
         if path in self.handles:
             return self.handles[path]
         if path.parent != path:
             self.pin(path.parent, facts)
-        access = win32con.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL
+        access = ntsecuritycon.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL
         if modify:
             access |= win32con.WRITE_DAC | win32con.WRITE_OWNER
         handle = _security_call(facts, 'open_directory', win32file.CreateFile,
             str(path), access, win32con.FILE_SHARE_READ, None, win32con.OPEN_EXISTING,
-            win32con.FILE_FLAG_BACKUP_SEMANTICS | win32con.FILE_FLAG_OPEN_REPARSE_POINT, None)
+            win32con.FILE_FLAG_BACKUP_SEMANTICS | win32file.FILE_FLAG_OPEN_REPARSE_POINT, None)
         self.handles[path] = handle
         info = _security_call(facts, 'read_directory', win32file.GetFileInformationByHandle, handle)
         if info[0] & win32con.FILE_ATTRIBUTE_REPARSE_POINT or not info[0] & win32con.FILE_ATTRIBUTE_DIRECTORY:
@@ -163,7 +163,7 @@ def _empty_bootstrap(folder):
 
 def windows_security(folder, *, initialize=False, pins=None):
     """One owner/DACL policy for initialization and read-only request validation."""
-    import win32api, win32con, win32security
+    import ntsecuritycon, win32api, win32con, win32security
     facts = {'phase': 'initialize' if initialize else 'validate'}
     if pins is None:
         with _WindowsPins() as owned:
@@ -196,7 +196,7 @@ def windows_security(folder, *, initialize=False, pins=None):
                 if not allowed or ace[-1] not in (sid, system): private_acl = False
                 if not allowed or ace[-1] not in (sid, system, admins): bootstrap_acl = False
                 if (allowed and ace[-1] == sid and not ace[0][1] & win32con.INHERIT_ONLY_ACE
-                        and ace[1] & win32con.FILE_ALL_ACCESS == win32con.FILE_ALL_ACCESS):
+                        and ace[1] & ntsecuritycon.FILE_ALL_ACCESS == ntsecuritycon.FILE_ALL_ACCESS):
                     user_access = True
         facts.update(owner_matches_user=owner == sid, owner_matches_default=owner == default_owner,
             private_acl=private_acl, user_full_access=user_access)
@@ -226,7 +226,7 @@ def windows_security(folder, *, initialize=False, pins=None):
         acl = win32security.ACL()
         for principal in (sid, system):
             # No inheritable ACE: never propagate a repair to old records.
-            acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, win32con.FILE_ALL_ACCESS, principal)
+            acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, principal)
         return acl
     acl = _security_call(facts, 'build_dacl', build_acl)
     _security_call(facts, 'set_dacl', win32security.SetSecurityInfo, handle, win32security.SE_FILE_OBJECT,
