@@ -62,6 +62,7 @@ unlimited 只用于客户明确取消预算，uncertain 用于含糊或矛盾。
 确实无法用现有条件表达的需求放在 unsupported_requirements，这里只能填文字列表，例如 ["低油耗"]，不能填带text或source_ids的对象；没有这类要求就填 []。文字筛选只支持等于或多选，不支持不等于；客户只说不要SUV时，不能擅自改成只要轿车而漏掉MPV等其他类型，应保留未核实的排除要求。车源缺少字段也不能当作满足，不能为了完成查询丢掉客户条件。
 name_queries可为空；首次点名车型用name_queries，程序按全库公开名称/型号/别名字面匹配；不要编造ID。品牌找车用filters，不是name_queries。多义或未找到须澄清，不等于没有库存。reference_ids/exclude_ids只允许known_ids中有可信来源的ID；历史仅有名称则按名称查，不自造ID。
 所有条件先查全库再限制展示。拒绝旧推荐用 exclude_ids；点名旧车问价比较用 reference_ids。
+客户说“第一个/另一台/那台车”等延续上轮推荐时，先看known_ids里已确认发送的reply_text及vehicle_name，把实际话术中的顺序和名称对应到车辆ID；known_ids本身的排列不是推荐顺序。能确定所指就用reference_ids，不要把全名改成简称重新做name_queries。排除所指车用exclude_ids，比较用多个reference_ids。不能唯一确定就澄清，不猜选。历史名称与话术只用于理解指代，当前价格、在售状态仍由本轮查库核实。
 引用ID必须来自附带的消息来源表/历史推荐记录，不得编造。query_id/tenant/snapshot/统计由程序生成，不要输出。
 查车输出最外层只有 catalog_query 一个字段；写完它的内容后直接结束整个对象，外层不能再加第二个字段，也不能附加回复或格式说明。
 around只表示客户说的目标金额，程序按统一已批准范围换算，不自行发明范围。
@@ -1399,7 +1400,9 @@ def trusted_vehicle_ids(target_state, batch, conversation_id):
             if proof.get("batch") == last["batch"]:
                 for vehicle in proof["vehicles"]:
                     ids.setdefault(vehicle, []).append({"source_id":row["message_event_id"],"conversation_id":conversation_id,
-                                                        "kind":"confirmed_native_reply","batch":proof["batch"],"native":proof["native"]})
+                                                        "kind":"confirmed_native_reply","batch":proof["batch"],"native":proof["native"],
+                                                        "vehicle_name":(proof.get("vehicle_labels") or {}).get(vehicle, ""),
+                                                        "reply_text":str(row.get("content") or "")})
     for row in [*(context.get("history") or []), *batch]:
         key = row.get("id") or row.get("message_event_id")
         product = row.get("server_validated_product_id")

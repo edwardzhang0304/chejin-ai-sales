@@ -1173,6 +1173,9 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
     system = (
         "你是微信客服回复质量审稿人，不是客服本人。"
         "你只判断候选回复是否适合发送，不能生成客户可见回复。"
+        "previous_reviews是同一轮同份依据的历史审稿和改稿要求，仅用于保持纠错一致，不是事实来源或发送许可。"
+        "复审先核对上一轮指出的问题是否已解决；若发现上一轮建议本身有误，应在reason和repair_instruction明确解释纠正依据，"
+        "不要无解释地要求加一句、下一次又要求删除。仍有错误必须拒绝，不能因为按上次意见修改就放行。"
         "你不能授权商品事实、价格、库存、车况、政策或承诺；商品事实只能来自product_master，政策流程只能来自formal_knowledge。"
         "authority_evidence_summary.safety.soft_advisory_guard只表示缺少可授权商品/政策事实，不是硬转人工："
         "若BrainPlan为低风险ask_clarifying_question或collect_customer_info、facts_claimed为空且草稿没有具体车型、价格、库存、车况或政策承诺，必须按普通需求澄清审稿，不能仅因没有product_master判repair、block或handoff_suggest。"
@@ -1206,7 +1209,8 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
                    "query_summary须核对facts_claimed的catalog_match_count/catalog_price_min/catalog_price_max，"
                    "这些是catalog_query程序回执提供的限定范围权威，无需虚构product_master车辆ID；"
                    "未知/未查/查询失败不能断言零匹配；完整且条件明确的零匹配可以准确回复。"
-                   "name_results未找到仅代表称呼未定位，重名不可擅选或排除；核对来源与客户所指一致。")
+                   "name_results未找到仅代表称呼未定位，重名不可擅选或排除；核对来源与客户所指一致。"
+                   "名称未定位时不能要求草稿宣称无车或在当前库存找不到该车；先核对已有推荐指代，真正不明确才澄清。")
     if (request.get("catalog_protocol") or {}).get("preparation"):
         from apps.wechat_ai_customer_service.workflows.customer_service_brain_contract import POLICY_REFS_INSTRUCTION
         system += POLICY_REFS_INSTRUCTION
@@ -1241,6 +1245,23 @@ def _program_fact_findings(plan, evidence):
                             if not o.get("verified") or o.get("disposition") == "semantic_pending"]}
 
 
+def previous_review_context(evidence_pack):
+    """Only this attempt's matching authority snapshot; no recursive requests."""
+    digest = (evidence_pack.get("reply_authority_snapshot") or {}).get("sha256")
+    if not digest:
+        return []
+    result = []
+    for entry in (evidence_pack.get("review_history") or [])[-2:]:
+        review = entry.get("raw_result") or {}
+        if (entry.get("authority_sha256") != digest or review.get("status", "ok") != "ok"
+                or review.get("verdict") != "repair"):
+            continue
+        result.append({"draft_segments": (entry.get("request") or {}).get("draft_segments") or [],
+                       **{k: deepcopy(review.get(k)) for k in
+                          ("verdict", "semantic_errors", "hard_boundary_concerns", "repair_instruction", "reason")}})
+    return result
+
+
 def build_quality_review_request(
     *,
     settings: dict[str, Any],
@@ -1263,6 +1284,7 @@ def build_quality_review_request(
         "reply_trigger": reply_trigger_context(current_message.get("trigger_type")),
         "catalog_protocol": catalog_prompt_protocol(evidence_pack),
         "program_fact_findings": _program_fact_findings(plan, evidence_pack),
+        "previous_reviews": previous_review_context(evidence_pack),
         "authority_review_required": bool(deterministic_quality.get("authority_review_required")),
         "current_user_messages": [current_message_text(brain_input, fallback=str(evidence_pack.get("current_message") or ""))],
         "conversation_summary": clip(str(conversation.get("summary") or ""), int(settings.get("semantic_reviewer_summary_chars") or 260)),

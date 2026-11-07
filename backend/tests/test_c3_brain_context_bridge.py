@@ -748,3 +748,18 @@ def test_isolated_normal_and_fast_brain_preserve_context_failure_code(
             timeout_seconds=15,
         )
     assert exc.value.code == "AI_CONTEXT_BUILD_FAILED"
+
+
+def test_confirmed_vehicle_labels_are_preserved_and_bound_to_context_digest():
+    snapshot=_snapshot()
+    snapshot['prior_messages'][1]['confirmed_reply']={
+        'action':'sent-action','batch':'old-batch','native':'native-1','vehicles':['car-1'],
+        'vehicle_labels':{'car-1':'25款合成车'}}
+    snapshot['prior_messages_sha256']=prior_messages_sha256(snapshot['prior_messages'])
+    context=build_chejin_brain_context(brain_context_snapshot=snapshot,current_batch=_current_batch(),
+                                      expected_conversation_id=snapshot['conversation_id'])
+    assert context['history'][1]['confirmed_reply']['vehicle_labels']=={'car-1':'25款合成车'}
+    snapshot['prior_messages'][1]['confirmed_reply']['vehicle_labels']['car-1']='篡改名称'
+    with pytest.raises(ChejinBrainContextError):
+        build_chejin_brain_context(brain_context_snapshot=snapshot,current_batch=_current_batch(),
+                                  expected_conversation_id=snapshot['conversation_id'])

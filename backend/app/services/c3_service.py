@@ -2100,6 +2100,20 @@ def _settled_segment_vehicle_ids(action):
     return [vehicle for vehicle in authorized if any(vehicle in group for group in groups)]
 
 
+def _settled_vehicle_labels(action, vehicle_ids):
+    """Names from the same reviewed snapshot, only for vehicles in this sent segment.
+
+    The list is not a recommendation ranking. The confirmed text supplies the
+    actual presentation order; historical labels never authorize current stock.
+    """
+    brain = ((action.ai_payload or {}).get("raw_payload") or {}).get("omniauto_brain_result") or {}
+    frozen = (brain.get("reply_authority_snapshot") or {}).get("content") or {}
+    items = (frozen.get("product_master") or {}).get("items") or []
+    return {item["id"]: item["name"] for item in items
+            if isinstance(item, dict) and item.get("id") in vehicle_ids
+            and isinstance(item.get("name"), str) and item["name"].strip()}
+
+
 def _confirmed_reply_history(db, binding, events):
     """Allow historical vehicle IDs only from an action, its ACK, and its actual echo."""
     links = {e.id: (e.raw_payload or {}).get("ai_reply_action_id") for e in events
@@ -2121,8 +2135,9 @@ def _confirmed_reply_history(db, binding, events):
             native = (ack.evidence or {}).get("native_msg_id")
             if (native and native == (event.raw_payload or {}).get("native_msg_id")
                     and action.reply_text == event.content and action.claimed_task_id == ack.task_id):
+                vehicles = _settled_segment_vehicle_ids(action)
                 confirmed[event.id] = {"action":action.id,"batch":action.batch_id,"native":native,
-                                       "vehicles":_settled_segment_vehicle_ids(action)}
+                                       "vehicles":vehicles, "vehicle_labels":_settled_vehicle_labels(action, vehicles)}
     return confirmed
 
 

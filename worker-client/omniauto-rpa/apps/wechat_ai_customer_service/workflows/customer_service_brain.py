@@ -32,6 +32,7 @@ from apps.wechat_ai_customer_service.llm_config import (
 from llm_output_adapter import llm_json_parse_evidence, llm_json_response_is_incomplete, parse_complete_llm_json_response
 from customer_service_brain_contract import (
     constrain_output_fields,
+    RISK_SCHEMA, RISK_INSTRUCTION,
     reply_trigger_context,
     POLICY_FACT_TYPES,
     PRODUCT_FACT_TYPES,
@@ -781,7 +782,7 @@ BRAIN_RESPONSE_SCHEMA = {
         "evidence_used": {"type": "object"},
         "facts_claimed": {"type": "array", "items": {"type": "object"}},
         "reply_segments": {"type": "array", "items": {"type": "string"}},
-        "risk": {"type": "object"},
+        "risk": RISK_SCHEMA,
         "self_check": {"type": "object"},
         "hard_opt_out": {"type": "object"},
         "recommended_action": {
@@ -801,6 +802,7 @@ BRAIN_RESPONSE_SCHEMA_PROMPT = (
     "product_ids/formal_knowledge_ids/conversation_fact_ids/common_sense_topics/style_ids/rag_ids), "
     "facts_claimed(list of {fact_type,value,source_level,source_id}), reply_segments(list[str]), "
     "risk({risk_level,risk_tags,needs_handoff,handoff_reason}), self_check(obj), "
+    + RISK_INSTRUCTION +
     "hard_opt_out({detected,message_event_id,source_message_key,customer_text,reason}), "
     "recommended_action(enum:send_reply/handoff/handoff_for_approval/hard_opt_out/fallback_existing), "
     "confidence(number), reason(str)。所有字段尽量短；understanding/reply_strategy/self_check只保留关键点；"
@@ -3526,6 +3528,8 @@ def plan_validation_repair_feedback(validation: dict[str, Any], *, combined: str
         "如果草稿引用了未在本轮证据中的商品，请改用brain_input里的product_master/catalog_candidates，或明确说明需要核实。",
         "不要退回机械兜底，不要只说稍后确认；能在权威证据内回答的，要直接回答。",
     ]
+    if validation.get("field_errors"):
+        instruction_parts.append("具体字段纠错（按expected修正，不改变正文事实）：" + json.dumps(validation["field_errors"], ensure_ascii=False))
     if errors:
         instruction_parts.append("本次校验错误：" + "；".join(errors[:6]))
     customer_text = str(combined or "").strip()
@@ -3537,6 +3541,7 @@ def plan_validation_repair_feedback(validation: dict[str, Any], *, combined: str
         "errors": errors,
         "validation_details": {
             "failure_category": validation.get("failure_category"),
+            "field_errors": copy.deepcopy(validation.get("field_errors") or []),
             "reply_sha256": (validation.get("public_fact_validation") or {}).get("reply_sha256"),
             "rejected_numbers": [n for n in (validation.get("public_fact_validation") or {}).get("occurrences", [])
                                  if not n.get("verified") and not n.get("pending_policy_review")],

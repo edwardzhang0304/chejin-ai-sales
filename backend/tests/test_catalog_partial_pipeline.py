@@ -325,4 +325,5 @@ def test_first_settled_action_only_credits_its_own_vehicles(monkeypatch, actual_
         refs = {p['name']:p['id'] for p in actual_brain['receipt']['references']}
         assert proof['native'] == ack.evidence['native_msg_id']
         assert proof['vehicles'] == [refs['合成车4']]
+        assert proof['vehicle_labels'] == {refs['合成车4']: '合成车4'}
         assert refs['合成车5'] in pipeline.c3_service._brain_plan_vehicle_ids(first.ai_payload)

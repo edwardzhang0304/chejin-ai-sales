@@ -17,6 +17,35 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+# One definition feeds the model contract, validator and correction feedback.
+RISK_LEVELS = ("low", "medium", "high")
+RISK_SCHEMA = {"type": "object", "required": ["risk_level", "risk_tags", "needs_handoff"],
+               "properties": {"risk_level": {"type": "string", "enum": list(RISK_LEVELS)},
+                              "risk_tags": {"type": "array", "items": {"type": "string"}},
+                              "needs_handoff": {"type": "boolean"}, "handoff_reason": {"type": "string"}}}
+RISK_INSTRUCTION = ("risk只含risk_level/risk_tags/needs_handoff/handoff_reason。risk_level只能填写"
+                    + "/".join(RISK_LEVELS) + "，分别表示低/中/高风险，不得填写safe等其他值；"
+                    "risk_tags是文字列表，needs_handoff是布尔值，handoff_reason是文字。")
+
+
+def risk_field_errors(risk):
+    if not isinstance(risk, dict):
+        return [{"field": "risk", "expected": "object", "actual_type": type(risk).__name__}]
+    errors = []
+    for field, spec in RISK_SCHEMA["properties"].items():
+        if field not in risk and field not in RISK_SCHEMA["required"]:
+            continue
+        value = risk.get(field)
+        valid = ({"string": lambda: isinstance(value, str), "boolean": lambda: type(value) is bool,
+                  "array": lambda: isinstance(value, list) and all(isinstance(v, str) for v in value)}[spec["type"]]())
+        valid = valid and ("enum" not in spec or value in spec["enum"])
+        if not valid:
+            errors.append({"field": "risk." + field, "expected": deepcopy(spec),
+                           "actual_type": type(value).__name__,
+                           "actual": value[:80] if isinstance(value, str) else None})
+    return errors
+
+
 OUTPUT_FIELDS_INSTRUCTION = (
     "只输出本次输出协议明确允许的字段，不要多填字段；"
     "不得把输入中的内部标记、调试信息或资料字段自行复制为输出字段。"
@@ -1236,10 +1265,10 @@ def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int =
         if "confidence" in plan and (type(raw_confidence) not in (int, float)
                 or not math.isfinite(raw_confidence) or not 0 <= raw_confidence <= 1):
             errors.append("invalid_draft_field:confidence")
-        if (type(risk.get("needs_handoff")) is not bool or risk.get("risk_level") not in ("low", "medium", "high")
-                or not isinstance(risk.get("risk_tags"), list)
-                or any(not isinstance(tag, str) for tag in risk.get("risk_tags", []))):
+        field_errors = risk_field_errors(plan.get("risk"))
+        if field_errors:
             errors.append("invalid_draft_field:risk")
+        normalized["draft_field_errors"] = field_errors
         raw_segments = plan.get("reply_segments")
         if isinstance(raw_segments, list) and all(isinstance(s, str) and s.strip() for s in raw_segments):
             normalized["reply_segments"] = [normalize_space(s) for s in raw_segments]
@@ -1314,7 +1343,7 @@ def validate_brain_plan(plan: dict[str, Any], *, require_fact_claims: bool = Fal
         if source_level in STYLE_ONLY_LEVELS:
             errors.append(f"style_only_source_used_as_fact:{fact_type or source_level}")
     return {"ok": not errors, "errors": errors, "structure_errors": structure_errors,
-            "content_errors": errors[len(structure_errors):],
+            "content_errors": errors[len(structure_errors):], "field_errors": deepcopy(plan.get("draft_field_errors") or []),
             "failure_category": "output_format" if structure_errors else "content_review" if errors else "success"}
 
 

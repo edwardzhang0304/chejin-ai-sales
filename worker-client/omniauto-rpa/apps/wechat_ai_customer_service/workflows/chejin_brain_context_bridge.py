@@ -88,6 +88,12 @@ def canonical_prior_message(value: dict[str, Any]) -> dict[str, Any]:
                 or not isinstance(proof.get("vehicles"),list) or not all(isinstance(v,str) and v for v in proof["vehicles"])):
             raise ChejinBrainContextError("invalid_confirmed_reply")
         item["confirmed_reply"] = {k:proof[k] for k in ("action","batch","native","vehicles")}
+        if "vehicle_labels" in proof:
+            labels = proof["vehicle_labels"]
+            if (not isinstance(labels, dict) or not set(labels).issubset(proof["vehicles"])
+                    or any(not isinstance(v, str) or not v.strip() for v in labels.values())):
+                raise ChejinBrainContextError("invalid_confirmed_vehicle_labels")
+            item["confirmed_reply"]["vehicle_labels"] = dict(labels)
     if item["message_type"] == "image":
         ocr = value.get("image_ocr_text")
         if ocr is None:
