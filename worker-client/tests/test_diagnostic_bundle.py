@@ -563,3 +563,20 @@ def test_file_content_hold_and_bounded_reads_remain_in_diagnostic_zip(tmp_path):
     assert b'HOOK_APP_CONTENT_UNCONFIRMED' in entries['receipts/hook/history-retries/file-read.json']
     assert b'HOOK_APP_CONTENT_UNCONFIRMED' in entries['receipts/hook/history-receipts/file-read.json']
     assert b'1348' in entries['receipts/hook/history-captures/file-read.json']
+
+
+def test_callback_gap_budget_and_terminal_hold_are_exported(tmp_path):
+    from chejin_worker_client.hook_callback_gap import ensure
+    root=seed(tmp_path/'home')
+    with sqlite3.connect(root/'worker_client.sqlite3') as db:
+        ensure(db)
+        db.execute('INSERT INTO hook_callback_gap_reads VALUES(?,?,?,?)',
+                   ('synthetic-scope','90001',3,'2026-11-07T08:00:00+00:00'))
+        db.execute('INSERT INTO hook_callback_gap_holds VALUES(?,?,?,?)',
+                   ('synthetic-binding','synthetic-checkpoint',json.dumps({
+                       'history_ready':False,'content_isolated':True,'callback_gap_isolated':True,
+                       'reason_code':'HOOK_HISTORY_CALLBACK_NOT_LANDED','history_receipt_id':'synthetic-receipt'}),
+                    '2026-11-07T08:00:00+00:00'))
+    entries=read_zip(export_bundle(root,tmp_path/'gap.zip'))
+    assert json.loads(entries['state/hook_callback_gap_reads.json'])['rows'][0]['attempts']==3
+    assert b'HOOK_HISTORY_CALLBACK_NOT_LANDED' in entries['state/hook_callback_gap_holds.json']

@@ -14,6 +14,7 @@ NUMBERS = FIELDS - {'StrTalker','StrContent'}
 MAX_ROWS = 10000
 OUTGOING_ID_PENDING = 'HOOK_HISTORY_OUTGOING_ID_PENDING'
 APP_CONTENT_PENDING = 'HOOK_APP_CONTENT_UNCONFIRMED'
+CALLBACK_PENDING = 'HOOK_HISTORY_CALLBACK_NOT_LANDED'
 # Only successfully validated coverage can produce these incomplete states.
 COVERAGE_PENDING_REASONS = frozenset({
     'HOOK_HISTORY_CROSS_DATABASE_ORDER_UNVERIFIED', 'HOOK_REVOKE_FIELDS_UNCONFIRMED',
@@ -152,7 +153,7 @@ def validate_scan(scan, peer, since):
 
 def validate_coverage(payload, peer, since):
     base={'schema_version','since_create_time','scans','local_pending_count'}
-    if not isinstance(payload,dict) or set(payload) not in (base,base|{'excluded_pre_invite_metadata'}):
+    if not isinstance(payload,dict) or (not base <= set(payload) or set(payload)-base-{'excluded_pre_invite_metadata','missing_callback_ids'}):
         raise ValueError('HOOK_HISTORY_COVERAGE_INVALID')
     if payload['schema_version'] not in {'hook-history-coverage-v1','hook-history-coverage-v2'} or payload['since_create_time']!=str(since):
         raise ValueError('HOOK_HISTORY_RANGE_MISMATCH')
@@ -238,6 +239,16 @@ def validate_coverage(payload, peer, since):
                 or item['native_msg_id'] in included or item['native_msg_id'] in excluded):
             raise ValueError('HOOK_HISTORY_EXCLUSION_INVALID')
         excluded.append(item['native_msg_id'])
+    missing = payload.get('missing_callback_ids', [])
+    observed_ids = {r['MsgSvrID'] for r in second} | set(excluded) | set(revoked_ids)
+    if (not isinstance(missing, list) or len(missing) > MAX_ROWS
+            or any(not isinstance(mid, str) or not mid.isascii() or not mid.isdecimal()
+                   or str(int(mid)) != mid or int(mid) <= 0 for mid in missing)
+            or len(set(missing)) != len(missing) or set(missing) & observed_ids
+            or (missing and not media_enabled)):
+        raise ValueError('HOOK_HISTORY_CALLBACK_GAP_INVALID')
+    if missing:
+        ready=False;reason=reason or CALLBACK_PENDING
     app_messages = {mid: app for mid, app in app_messages.items() if mid not in revoked_ids}
     if any(app['kind'] == 'unconfirmed' for app in app_messages.values()):
         ready=False;reason=reason or APP_CONTENT_PENDING
@@ -245,7 +256,7 @@ def validate_coverage(payload, peer, since):
     if pending_outgoing:
         ready=False;reason=reason or OUTGOING_ID_PENDING
     return {'rows':second,'text_rows':semantic,'media_rows':media,'semantic_rows':all_semantic,'ready':ready,'reason_code':reason,
-            'unresolved_outgoing_rows':pending_outgoing,
+            'unresolved_outgoing_rows':pending_outgoing,'missing_callback_ids':missing,
             'catalog_fingerprint':scans[1]['catalog_fingerprint'],'observed_at':scans[1]['observed_at'],
             'friend_verification_notices':[r for r in second if is_friend_verification_required_notice(r)],
             'excluded_native_ids':excluded,'revoked_native_ids':revoked_ids,'system_notice_native_ids':notice_ids,'quote_links':quote_links,'app_messages':app_messages}

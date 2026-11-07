@@ -57,7 +57,7 @@ class HookHistorySynchronizer:
         return {'catalog_fingerprint':catalog.fingerprint,'databases':databases,'observed_at':observed,
             'local_clock':{'backend_started_at':backend_start,'window':window}}
 
-    def capture(self,process,scope,delivery,since,*,callback_ids=()):
+    def capture(self,process,scope,delivery,since,*,callback_ids=(),report_callback_gaps=False,known_callback_gaps=(),gap_budget=None):
         rules.integer(since)
         started=time.perf_counter()
         start=self.barrier()
@@ -65,7 +65,7 @@ class HookHistorySynchronizer:
         subject=hook_read_retry.history_subject(delivery,since)
         with self.gateway.history_session(process,scope,retry_subject=subject) as reader:
             scans=[self.scan(process,scope,delivery,since,reader=reader),self.scan(process,scope,delivery,since,reader=reader)]
-            exclusions=[]
+            exclusions=[]; unresolved=[]
             if self.media_enabled and callback_ids:
                 catalog=reader.history_catalog(process,scope)
                 if catalog.fingerprint!=scans[1]['catalog_fingerprint']:raise ValueError('HOOK_HISTORY_CATALOG_CHANGED')
@@ -80,19 +80,34 @@ class HookHistorySynchronizer:
                 missing=set(callback_ids)-included
                 if len(missing)>self.max_rows:raise ValueError('HOOK_HISTORY_RANGE_TOO_LARGE')
                 for mid in sorted(missing):
+                    if mid in known_callback_gaps:
+                        unresolved.append(mid)
+                        continue  # Already handed off: new callbacks do not restart its lookup.
+                    if report_callback_gaps and gap_budget is not None and not gap_budget.reserve(mid):
+                        unresolved.append(mid)
+                        continue
                     matches=[]
                     for database in catalog.databases:
                         query=HookHistoryQuery(database,'boundary_meta',delivery,since_create_time=since,native_msg_id=mid)
                         capture=reader.history_capture(process,catalog,query);self.save_capture(capture)
                         matches.extend({**row,'database':database.name,'database_generation':database.generation} for row in capture.payload.get('data',[]))
-                    if len(matches)!=1:raise ValueError('HOOK_HISTORY_CALLBACK_NOT_LANDED')
-                    exclusions.extend(matches)
+                    if len(matches)!=1:
+                        if not report_callback_gaps:raise ValueError('HOOK_HISTORY_CALLBACK_NOT_LANDED')
+                        unresolved.append(mid)
+                    else:
+                        exclusions.extend(matches)
         end=self.barrier()
         if end!=start:raise ValueError('HOOK_HISTORY_CALLBACK_BARRIER_CHANGED')
         coverage={'schema_version':'hook-history-coverage-v2' if self.media_enabled else 'hook-history-coverage-v1','since_create_time':since,
             'scans':scans,'local_pending_count':end[1]}
         if self.media_enabled:coverage['excluded_pre_invite_metadata']=exclusions
+        if unresolved:coverage['missing_callback_ids']=sorted(unresolved)
         checked = rules.validate_coverage(coverage,delivery.peer_wxid,int(since))
+        if gap_budget is not None:
+            for mid in checked['excluded_native_ids']:
+                gap_budget.resolved(mid)
+        self.callback_pending = any(gap_budget is None or gap_budget.remaining(mid)
+                                    for mid in set(unresolved)-set(known_callback_gaps))
         self.content_pending = checked['reason_code'] == rules.APP_CONTENT_PENDING
         hook_read_retry.succeeded(process.generation,'QueryDB',subject)
         self.profile = {'capture_seconds': round(time.perf_counter()-started, 6),

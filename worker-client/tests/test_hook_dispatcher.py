@@ -368,12 +368,13 @@ def test_history_owner_supersedes_stale_voice_inventory(lab,backend_peer,tmp_pat
     finally:manager.close()
 
 
-def test_terminal_content_hold_is_bounded_and_invalidated_by_new_observation(tmp_path):
+@pytest.mark.parametrize('reason',['HOOK_APP_CONTENT_UNCONFIRMED','HOOK_HISTORY_CALLBACK_NOT_LANDED'])
+def test_terminal_content_hold_is_bounded_and_invalidated_by_new_observation(tmp_path,reason):
     d=HookBusinessDispatcher(None,tmp_path,lambda *a:None,lambda *a:None,automatic_transcription_disabled=lambda:True)
     reads=[];barrier=[0,0]
     d.runtime=SimpleNamespace(scope=SimpleNamespace(process_generation='p1'),
         barrier=lambda b:tuple(barrier),sync=lambda b:(reads.append(b['binding_id']) or {
-            'history_ready':False,'content_isolated':True,'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED'}))
+            'history_ready':False,'content_isolated':True,'reason_code':reason}))
     binding={'binding_id':'customer-a','binding_revision':1}
     for _ in range(20):assert not d._read_history(binding)['history_ready']
     assert reads==['customer-a']

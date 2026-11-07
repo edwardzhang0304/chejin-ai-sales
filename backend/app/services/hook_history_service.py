@@ -393,9 +393,14 @@ def accept_coverage(db,authenticated,instance,payload):
         apply_unresolved_outgoing_notice(db, binding, checked, receipt, ctx)
     batch=None
     content_isolated = False
+    callback_gap_isolated = False
     if reconciliation is None and checked['reason_code'] == history.APP_CONTENT_PENDING:
         from app.services.hook_media_service import handoff_unconfirmed_app_messages
         content_isolated = handoff_unconfirmed_app_messages(db, binding, business_rows, ctx)
+    if reconciliation is None and checked['missing_callback_ids']:
+        from app.services.hook_customer_notice_service import apply_callback_gap_notice
+        callback_gap_isolated = apply_callback_gap_notice(db, binding, checked, receipt, ctx)
+        content_isolated = callback_gap_isolated or content_isolated
     if ready and reconciliation is None:
         conv=db.get(Conversation,binding.conversation_id)
         if conv and conv.status not in {'closed','rejected'}:
@@ -443,7 +448,7 @@ def accept_coverage(db,authenticated,instance,payload):
                 batch=c3_service.create_control_message_batch(db,conversation_id=binding.conversation_id,
                     trigger_type='friend_welcome',trigger_key='hook-invite:'+ctx['source_task_id'])
     result={'process_run_id':process_run_id,'conversation_id':binding.conversation_id,'capture_id':payload.capture_id,'history_receipt_id':receipt.id,'binding_id':binding.id,
-        'history_ready':ready,'reason_code':reason,'content_isolated':content_isolated,'message_event_ids':ids,'new_message_event_ids':new_ids,
+        'history_ready':ready,'reason_code':reason,'content_isolated':content_isolated,'callback_gap_isolated':callback_gap_isolated,'message_event_ids':ids,'new_message_event_ids':new_ids,
         'history_state_digest':state_digest,'coverage_digest':payload.coverage_digest,'message_batch':batch,'native_send_ready':False,
         'reply_ownership':state(ownership_conversation) if ownership_conversation else {},
         'reconciliation_only':reconciliation is not None,

@@ -127,3 +127,40 @@ def test_app_content_uses_shared_classification_without_connection_fault(history
     assert checked['ready'] is (expected_kind=='file')
     assert sync.content_pending is (expected_kind=='unconfirmed')
     assert any(r['Type']=='49' and r['StrContent']==body for r in checked['rows'])
+
+
+def test_missing_callback_is_preserved_as_incomplete_evidence_not_excluded(history_lab):
+    _,gateway,process,scope,delivery,_,db=history_lab
+    db.execute('DELETE FROM MSG WHERE Type=34')
+    saved=[]
+    sync=HookHistorySynchronizer(gateway,saved.append,lambda:(0,0),media_enabled=True)
+    _,value=sync.capture(process,scope,delivery,'1791543600',callback_ids={'999999'},report_callback_gaps=True)
+    checked=hook_history_rules.validate_coverage(value,delivery.peer_wxid,1791543600)
+    assert value['missing_callback_ids']==['999999']
+    assert not checked['ready'] and checked['reason_code']==hook_history_rules.CALLBACK_PENDING
+    assert not checked['excluded_native_ids'] and sync.callback_pending
+    assert len([c for c in saved if c.query.kind=='boundary_meta'])==1
+    saved.clear()
+    # A new runtime/callback does not restart the already handed-off gap lookup.
+    sync=HookHistorySynchronizer(gateway,saved.append,lambda:(1,0),media_enabled=True)
+    _,again=sync.capture(process,scope,delivery,'1791543600',callback_ids={'999999'},
+        report_callback_gaps=True,known_callback_gaps={'999999'})
+    assert again['missing_callback_ids']==['999999'] and not sync.callback_pending
+    assert not any(c.query.kind=='boundary_meta' for c in saved)
+    # Late real landing can close the gap; the old evidence is unchanged.
+    db.execute("UPDATE MSG SET MsgSvrID='999999' WHERE localId=1")
+    _,landed=sync.capture(process,scope,delivery,'1791543600',callback_ids={'999999'},
+        report_callback_gaps=True,known_callback_gaps={'999999'})
+    assert hook_history_rules.validate_coverage(landed,delivery.peer_wxid,1791543600)['ready']
+    assert value['missing_callback_ids']==['999999']
+
+
+@pytest.mark.parametrize('gap', [['0'],['-1'],['01'],['1','1'],[1],['18446744073709551614']])
+def test_callback_gap_cannot_cover_existing_or_invalid_identity(history_lab,gap):
+    _,gateway,process,scope,delivery,_,db=history_lab
+    db.execute('DELETE FROM MSG WHERE Type=34')
+    sync=HookHistorySynchronizer(gateway,lambda _:None,lambda:(0,0),media_enabled=True)
+    _,value=sync.capture(process,scope,delivery,'1791543600')
+    value['missing_callback_ids']=gap
+    with pytest.raises(ValueError,match='CALLBACK_GAP_INVALID'):
+        hook_history_rules.validate_coverage(value,delivery.peer_wxid,1791543600)

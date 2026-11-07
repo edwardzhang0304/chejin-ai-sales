@@ -355,7 +355,7 @@ def test_callback_interruption_then_fresh_customer_turn_can_reply(case,monkeypat
     assert all(p.read_bytes()==raw for p,raw in old.items())
 
 
-@pytest.mark.parametrize('restriction',['human','file','empty_app'])
+@pytest.mark.parametrize('restriction',['human','file','empty_app','callback_gap'])
 def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch,restriction):
     from test_hook_account_http import client
     from test_hook_business_http import proof,body
@@ -364,6 +364,11 @@ def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch,re
         def refused(*args,**kw):
             if restriction=='human':
                 human_takeover(c)
+            elif restriction=='callback_gap':
+                from test_hook_callback_gap_closure import missing_callback
+                missing_callback(c)
+                first=c.rt.sync(c.binding)
+                assert first['content_isolated'] and not first['history_ready'] and not first['message_batch']
             else:
                 time.sleep(1.05)
                 from test_hook_file_isolation import FILE
@@ -402,7 +407,7 @@ def test_human_owned_customer_does_not_block_second_customer(case,monkeypatch,re
             from app.models.c3 import HandoffEvent
             events=list(db.scalars(select(HandoffEvent).where(HandoffEvent.conversation_id==c.binding['conversation_id'])))
             assert len(events)==1
-            assert events[0].handoff_reason_code==('HOOK_CUSTOMER_FILE_HANDOFF' if restriction=='file' else 'HOOK_APP_CONTENT_UNCONFIRMED')
+            assert events[0].handoff_reason_code==('HOOK_CUSTOMER_FILE_HANDOFF' if restriction=='file' else 'HOOK_HISTORY_CALLBACK_NOT_LANDED' if restriction=='callback_gap' else 'HOOK_APP_CONTENT_UNCONFIRMED')
             assert db.get(Conversation,c.binding['conversation_id']).status=='waiting_sales_reply'
 
 

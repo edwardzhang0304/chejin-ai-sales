@@ -37,6 +37,49 @@ def apply_unresolved_outgoing_notice(db, binding, checked, receipt, ctx):
     c3_service.cancel_active_batches_for_conversation_change(db, binding.conversation_id, reason=reason)
 
 
+def apply_callback_gap_notice(db, binding, checked, receipt, ctx):
+    """Close a bounded read failure through the existing customer handoff.
+
+    Missing callbacks are never exclusions or successful-send evidence. Reuse
+    an open handoff idempotently; a previously closed handoff cannot own a new
+    occurrence of the gap.
+    """
+    missing = set(checked['missing_callback_ids'])
+    if not missing:
+        return False
+    conversation = db.get(Conversation, binding.conversation_id)
+    if conversation is None or conversation.status in {'closed', 'rejected'}:
+        return False
+    applied = set(ctx.get('callback_gap_handoff_ids', []))
+    open_events = c3_service.open_handoff_events_for_conversation(db, binding.conversation_id)
+    if missing <= applied and any(missing <= set((event.ai_payload or {}).get(
+            'callback_gap_boundary_ids', [])) for event in open_events):
+        return True
+    reason = shared_adapter('hook_history_rules').CALLBACK_PENDING
+    event, _ = c3_service._create_or_reuse_open_handoff(
+        db, conversation=conversation, batch_id=None, handoff_reason_code=reason,
+        reason_detail='收到过消息通知，但有限核对后仍找不到对应记录，已暂停此客户自动回复，请销售处理；其他客户不受影响，原记录保留且不自动补发。',
+        trigger_message_event_ids=[], risk_flags=['history_callback_gap'],
+        evidence_refs=['native_history_receipt:' + receipt.id],
+        ai_payload={'source': 'hook_history_callback_gap', 'history_receipt_id': receipt.id,
+                    'missing_native_ids': sorted(missing), 'automatic_resend_allowed': False})
+    # Preserve boundaries even when the unified entry reuses an older handoff.
+    # A later human reply may close it only after every gap is proven and after
+    # all messages already visible when the restriction was raised.
+    payload = event.ai_payload or {}
+    event.ai_payload = {**payload, 'callback_gap_boundary_ids': sorted(
+        set(payload.get('callback_gap_boundary_ids', [])) | missing |
+        {r['MsgSvrID'] for r in checked['semantic_rows']})}
+    ctx['callback_gap_handoff_ids'] = sorted(applied | missing)
+    binding.native_context = dict(ctx)
+    conversation.status = 'waiting_sales_reply'
+    conversation.handoff_reason_code = event.handoff_reason_code
+    conversation.handoff_at = event.created_at or utcnow()
+    conversation.recall_origin_status = conversation.recall_cycle_id = conversation.next_recall_at = None
+    c3_service.cancel_active_batches_for_conversation_change(db, binding.conversation_id, reason=reason)
+    return True
+
+
 def notice_key(row, ctx):
     identity = (['native', row['MsgSvrID']] if int(row['MsgSvrID']) else
                 ['local', row['database'], row['localId'], row['CreateTime'], row['StrContent']])
@@ -64,6 +107,20 @@ def handoff_history_orders(db, binding, checked, ctx):
     history = shared_adapter('hook_history_rules')
     positions = {notice_key(row, ctx): notice_sequence(row, checked) for row in checked['rows']
                  if history.is_friend_verification_required_notice(row)}
+    native_positions = {r['MsgSvrID']: int(r['Sequence']) for r in checked['semantic_rows']}
+    # A reliable revoke resolves the gap at the revoke's native position, not
+    # at zero or at the missing message's guessed timestamp. Earlier human
+    # replies must not close a restriction that was resolved only afterwards.
+    event_rules = shared_adapter('hook_event_rules')
+    for row in checked['rows']:
+        body = row['StrContent']
+        if row['Type'] in {'10000', '10002'} and isinstance(body, str) and body.lstrip().startswith('<'):
+            target = event_rules.revoked(body)
+            if target in checked['revoked_native_ids']:
+                order = notice_sequence(row, checked)
+                previous = native_positions.get(target, 0)
+                native_positions[target] = (max(previous, order)
+                    if previous is not None and order is not None else None)
     boundaries = {}
     for event in c3_service.open_handoff_events_for_conversation(db, binding.conversation_id):
         if 'contact_identity_unconfirmed' in (event.risk_flags or []):
@@ -71,11 +128,18 @@ def handoff_history_orders(db, binding, checked, ctx):
             boundaries[event.id] = None
             continue
         payload = event.ai_payload or {}
-        if 'native_friend_verification_notice_keys' not in payload:
-            continue
-        keys = payload.get('native_friend_verification_notice_keys') or []
-        boundaries[event.id] = (max(positions[key] for key in keys)
-                                if keys and all(positions.get(key) is not None for key in keys) else None)
+        restrictions = []
+        if 'callback_gap_boundary_ids' in payload:
+            excluded = set(checked['excluded_native_ids'])
+            keys = set(payload['callback_gap_boundary_ids']) - excluded
+            restrictions.append(max((native_positions[key] for key in keys), default=0)
+                if checked['ready'] and all(native_positions.get(key) is not None for key in keys) else None)
+        if 'native_friend_verification_notice_keys' in payload:
+            keys = payload.get('native_friend_verification_notice_keys') or []
+            restrictions.append(max(positions[key] for key in keys)
+                if keys and all(positions.get(key) is not None for key in keys) else None)
+        if restrictions:
+            boundaries[event.id] = max(restrictions) if all(r is not None for r in restrictions) else None
     return boundaries
 
 

@@ -43,6 +43,7 @@ NOTES = {
  'binding_conflict': '微信已关联其他客户档案，等待运营核对归属。',
  'recipient': '申请已提交，等待好友列表确认并完成绑定。', 'not_found': '未找到可添加的客户。',
  'already_friend': '对方已是好友，沿原任务规则处理。',
+ 'history_manual_review': '消息记录未能核对完整，已交销售处理；其他客户继续服务。',
  'history_wait': '消息尚未核对完整，核对完成后继续。',
  'voice_wait': '语音结果尚未确认，保留原记录。',
  'voice_audio_wait': '正在等待语音音频，尚未开始转文字。',

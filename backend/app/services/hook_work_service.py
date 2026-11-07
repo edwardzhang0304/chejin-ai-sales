@@ -55,7 +55,8 @@ def inventory(db,authenticated,instance,payload):
             'history_since_create_time':ctx['history_since_create_time'],'source_task_id':ctx['source_task_id'],
             'history_ready':ctx.get('history_ready') is True,'voice_jobs':voices,'retained_voice_jobs':retained_voices,'batch_ids':batches,
             'reply_ownership':state(conversation) if conversation else {},
-            'remark_code':binding.remark_code or ''})
+            'remark_code':binding.remark_code or '',
+            'callback_gap_handoff_ids':ctx.get('callback_gap_handoff_ids',[])})
     invitations=[]
     for task in db.scalars(select(Task).where(Task.worker_id==w.id,Task.deleted_at.is_(None),
             Task.task_type=='add_friend',Task.status.in_(['completed','cancelled'])).order_by(Task.created_at,Task.id)):

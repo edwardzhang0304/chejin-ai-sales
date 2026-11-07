@@ -35,6 +35,7 @@ TABLES = (
     "local_logs", "hook_friend_discovery", "hook_raw_inbox", "hook_observation_projection",
     "hook_delivery_outbox", "hook_voice_attempts", "hook_voice_result_delivery", "hook_voice_interruptions", "hook_active_calls", "hook_transport_events", "hook_read_retry", "hook_process_recovery",
     "hook_history_pages", "hook_retired_observations", "hook_retired_deliveries",
+    "hook_callback_gap_reads", "hook_callback_gap_holds",
     "c2_runtime_state", "c2_message_ledger", "c2_ingest_outbox",
     "c2_action_journal", "reply_send_ack_outbox",
 )

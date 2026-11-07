@@ -725,6 +725,10 @@ class HookFormalRuntime:
         # bounded recovery pool. It has no task claim, model or physical send.
         evidence_root=self.private_root
         budget=self.history_budget
+        gap_budget=None
+        if reconciliation is None:
+            from .hook_callback_gap import CallbackGapBudget
+            gap_budget=CallbackGapBudget(self.credentials.worker_id,self.scope,binding)
         if reconciliation is not None:
             if (not isinstance(reconciliation,RetainedNativeSendPermit)
                     or reconciliation.worker_id!=self.credentials.worker_id
@@ -755,6 +759,13 @@ class HookFormalRuntime:
             if self._history_pending_contexts.get(binding['binding_id']) != progress_context:
                 self.progress(progress_context,'history')
                 self._history_pending_contexts[binding['binding_id']]=progress_context
+        if gap_budget is not None:
+            held=gap_budget.held(self.barrier(binding))
+            if held is not None:
+                self.heartbeat(passive=True)
+                if show_progress:
+                    self.progress(progress_context,'history','error','history_manual_review')
+                return held  # A durable customer hold, never usable as send evidence.
         # A newly arrived callback invalidates this capture, not the task. Drain
         # it and reread the complete authorized range, with a fixed retry bound.
         # None of these retries can call the physical sender or advance a cursor.
@@ -791,7 +802,8 @@ class HookFormalRuntime:
             synchronizer=HookHistorySynchronizer(self.gateway,save,lambda:self.barrier(binding),now=self.clock.now,media_enabled=True,
                 send_diagnostics=send_diagnostic is not None)
             try:
-                capture,coverage=synchronizer.capture(self.process,self.scope,self.delivery(binding),binding['history_since_create_time'],callback_ids=callback_ids)
+                capture,coverage=synchronizer.capture(self.process,self.scope,self.delivery(binding),binding['history_since_create_time'],callback_ids=callback_ids,report_callback_gaps=reconciliation is None,
+                    known_callback_gaps=binding.get('callback_gap_handoff_ids',()) if reconciliation is None else (),gap_budget=gap_budget)
             except ValueError as exc:
                 if send_diagnostic is not None:send_diagnostic.finish(exc)
                 if str(exc) not in {'HOOK_HISTORY_CALLBACK_BARRIER_CHANGED','HOOK_HISTORY_LOCAL_PENDING'}:
@@ -805,10 +817,10 @@ class HookFormalRuntime:
             except Exception as exc:
                 if send_diagnostic is not None:send_diagnostic.finish(exc)
                 raise
-            if synchronizer.content_pending and reconciliation is None:
+            if (synchronizer.content_pending or synchronizer.callback_pending) and reconciliation is None:
                 # Reuse the existing three-read budget, then persist/publish the
                 # incomplete result. This is never a connection or send failure.
-                event={'reason_code':'HOOK_APP_CONTENT_UNCONFIRMED','attempt':attempt+1,
+                event={'reason_code':('HOOK_HISTORY_CALLBACK_NOT_LANDED' if synchronizer.callback_pending else 'HOOK_APP_CONTENT_UNCONFIRMED'),'attempt':attempt+1,
                     'retry_allowed':attempt<2,'observed_at':self.clock.now().isoformat(),
                     'binding_id':binding['binding_id'],'physical_send_retried':False}
                 budget.save(evidence_root/'history-retries'/f'{capture}.json',event)
@@ -836,7 +848,9 @@ class HookFormalRuntime:
                 # read has finished; the next actual stage is transcription.
                 read_complete=result.get('history_ready') or result.get('reason_code')=='HOOK_VOICE_PENDING'
                 if read_complete:self._history_pending_contexts.pop(binding['binding_id'],None)
-                self.progress(progress_context,'history','done' if read_complete else 'waiting',None if read_complete else 'history_wait')
+                isolated=result.get('content_isolated') is True
+                self.progress(progress_context,'history','done' if read_complete else 'error' if isolated else 'waiting',
+                    None if read_complete else 'history_manual_review' if isolated else 'history_wait')
             budget.save(evidence_root/'history-receipts'/f'{capture}.json',result,settlement=True)
             # Receipt/index publication follows backend admission. Pending or
             # old receipts without a digest never authorize local retirement.
@@ -850,6 +864,8 @@ class HookFormalRuntime:
             self._history_profile['delivery_receipt_seconds']=round(time.perf_counter()-post_read_started,6)
             if reconciliation is None:
                 self._remember_history(binding,result,synchronizer.completed_barrier,captured_at)
+                if self.barrier(binding)==synchronizer.completed_barrier:
+                    gap_budget.hold(synchronizer.completed_barrier,result)
             return result
 
     def settle_retained_send(self,binding,previous_runtime_root,metadata):
