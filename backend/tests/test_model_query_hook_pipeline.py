@@ -151,6 +151,16 @@ def generate(bid):
 @pytest.mark.parametrize('scenario',['normal','explicit','recover','failover','unit_conflict','review_timeout','wrong_order','legacy'])
 def test_contract_freeze_and_recovery_reach_persisted_result(monkeypatch,actual_brain,scenario):
     state=actual_brain;state['scenario']=scenario
+    if scenario=='explicit':
+        # Explicit model metadata needs an actual customer preference as its
+        # source; the shared fixture only states a budget.
+        original_coverage=coverage
+        def sorted_coverage(binding):
+            value=original_coverage(binding)
+            for scan in value['scans']:
+                scan['databases'][0]['pages'][0][-1]['StrContent'] += '，按价格从低到高给我看。'
+            return value
+        monkeypatch.setattr(sys.modules[__name__],'coverage',sorted_coverage)
     if scenario=='wrong_order':
         from test_program_preparation_pipeline import listed
         listed('第二辆排序测试车', 10.0)

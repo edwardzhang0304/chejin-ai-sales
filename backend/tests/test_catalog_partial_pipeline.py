@@ -14,6 +14,18 @@ from test_hook_history_business_http import coverage as original_coverage
 from test_program_preparation_pipeline import listed
 
 
+def scoped_review(kind, *, allowed=True):
+    # Ambiguous wording belongs to the existing semantic reviewer (a5030735),
+    # not to a reinstated keyword veto. A fake approval of a false statement
+    # cannot serve as a negative fixture for that contract.
+    if allowed:
+        return pipeline.joined.review(kind)
+    return pipeline.joined.review(kind, verdict='repair',
+        semantic_errors=['回复扩大了查询范围或混淆已知条件与未核实条件'],
+        repair_instruction='保留已核实车辆和真实价格，纠正范围、数量或无车结论；未核实条件不能说已满足。',
+        reason='本轮有已知条件候选，完整条件尚未核实；读取数量、匹配数量和正文展示数量不能互相替代。')
+
+
 def configure_partial(monkeypatch,state,mutation='normal'):
     api=pipeline.joined.api
     with SessionLocal() as db:
@@ -35,7 +47,7 @@ def configure_partial(monkeypatch,state,mutation='normal'):
             request=json.loads(kw['messages'][1]['content'])['review_request'];state['reviews'].append(request)
             assert request['authority_evidence_summary']==state['authority_blocks'][-1]
             kind='query_summary' if mutation=='true_zero' else 'non_inventory' if mutation in {'normal','budget_uncertain','generic_uncertain'} else 'vehicle_facts'
-            value=pipeline.joined.review(kind)
+            value=scoped_review(kind, allowed=mutation not in {'false_zero','false_total','wrong_count'})
             if mutation=='false_year':value=pipeline.joined.review(kind,verdict='repair',semantic_errors=['年份未核实，不能说全部符合'],repair_instruction='具体车辆真实价格可保留，说明年份尚待核实')
         elif not state.get('receipt'):
             messages=state['invocations'][-1]['batch'];first,last=messages[0]['id'],messages[-1]['id']
@@ -53,7 +65,7 @@ def configure_partial(monkeypatch,state,mutation='normal'):
         else:
             receipt=state['receipt'];user,_=json.JSONDecoder().raw_decode(kw['messages'][1]['content'])
             authority=user['brain_input']['content_basis'];state['authority_blocks'].append(deepcopy(authority))
-            assert authority['catalog_protocol']['receipt']['match_count']==pipeline.joined.cq.receipt_view(receipt)['match_count']
+            assert user['brain_input']['catalog_protocol']['receipt']['match_count']==pipeline.joined.cq.receipt_view(receipt)['match_count']
             value=pipeline.joined.fixtures.base_plan();value.pop('facts_claimed',None);value.pop('evidence_used',None)
             text='年份还需按具体车源核实，先给您两台：'+'，'.join(f"{c['name']}报价{c['price']}万" for c in receipt.get('known_condition_facts',[])[:2])+'。'
             if mutation in {'scan_count','facts_clarification','false_year'}:value['answer_mode']='ask_clarifying_question';text+='您希望哪一年之后的车？'
@@ -99,6 +111,7 @@ def test_incorrect_partial_claims_or_mixed_envelope_never_create_send_action(mon
         assert native['model_call_accounting']['failure_category']==('query_contract' if mutation=='extra_envelope' else 'content_review')
         assert not native.get('_catalog_clearance')
     if mutation=='extra_envelope':assert not state['receipts']
+    else:assert state['reviews']  # prove the required reviewer actually ran
 
 
 @pytest.mark.parametrize('kind',['missing','ambiguous','timeout_but_observed'])
@@ -164,7 +177,7 @@ def test_stock_known_scope_and_display_have_independent_authority(monkeypatch,ac
     original=llm_config.call_llm_request_once_with_wall_timeout
     def transport(**kw):
         response=original(**kw);value=json.loads(response['response_text'])
-        if kw['model']=='synthetic-reviewer':value=pipeline.joined.review(kind)
+        if kw['model']=='synthetic-reviewer':value=scoped_review(kind, allowed=allowed)
         elif 'catalog_query' not in value:
             value.update(answer_mode='ask_clarifying_question',reply_segments=[text]);state['drafts'][-1]=value
         response['response_text']=json.dumps(value,ensure_ascii=False)
@@ -195,7 +208,7 @@ def test_missing_vehicle_information_is_not_inventory_absence(monkeypatch,actual
     original=llm_config.call_llm_request_once_with_wall_timeout
     def transport(**kw):
         response=original(**kw);value=json.loads(response['response_text'])
-        if kw['model']=='synthetic-reviewer':value=pipeline.joined.review('non_inventory')
+        if kw['model']=='synthetic-reviewer':value=scoped_review('non_inventory', allowed=allowed)
         elif 'catalog_query' not in value:
             value.update(answer_mode='ask_clarifying_question',reply_segments=segments);state['drafts'][-1]=value
         response['response_text']=json.dumps(value,ensure_ascii=False);return response
@@ -246,7 +259,7 @@ def test_recording_customer_requirements_does_not_certify_a_seller_claim(monkeyp
         assert bool(list(db.scalars(select(ReplyAction)))) is allowed
 
 
-def configure_named_transport(monkeypatch, state, question, segments, operation='search'):
+def configure_named_transport(monkeypatch, state, question, segments, operation='search', *, review_allowed=True):
     configure_partial(monkeypatch,state,'normal')
     def coverage(binding):
         view=original_coverage(binding)
@@ -257,7 +270,19 @@ def configure_named_transport(monkeypatch, state, question, segments, operation=
     monkeypatch.setattr(pipeline,'coverage',coverage)
     monkeypatch.setattr(pipeline.native,'coverage',coverage)
     def transport(**kwargs):
-        assert kwargs['model']!='synthetic-reviewer'
+        if kwargs['model']=='synthetic-reviewer':
+            request=json.loads(kwargs['messages'][1]['content'])['review_request']
+            state['reviews'].append(request)
+            # Mixed reference/recommendation prose may require the existing
+            # review; verify it receives the same complete source facts.
+            basis=request['authority_evidence_summary']['product_master']['items']
+            assert {p['id'] for p in state['receipt']['recommendations']} <= {p['id'] for p in basis}
+            review = pipeline.joined.review('vehicle_facts') if review_allowed else pipeline.joined.review(
+                'vehicle_facts', verdict='repair',
+                semantic_errors=['未完整回答客户点名价格和补充推荐要求'],
+                repair_instruction='逐项回答客户本轮点名车辆的价格和明确索要的其他候选，只使用本轮资料。',
+                reason='草稿遗漏客户本轮明确提问的一部分，价格正确不等于回答完整。')
+            return {'ok':True,'status':200,'response_text':json.dumps(review,ensure_ascii=False)}
         if not state.get('receipt'):
             mid=state['invocations'][-1]['batch'][-1]['id']
             value={'catalog_query':{'operation':operation,'requirement_state':'clear',
@@ -283,12 +308,13 @@ def configure_named_transport(monkeypatch, state, question, segments, operation=
 ])
 @pytest.mark.parametrize('operation', ['search', 'compare'])
 def test_named_comparisons_and_extra_choices_through_native_chain(monkeypatch,actual_brain,question,body,allowed,operation):
-    configure_named_transport(monkeypatch, actual_brain, question, [body], operation)
+    configure_named_transport(monkeypatch, actual_brain, question, [body], operation, review_allowed=allowed)
     if allowed:
         pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique',monkeypatch)
     else:
         _,_,_,bid=pipeline.created(monkeypatch)
         assert pipeline.generate(bid)['decision'] != 'send_reply'
+        assert actual_brain['reviews'], 'Incomplete answers must reach review, not fail through a fixture exception'
     with SessionLocal() as db:
         assert bool(list(db.scalars(select(ReplyAction)))) is allowed
 

@@ -2268,7 +2268,7 @@ def build_brain_input(
         ),
     }
     if retry_instruction:
-        current_message["retry_instruction"] = retry_instruction[:700]
+        current_message["retry_instruction"] = retry_instruction
     return {
         "schema_version": 1,
         "target": {
@@ -2475,9 +2475,21 @@ def infer_speaker_name(batch: list[dict[str, Any]], target_name: str) -> str:
     return target_name
 
 
+MAX_RETRY_FEEDBACK_CHARS = 8192
+
+
 def call_recorded_brain_llm(*, brain_input: dict | None, **request) -> dict:
     """Record full protected attempt evidence without changing provider policy."""
-    response = call_llm_request_with_failover(**request)
+    # Retry feedback is an atomic validator explanation, not customer prose.
+    # Never send a sliced JSON/error instruction. Oversize feedback follows the
+    # existing non-retryable input-capacity outcome, before any provider call.
+    feedback = str(((brain_input or {}).get("current_message") or {}).get("retry_instruction") or "")
+    if len(feedback) > MAX_RETRY_FEEDBACK_CHARS:
+        response = {"ok": False, "error_kind": "input_capacity_exceeded",
+                    "error": "retry_feedback_capacity_exceeded",
+                    "feedback_chars": len(feedback), "feedback_limit": MAX_RETRY_FEEDBACK_CHARS}
+    else:
+        response = call_llm_request_with_failover(**request)
     evidence = (brain_input or {}).get("evidence") or {}
     if (evidence.get("catalog_protocol") or {}).get("preparation"):
         evidence.setdefault("model_response_history", []).append({
@@ -3768,8 +3780,15 @@ def build_brain_repair_prompt_pack(
         "只有正式硬边界确需人工时才使用handoff/handoff_for_approval；此时reply_segments仍必须包含Brain写出的简短客户可见边界承接，不能为空，"
         "由后端执行一次reply_then_handoff。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
     )
+    feedback = compact_quality_verification(quality)
     if (brain_input.get("evidence", {}).get("catalog_protocol") or {}).get("preparation"):
         system += str((brain_input.get("conversation") or {}).get("semantic_instruction") or "")
+        # The complete instruction is already a sibling field. Keep the
+        # current review's explanation, not its raw response or prior drafts.
+        feedback.pop("repair_instruction", None)
+        review = quality.get("semantic_review") or {}
+        if review.get("reason"):
+            feedback["reason"] = str(review["reason"])
     system = prepared_draft_instructions(system, brain_input.get("evidence") or {})
     return {
         "schema_version": 1,
@@ -3777,7 +3796,7 @@ def build_brain_repair_prompt_pack(
         "response_schema": draft_response_schema(brain_input.get("evidence") or {}),
         "user": {
             "task": "修复未通过质量自检的 BrainPlan。",
-            "failed_quality_verification": compact_quality_verification(quality),
+            "failed_quality_verification": feedback,
             "repair_instruction": str(quality.get("repair_instruction") or ""),
             "original_brain_plan": model_draft_view(plan, brain_input.get("evidence") or {}),
             "brain_input": slim_brain_input_for_prompt(brain_input, settings=settings),
@@ -3825,7 +3844,7 @@ def compact_current_message_for_prompt(current: dict[str, Any]) -> dict[str, Any
         payload["quality_flags"] = quality_flags[:5]
     retry_instruction = str(current.get("retry_instruction") or "").strip()
     if retry_instruction:
-        payload["retry_instruction"] = clip(retry_instruction, 360)
+        payload["retry_instruction"] = retry_instruction
     image_context = (
         current.get("image_context")
         if isinstance(current.get("image_context"), list)

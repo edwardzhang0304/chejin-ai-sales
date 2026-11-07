@@ -385,8 +385,15 @@ def _brain_retry_instruction(message_batch: dict) -> str:
             "请按本轮catalog_query协议重新生成完整指令，修正下列错误后由程序重新严格校验；"
             "不要编造库存结果或改变客户条件与预算含义；不支持的条件按协议显式保留，必要时澄清。"
             "校验信息："
-            + json.dumps({"code": failure.get("code"), "fields": failure.get("fields", [])}, ensure_ascii=False)[:1000]
-            + "\n" + str(failure.get("repair_instruction") or "")[:2500]
+            + json.dumps({
+                "code": failure.get("code"),
+                "fields": failure.get("fields", []),
+                "field_evidence": [
+                    {key: item[key] for key in ("field", "present", "value_type") if key in item}
+                    for item in (failure.get("field_evidence") or []) if isinstance(item, dict)
+                ],
+            }, ensure_ascii=False)
+            + "\n" + str(failure.get("repair_instruction") or "")
         )
     if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
         return ""
