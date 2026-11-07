@@ -18,11 +18,11 @@ from test_hook_business_http import clean
 from test_hook_history_business_http import coverage as original_coverage
 
 
-def listed(name,price):
+def listed(name,price, **fields):
     api=pipeline.joined.api
     r=api.client.post('/api/vehicles',headers=api.HEADERS,json={
         'display_name':name,'brand':'合成品牌','series':'国产新能源','public_price':price,
-        'energy_type':'electric','customer_description':'合成公开描述'*60,'internal_notes':'PRIVATE_SENTINEL'})
+        'energy_type':'electric','customer_description':'合成公开描述'*60,'internal_notes':'PRIVATE_SENTINEL', **fields})
     assert r.status_code==200,r.text
     vid=r.json()['data']['vehicle_code']
     r=api.client.post(f'/api/vehicles/{vid}/images',files={'files':('test.png',api.PNG_1X1,'image/png')},headers=api.HEADERS)

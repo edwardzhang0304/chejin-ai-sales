@@ -62,7 +62,7 @@ def test_unknown_fields_unsupported_conditions_and_empty_inventory_differ():
     q=query(filters=[{'field':'mileage_km','op':'lte','value':60000,'source_ids':['m1']}],unsupported_requirements=['无大修'])
     r=execute(q,[row('a',3),row('b',3,mileage_km=50000)])
     assert r['unknown_fields']=={'a':['mileage_km']} and r['match_count'] is None
-    assert r['known_condition_match_count']==1 and r['evaluation_state']=='clarification_required'
+    assert r['known_condition_match_count']==1 and r['evaluation_state']=='partial'
     assert r['unsupported_requirements']==['无大修']
     empty=execute(q,[]);assert empty['scan_complete'] and empty['scanned_count']==0 and not empty['unknown_fields']
 

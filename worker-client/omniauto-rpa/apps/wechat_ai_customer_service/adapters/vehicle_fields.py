@@ -7,6 +7,34 @@ ENERGY_TYPES = {"fuel": "燃油", "hybrid": "新能源混动", "range_extended":
 SERIES_OPTIONS = ("国产新能源", "合资新能源", "国产车", "德系车", "日系车", "美系车", "韩系车", "法系车", "其他")
 DRIVE_TYPES = {"front_wheel_drive": "前驱", "rear_wheel_drive": "后驱", "four_wheel_drive": "四驱"}
 BATTERY_DECIMAL_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+YEAR_MONTH_RE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[0-2])$")
+CATALOG_FILTER_TYPES = {
+    **dict.fromkeys(("brand", "series", "model", "energy_type", "drive_type", "location", "displacement",
+                     "exterior_color", "interior_color"), "text"),
+    **dict.fromkeys(("mileage_km", "battery_capacity_kwh"), "number"),
+    "first_registration": "year_month",
+}
+
+
+def catalog_text_value(field, value):
+    """Normalize stored/query labels identically, without guessing shades or two-tone paint."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = unicodedata.normalize("NFKC", value).strip().casefold()
+    if field in {"exterior_color", "interior_color"}:
+        if text in {"未知", "不详", "待确认", "待核实", "未填写"}:
+            return None
+        if text in {c + "色" for c in "白黑灰银红蓝绿黄棕金紫橙米咖"}:
+            return text[:-1]
+    return text
+
+
+def registration_month(value):
+    """Comparable month ordinal; never infer registration from a model year."""
+    if not isinstance(value, str) or not YEAR_MONTH_RE.fullmatch(value):
+        return None
+    year, month = map(int, value.split("-"))
+    return year * 12 + month
 
 # The public projection is an allowlist, including for imported/older rows.
 # Never send additional_details wholesale to a model.

@@ -18,13 +18,15 @@ from typing import Any
 from apps.wechat_ai_customer_service.workflows.catalog_budget import catalog_budget_around_upper, budget_statement
 from apps.wechat_ai_customer_service.adapters.vehicle_fields import (
     canonical_enum, numeric_field, ENERGY_TYPES, DRIVE_TYPES, SERIES_OPTIONS,
+    CATALOG_FILTER_TYPES, catalog_text_value, registration_month,
 )
 
 
 PROTOCOL = "vehicle_query_v1"
 MODEL_QUERY_CONTRACT = "vehicle_need_v2"
-TEXT_FIELDS = {"brand", "series", "model", "energy_type", "drive_type", "location", "displacement"}
-NUMBER_FIELDS = {"mileage_km", "battery_capacity_kwh"}
+TEXT_FIELDS = {field for field, kind in CATALOG_FILTER_TYPES.items() if kind == "text"}
+NUMBER_FIELDS = {field for field, kind in CATALOG_FILTER_TYPES.items() if kind == "number"}
+DATE_FIELDS = {field for field, kind in CATALOG_FILTER_TYPES.items() if kind == "year_month"}
 QUERY_REQUIRED_FIELDS = ("version", "operation", "requirement_state", "budget", "filters", "reference_ids",
                          "exclude_ids", "sort", "source_ids", "unsupported_requirements", "interpretation")
 QUERY_ENVELOPE_EXAMPLE = {"catalog_query": {
@@ -59,6 +61,7 @@ unlimited 只用于客户明确取消预算，uncertain 用于含糊或矛盾。
 先把客户需求对应到已有筛选能力：品牌用 brand（如大众）；车系分类用 series（如德系车）；车身类型用 model（如轿车、SUV、MPV）；能源用 energy_type；驱动方式用 drive_type；车辆所在地用 location；排量用 displacement（如1.5T）。这些文字条件要某一个值时用 eq，接受多个值时用 in。
 这里的 model 是车身类型，不是具体车名。客户要轿车，可以直接按 model 筛选，不要误写成不支持；合法条件示例为 {"field":"model","op":"eq","value":"轿车","source_ids":["客户提出该需求的消息ID"]}。客户点名宝马320Li等具体车辆名称，使用 name_queries；示例不是默认需求，不能替客户补条件。
 表显里程用 mileage_km，单位公里；电池容量用 battery_capacity_kwh，单位kWh。这两个数字条件“不超过”用 lte，“至少”用 gte。排量是文字，不能据此作数值大小比较。
+外观颜色用 exterior_color，内饰颜色用 interior_color，支持 eq/in；白和白色等基本颜色同义，不把珍珠白、米白或双色擅自合并。首次上牌日期用 first_registration，值为YYYY-MM，支持eq/gte/lte；某年内用该年01到12月的两个条件。年款不是上牌日期，车龄没有可靠基准不得猜日期；不支持的年款/事故/油耗条件仍保留待核实。
 确实无法用现有条件表达的需求放在 unsupported_requirements，这里只能填文字列表，例如 ["低油耗"]，不能填带text或source_ids的对象；没有这类要求就填 []。文字筛选只支持等于或多选，不支持不等于；客户只说不要SUV时，不能擅自改成只要轿车而漏掉MPV等其他类型，应保留未核实的排除要求。车源缺少字段也不能当作满足，不能为了完成查询丢掉客户条件。
 name_queries可为空；首次点名车型用name_queries，程序按全库公开名称/型号/别名字面匹配；不要编造ID。品牌找车用filters，不是name_queries。多义或未找到须澄清，不等于没有库存。reference_ids/exclude_ids只允许known_ids中有可信来源的ID；历史仅有名称则按名称查，不自造ID。
 所有条件先查全库再限制展示。拒绝旧推荐用 exclude_ids；点名旧车问价比较用 reference_ids。
@@ -523,6 +526,9 @@ def normalize_query(raw: Any, sources: list[dict], *, known_ids: dict | None = N
                 raise CatalogQueryError("invalid_text_filter", fields=[f"{path}.value"])
         elif f["field"] in NUMBER_FIELDS and f["op"] in {"lte", "gte"}:
             _number(f["value"], field=f"{path}.value", zero=True)
+        elif f["field"] in DATE_FIELDS and f["op"] in {"eq", "lte", "gte"}:
+            if registration_month(f["value"]) is None:
+                raise CatalogQueryError("invalid_registration_month", fields=[f"{path}.value"])
         else:
             raise CatalogQueryError("unsupported_filter_must_be_explicit", fields=[f"{path}.field", f"{path}.op"])
     for index, f in enumerate(query["filters"]):
@@ -586,15 +592,16 @@ def _selection_blockers(query: dict, names: list[dict], available_ids: set[str])
     if query["unsupported_requirements"]:
         reasons.append("unsupported_scope_unresolved")
     # Contradictory supported conditions cannot be interpreted as real zero stock.
-    for field in sorted(TEXT_FIELDS | NUMBER_FIELDS):
+    for field in sorted(TEXT_FIELDS | NUMBER_FIELDS | DATE_FIELDS):
         filters = [f for f in query["filters"] if f["field"] == field]
         if field in TEXT_FIELDS and filters:
-            sets = [{str(v).strip().casefold() for v in ([f["value"]] if f["op"] == "eq" else f["value"])} for f in filters]
+            sets = [{catalog_text_value(field, v) for v in ([f["value"]] if f["op"] == "eq" else f["value"])} for f in filters]
             if not set.intersection(*sets):
                 reasons.append("conflicting_filter:" + field)
         elif filters:
-            lower = max((f["value"] for f in filters if f["op"] == "gte"), default=0)
-            upper = min((f["value"] for f in filters if f["op"] == "lte"), default=math.inf)
+            value = lambda f: registration_month(f["value"]) if field in DATE_FIELDS else f["value"]
+            lower = max((value(f) for f in filters if f["op"] in {"gte", "eq"}), default=0)
+            upper = min((value(f) for f in filters if f["op"] in {"lte", "eq"}), default=math.inf)
             if lower > upper:
                 reasons.append("conflicting_filter:" + field)
     return reasons
@@ -618,7 +625,13 @@ def receipt_state(receipt: dict) -> str:
     """One interpretation for new and persisted receipts; unknown never means zero."""
     if receipt.get("scan_complete") is not True:
         return "unavailable"
-    if (_receipt_query_blockers(receipt) or receipt.get("clarification_reasons") or receipt.get("missing_reference_ids")
+    blockers = set(_receipt_query_blockers(receipt) or []) | set(receipt.get("clarification_reasons") or [])
+    # Unsupported stock evidence is not an ambiguous customer request. Keep
+    # legacy receipts conservative unless their query explicitly proves this.
+    unsupported_only = (blockers == {"unsupported_scope_unresolved"}
+                        and (receipt.get("query") or {}).get("requirement_state") == "clear"
+                        and receipt.get("evaluation_version") == 1)
+    if ((blockers and not unsupported_only) or receipt.get("missing_reference_ids")
             or receipt.get("missing_exclude_ids")
             or any(n.get("status") != "unique" for n in receipt.get("name_results", []))):
         return "clarification_required"
@@ -627,7 +640,7 @@ def receipt_state(receipt: dict) -> str:
     if receipt.get("requirement_uncertain") and receipt.get("evaluation_version") != 1:
         return "clarification_required"
     if receipt.get("unsupported_requirements"):
-        return "clarification_required"
+        return "partial" if unsupported_only or not receipt.get("requirement_uncertain") else "clarification_required"
     if receipt.get("unknown_field_count") or receipt.get("unknown_fields"):
         return "partial"
     if receipt.get("requirement_uncertain"):
@@ -666,9 +679,11 @@ def receipt_view(receipt: dict) -> dict:
 
 RECEIPT_INSTRUCTION = (
     "查询回执evaluation_state=complete才表示全部条件核实，match_count=0才是真零匹配。"
-    "partial表示仅核实known_condition_scope；match_count=null不是0。可以介绍recommendations里的具体车型和真实价格，"
+    "partial表示库存资料或筛选能力不足，不代表客户没说清；match_count=null不是0。可以介绍recommendations或known_condition_facts里的具体车型和真实价格，"
     "必须说明pending_conditions尚未核实，不得称候选满足全部条件或给全条件最低价。"
     "clarification_required表示关键条件不明确，必须用ask_clarifying_question针对原话中的实际未知点澄清，不能从空列表推断无车。"
+    "客户明确的颜色、预算、上牌范围不能再要求确认是否硬性要求。库存资料缺失应说明哪些条件待核实，不能让客户重复需求来弥补。"
+    "具体举例的数量不等于全库总数：先看两台/举例两台不是只有两台，只有明确声称总共或仅有时才核对全范围数量。"
     "known_condition_facts是已执行条件下的有序材料，举例也沿原排序、说明未知字段，不能说已按未支持的年份筛选。"
     "reply_target点名目标只核对所指车及其价格，不需要从全库第一辆说起；未唯一定位就澄清。"
     "库存数量、上下界和实际展示台数各按所指范围；客户说的首付、月供是客户意向，不是可办方案。"
@@ -766,7 +781,18 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8, sources=
                 missing.append(f["field"])
             elif f["field"] in TEXT_FIELDS:
                 options = [f["value"]] if f["op"] == "eq" else f["value"]
-                fits &= str(value).strip().casefold() in {v.strip().casefold() for v in options}
+                actual = catalog_text_value(f["field"], value)
+                if actual is None:
+                    missing.append(f["field"])
+                else:
+                    fits &= actual in {catalog_text_value(f["field"], v) for v in options}
+            elif f["field"] in DATE_FIELDS:
+                actual, expected = registration_month(value), registration_month(f["value"])
+                if actual is None:
+                    missing.append(f["field"])
+                else:
+                    fits &= (actual == expected if f["op"] == "eq" else
+                             actual <= expected if f["op"] == "lte" else actual >= expected)
             else:
                 numeric = numeric_field(f["field"], value)
                 if numeric is None:
@@ -813,7 +839,7 @@ def execute_query(query: dict, runtime, *, scope: dict, limit: int = 8, sources=
                "unknown_fields": unknown, "unknown_field_count": len(unknown),
                "unsupported_requirements": query["unsupported_requirements"],
                "missing_reference_ids": sorted(ref_ids - {r["id"] for r in references}),
-               "requirement_uncertain": query["requirement_state"] == "uncertain" or bool(blockers), "name_results": name_results,
+               "requirement_uncertain": query["requirement_state"] == "uncertain" or any(b != "unsupported_scope_unresolved" for b in blockers), "name_results": name_results,
                "evaluation_version": 1, "clarification_reasons": blockers,
                "known_conditions_evaluated": can_evaluate,
                "known_energy_prices": energy_prices,

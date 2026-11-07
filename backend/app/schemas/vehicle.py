@@ -1,14 +1,12 @@
 from decimal import Decimal
-import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.contracts.shared_rules import shared_adapter
 
 
-YEAR_MONTH_RE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[0-2])$")
-
 _vehicle_fields = shared_adapter("vehicle_fields")
+YEAR_MONTH_RE = _vehicle_fields.YEAR_MONTH_RE
 ENERGY_TYPES = _vehicle_fields.ENERGY_TYPES
 SERIES_OPTIONS = _vehicle_fields.SERIES_OPTIONS
 DRIVE_TYPES = _vehicle_fields.DRIVE_TYPES
