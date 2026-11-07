@@ -68,3 +68,46 @@ def test_managed_field_to_reply_and_native_settlement(monkeypatch, actual_brain,
         assert not list(db.scalars(select(HandoffEvent)))
         batch = db.scalar(select(MessageBatch))
         assert batch.generation_attempt_count == 1
+
+
+def test_live_query_sort_without_customer_preference_uses_budget_then_settles(monkeypatch, actual_brain):
+    """Reduced live-model query replay, with extra cars to expose its sort error."""
+    state = actual_brain
+    for index, price in enumerate([2.5, 2.8, 3, 3.2, 3.9]):
+        listed('合成排序车' + str(index), price, interior_color='黑')
+    def coverage(binding):
+        result = original_coverage(binding)
+        for scan in result['scans']:
+            for message in scan['databases'][0]['pages'][0]:
+                message['StrContent'] = '四万元以内，内饰要黑色的车，有哪些？请说下车名、价格和内饰颜色。'
+        return result
+    monkeypatch.setattr(pipeline.native, 'coverage', coverage)
+    def transport(**kw):
+        state['wire'].append(kw)
+        if kw['model'] == 'synthetic-reviewer':
+            result = pipeline.joined.review('vehicle_facts')
+        elif not state.get('receipt'):
+            mid = state['invocations'][-1]['batch'][-1]['id']
+            q = pipeline.joined.query(source_ids=[mid], filters=[
+                {'field':'interior_color','op':'eq','value':'黑色','source_ids':[mid]}])
+            q['budget']['source_ids'] = [mid]
+            q.pop('version'); q['budget'].pop('unit')
+            # The actual model invented price_asc despite this source having
+            # no order request. The raw query must remain in the receipt.
+            q['sort'] = {'value':'price_asc','source_ids':[mid]}
+            result = {'catalog_query':q}
+        else:
+            r = state['receipt']
+            assert r['query']['raw_model_query']['sort']['value'] == 'price_asc'
+            assert (r['query']['sort'], r['query']['sort_origin']) == ('budget_distance', 'program_default')
+            assert r['match_count'] == 5
+            assert [c['price'] for c in r['recommendations']] == [3.9, 3.2, 3, 2.8, 2.5]
+            result = pipeline.joined.fixtures.base_plan()
+            result.update(answer_mode='recommend_from_catalog', reply_segments=[
+                '可以先看合成排序车4，报价3.9万元，内饰黑色。'])
+            result.pop('facts_claimed', None); result.pop('evidence_used', None)
+        return {'ok':True,'status':200,'response_text':json.dumps(result,ensure_ascii=False)}
+    monkeypatch.setattr(llm_config, 'call_llm_request_once_with_wall_timeout', transport)
+    pipeline.native.test_one_native_history_match_settles_original_reply_without_resend('unique', monkeypatch)
+    with SessionLocal() as db:
+        assert not list(db.scalars(select(HandoffEvent)))

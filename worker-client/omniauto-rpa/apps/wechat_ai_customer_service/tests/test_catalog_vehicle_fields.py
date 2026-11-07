@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from test_catalog_query import cq, execute, query, row, evidence
+from test_catalog_query import cq, execute, query, row, evidence, Runtime as cq_test_runtime
 from test_program_catalog_preparation import prepared
 from apps.wechat_ai_customer_service.adapters.vehicle_fields import CATALOG_FILTER_TYPES, PUBLIC_DETAIL_FIELDS
 from apps.wechat_ai_customer_service.workflows.vehicle_public_facts import validate_reply_public_facts
@@ -136,3 +136,43 @@ def test_all_structured_public_fields_filter_before_display_limit(field, value, 
     assert receipt["evaluation_state"] == "complete"
     assert receipt["match_count"] == 1
     assert [p["id"] for p in receipt["recommendations"]] == ["fit"]
+
+
+@pytest.mark.parametrize('supplied', ['price_asc', 'price_desc', 'budget_distance'])
+def test_model_cannot_turn_a_color_request_into_a_customer_sort_preference(supplied):
+    # Reduced from the live model result: the source exists, but says nothing
+    # about ordering. Keep the raw output for diagnosis; do not reject the reply.
+    sources = [{'id': 'm1', 'sender': 'customer',
+                'content': '四万元以内，内饰要黑色的车，有哪些？请说下车名、价格和内饰颜色。'}]
+    raw = query(filters=[condition('interior_color', '黑色')])
+    raw.pop('version'); raw['budget'].pop('unit')
+    raw['sort'] = {'value': supplied, 'source_ids': ['m1']}
+    q = cq.normalize_model_query(raw, sources, contract=cq.MODEL_QUERY_CONTRACT)
+    assert q['raw_model_query'] == raw
+    assert (q['sort'], q['sort_origin'], q['sort_source_ids']) == ('budget_distance', 'program_default', [])
+    result = cq.execute_query(q, cq_test_runtime([
+        row(str(i), price, interior_color='黑') for i, price in enumerate([2.5, 2.8, 3, 3.2, 3.9])
+    ]), scope={}, limit=4)
+    assert result['match_count'] == 5
+    assert [p['price'] for p in result['recommendations']] == [3.9, 3.2, 3, 2.8]
+
+
+@pytest.mark.parametrize('text,supplied,expected', [
+    ('四万以内，便宜的先推荐', 'price_desc', 'price_asc'),
+    ('四万以内，价格从高到低', 'price_asc', 'price_desc'),
+    ('四万以内，先看更实惠的', 'price_asc', 'price_asc'),
+])
+def test_real_customer_order_still_overrides_default(text, supplied, expected):
+    raw = query(); raw.pop('version'); raw['budget'].pop('unit')
+    raw['sort'] = {'value': supplied, 'source_ids': ['m1']}
+    q = cq.normalize_model_query(raw, [{'id':'m1','sender':'customer','content':text}], contract=cq.MODEL_QUERY_CONTRACT)
+    assert (q['sort'], q['sort_origin']) == (expected, 'customer_explicit')
+
+
+def test_unrelated_later_message_cannot_replace_an_earlier_customer_order():
+    sources = [{'id':'h1','sender':'customer','content':'四万以内，价格从高到低'},
+               {'id':'m1','sender':'customer','content':'内饰要黑色，价格是多少？'}]
+    raw = query(filters=[condition('interior_color','黑色')]); raw.pop('version'); raw['budget'].pop('unit')
+    raw['sort'] = {'value':'price_asc','source_ids':['m1']}
+    q = cq.normalize_model_query(raw, sources, contract=cq.MODEL_QUERY_CONTRACT)
+    assert (q['sort'],q['sort_source_ids']) == ('price_desc',['h1'])

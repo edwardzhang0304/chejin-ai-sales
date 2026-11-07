@@ -146,19 +146,18 @@ def sort_instructions(text):
 
 def effective_customer_sort(sources, supplied, supplied_ids):
     chosen = None
-    touched = False
     for source in sources:
         if source.get("sender") not in {"customer", "client"}:
             continue
         text = budget_statement(source["content"])["remainder"]
         instructions = list(sort_instructions(text))
         if not instructions and supplied and source["id"] in supplied_ids:
-            # A later customer-authored ordering request interpreted by the
-            # semantic path may supersede an earlier explicit preference.
-            if not touched or re.search(r"排序|优先|先看|先推荐|排前", text):
+            # A cited message alone is not a sorting request. Apply the same
+            # ordering-intent requirement to the first and later preferences;
+            # otherwise preserve the customer's previous order or our default.
+            if re.search(r"排序|优先|先看|先推荐|排前", text):
                 chosen = (supplied, list(supplied_ids))
         for _, value, revoked in instructions:
-            touched = True
             if value == "reset" or revoked:
                 if value == "reset" or chosen is None or chosen[0] == value:
                     chosen = None
