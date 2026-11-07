@@ -59,10 +59,10 @@ def test_projection_hides_wire_identity_without_changing_frozen_facts():
     frozen = deepcopy(reply_authority_snapshot(evidence)); before = deepcopy(evidence)
     view = model_authority_view(evidence)
     assert "generation_identity" not in view
-    assert "model_query_contract" not in view["catalog_protocol"]
-    assert "protocol" not in view["catalog_protocol"]
-    assert view["sources"] == frozen["sources"]
-    assert view["product_master"] == frozen["product_master"]
+    assert "catalog_protocol" not in view  # caller supplies it once
+    assert "sources" not in view  # original messages remain in protocol/history
+    assert view["product_master"]["items"] == frozen["product_master"]["items"]
+    assert "catalog_selection" not in view["product_master"]
     assert evidence == before
     assert reply_authority_snapshot(evidence) == frozen
     assert prompt_protocol(evidence)["sources"] == frozen["catalog_protocol"]["sources"]

@@ -61,14 +61,11 @@ def test_partial_numeric_recognition_cannot_execute_or_drop_conditions(text,hist
 
 def expected_model_facts(frozen):
     expected=deepcopy(frozen)
-    # Only wire/attempt identity is excluded. Keep the complete factual block
-    # assertion: no vehicle, policy, source, price or condition may disappear.
-    expected.pop('generation_identity',None)
-    protocol=expected['catalog_protocol']
-    protocol.pop('protocol',None);protocol.pop('model_query_contract',None)
-    for receipt in (protocol.get('receipt') or {},expected['product_master']['catalog_selection']):
-        receipt.pop('protocol',None);receipt.pop('model_query_contract',None)
-        (receipt.get('query') or {}).pop('model_query_contract',None)
+    # Model facts occur once; caller carries the query/result separately.
+    # The frozen audit snapshot must remain complete and unchanged.
+    for key in ('generation_identity','catalog_protocol','sources','knowledge_release'):
+        expected.pop(key,None)
+    expected['product_master'].pop('catalog_selection',None)
     return expected
 
 
@@ -562,15 +559,16 @@ def test_partial_year_preserves_candidates_and_null_through_all_consumers():
     assert len(pack['knowledge']['product_master']['items'])==6
     expected=expected_model_facts(ev.reply_authority_snapshot(pack))
     draft={'answer_mode':'ask_clarifying_question','reply_segments':['合成车1报价5.2万，年份还需核实，您希望哪一年之后的车？']}
-    for consumer in (
-        brain.build_brain_prompt_pack(settings={},brain_input=inp)['user']['brain_input']['content_basis'],
-        brain.build_brain_repair_prompt_pack(settings={},brain_input=inp,plan=draft,quality={})['user']['brain_input']['content_basis'],
-        reviewer.build_quality_review_request(settings={},brain_input=inp,evidence_pack=pack,plan=draft,deterministic_quality={})['authority_evidence_summary'],
+    for consumer, basis_key in (
+        (brain.build_brain_prompt_pack(settings={},brain_input=inp)['user']['brain_input'], 'content_basis'),
+        (brain.build_brain_repair_prompt_pack(settings={},brain_input=inp,plan=draft,quality={})['user']['brain_input'], 'content_basis'),
+        (reviewer.build_quality_review_request(settings={},brain_input=inp,evidence_pack=pack,plan=draft,deterministic_quality={}), 'authority_evidence_summary'),
     ):
-        assert consumer==expected
+        assert consumer[basis_key]==expected
         restored=json.loads(json.dumps(consumer))
         assert restored['catalog_protocol']['receipt']['match_count'] is None
-        assert restored['product_master']['catalog_selection']['known_condition_match_count']==6
+        assert restored['catalog_protocol']['receipt']['known_condition_match_count']==6
+        assert restored['catalog_protocol']['receipt']['known_condition_facts']==['1','2','3','4','5','6']
     assert validate_reply_public_facts(draft,pack)['ok']
 
 

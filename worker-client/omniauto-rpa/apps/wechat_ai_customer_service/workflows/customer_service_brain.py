@@ -3295,12 +3295,20 @@ def build_brain_prompt_pack(*, settings: dict[str, Any], brain_input: dict[str, 
         )
     from apps.wechat_ai_customer_service.workflows.catalog_query import RECEIPT_INSTRUCTION
     system += RECEIPT_INSTRUCTION
-    system += (
-        "车辆候选是筛选后的展示片段，不等于全部库存。先依据product_master.catalog_selection核对查询范围："
-        "scan_complete=false表示查库失败，不能说没有车；budget_match_count只证明价格范围内的数量，"
-        "不证明车况等其他条件。不得从展示的几辆车推断全店最低价、全部没有某车型或预算内无车。"
-        "有预算内候选时应优先介绍；selection_role为referenced_vehicle_outside_budget的车仅用于回答客户点名的车，须说明超出预算。"
-    )
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        system += (
+            "车辆资料只列出筛选后供本轮回答使用的车，不等于全部库存。"
+            "完整筛选结论、匹配数量和推荐顺序统一看catalog_protocol.receipt；"
+            "具体车辆资料统一看content_basis.product_master.items。"
+            "点名比较的超预算车只能作为比较对象，不能替代预算内推荐。"
+        )
+    else:
+        system += (
+            "车辆候选是筛选后的展示片段，不等于全部库存。先依据product_master.catalog_selection核对查询范围："
+            "scan_complete=false表示查库失败，不能说没有车；budget_match_count只证明价格范围内的数量，"
+            "不证明车况等其他条件。不得从展示的几辆车推断全店最低价、全部没有某车型或预算内无车。"
+            "有预算内候选时应优先介绍；selection_role为referenced_vehicle_outside_budget的车仅用于回答客户点名的车，须说明超出预算。"
+        )
     conversation = (
         brain_input.get("conversation")
         if isinstance(brain_input.get("conversation"), dict)
@@ -3431,7 +3439,7 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
     if rag.get("hits"):
         auxiliary["rag"] = rag
     audit_summary = evidence.get("audit_summary", {}) if isinstance(evidence.get("audit_summary"), dict) else {}
-    return {
+    projected = {
         "target": brain_input.get("target", {}),
         "catalog_protocol": catalog_prompt_protocol(evidence),
         "current_message": current_message,
@@ -3494,6 +3502,21 @@ def slim_brain_input_for_prompt(brain_input: dict[str, Any], *, settings: dict[s
             profile=prompt_profile,
         ),
     }
+
+    if (evidence.get("catalog_protocol") or {}).get("preparation"):
+        # Only the model-facing copy changes. Keep original history, current
+        # messages, snapshots and runtime data in the evidence/audit pipeline.
+        projected.pop("audit_summary", None)
+        projected.pop("legacy_candidate_policy", None)
+        projected["conversation"].pop("semantic_instruction", None)  # already in system
+        projected["conversation"].pop("conversation_interaction_state", None)
+        projected["reading_guide"] = {
+            "conversation": "客户本轮原话和必要历史；延续尚未取消的需求，区分总预算、首付和月供。",
+            "catalog_protocol": "查询前用于理解条件；查询后是程序确认的筛选条件和结果。未查询或资料缺失不等于没有车。",
+            "content_basis": "车辆资料和业务规则；推荐顺序见查询结果，具体车辆按同一ID查此处资料。",
+            "auxiliary": "仅辅助表达，不作为价格、库存或业务承诺的依据。",
+        }
+    return projected
 
 
 def maybe_repair_brain_plan(
@@ -3745,6 +3768,8 @@ def build_brain_repair_prompt_pack(
         "只有正式硬边界确需人工时才使用handoff/handoff_for_approval；此时reply_segments仍必须包含Brain写出的简短客户可见边界承接，不能为空，"
         "由后端执行一次reply_then_handoff。只输出裸JSON对象，不要Markdown，不要```json代码块，不要解释。"
     )
+    if (brain_input.get("evidence", {}).get("catalog_protocol") or {}).get("preparation"):
+        system += str((brain_input.get("conversation") or {}).get("semantic_instruction") or "")
     system = prepared_draft_instructions(system, brain_input.get("evidence") or {})
     return {
         "schema_version": 1,
@@ -4016,7 +4041,8 @@ def estimate_prompt_pack(prompt_pack: dict[str, Any], *, user_content: str | Non
     text = system + "\n" + str(user or "")
     estimate = {"prompt_chars": len(text), "rough_prompt_tokens": max(1, len(text) // 2)}
     basis = ((prompt_pack.get("user") or {}).get("brain_input") or {}).get("content_basis") or {}
-    selection = (basis.get("product_master") or {}).get("catalog_selection")
+    selection = ((prompt_pack.get("user", {}).get("brain_input", {}).get("catalog_protocol") or {}).get("receipt")
+                 or (basis.get("product_master") or {}).get("catalog_selection"))
     if selection:
         estimate["catalog_selection"] = dict(selection)
     return estimate

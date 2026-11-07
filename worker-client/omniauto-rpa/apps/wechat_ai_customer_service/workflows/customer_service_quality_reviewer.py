@@ -1228,7 +1228,7 @@ def build_quality_reviewer_prompt(request: dict[str, Any]) -> tuple[str, str]:
 
 def catalog_prompt_protocol(evidence):
     from apps.wechat_ai_customer_service.workflows.catalog_query import prompt_protocol
-    return prompt_protocol(evidence)
+    return prompt_protocol(evidence, for_review=True)
 
 
 def _program_fact_findings(plan, evidence):

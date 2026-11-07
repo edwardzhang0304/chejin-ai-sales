@@ -975,19 +975,28 @@ def model_protocol_view(protocol: dict) -> dict:
     return result
 
 
-def prompt_protocol(evidence: dict) -> dict | None:
+def prompt_protocol(evidence: dict, *, for_review: bool = False) -> dict | None:
     protocol = evidence.get("catalog_protocol")
     if not protocol:
         return None
     result = model_protocol_view(protocol)
     receipt = result.get("receipt")
+    # Keep all original message sources once, including uncited history.
+    # The reviewer must still see requirements omitted by an understanding call.
+    result.setdefault("sources", message_sources(evidence))
     if receipt:
         receipt = result["receipt"] = model_receipt_view(receipt_view(receipt))
-        receipt.pop("unknown_fields", None)
-        pending = receipt.get("pending_conditions") or {}
-        if "unknown_fields" in pending:
-            pending["unknown_field_count"] = len(pending.pop("unknown_fields"))
-        receipt.pop("created_at", None)
+        # Prompt-only projection: original receipts/snapshots retain the full audit.
+        for key in ("created_at", "scope", "tenant_id", "snapshot_id", "evaluation_version"):
+            receipt.pop(key, None)
+        query = receipt.get("query") or {}
+        # `request` repeats the accepted query. The raw model proposal is useful
+        # to the existing reviewer, but not to the writer after normalization.
+        query.pop("request", None)
+        query.pop("redundant_metadata", None)
+        query.pop("version", None)
+        if not for_review:
+            query.pop("raw_model_query", None)
         for match in receipt.get("name_results", []):
             match["matched_ids"] = match["matched_ids"][:20]
         for key in ("recommendations", "references", "known_condition_facts"):

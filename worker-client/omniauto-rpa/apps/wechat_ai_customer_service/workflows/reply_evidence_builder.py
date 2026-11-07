@@ -81,12 +81,12 @@ def formal_knowledge_source_table(evidence_pack: dict) -> dict[str, dict]:
 
 def model_authority_view(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     """Same complete facts for every model; internal identity stays in the snapshot."""
-    from apps.wechat_ai_customer_service.workflows.catalog_query import model_protocol_view, model_receipt_view
     block = deepcopy(reply_authority_snapshot(evidence_pack))
-    block.pop("generation_identity", None)
-    block["catalog_protocol"] = model_protocol_view(block.get("catalog_protocol") or {})
-    product_master = block.get("product_master") or {}
-    product_master["catalog_selection"] = model_receipt_view(product_master.get("catalog_selection") or {})
+    # The caller supplies catalog_protocol once beside this facts block. Keep
+    # every selected public product and formal source; never clip or re-rank.
+    for key in ("generation_identity", "catalog_protocol", "sources", "knowledge_release"):
+        block.pop(key, None)
+    block["product_master"].pop("catalog_selection", None)
     return block
 
 
